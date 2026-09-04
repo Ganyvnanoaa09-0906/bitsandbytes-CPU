@@ -1,0 +1,95 @@
+================================================================================
+bitsandbytes CPU fork — 预编译包打包说明（Windows + Linux）
+================================================================================
+【目标】为开源仓库提供可 pip 安装的预编译 wheel（Windows win_amd64 / Linux
+       linux_x86_64，aarch64 用 linux_aarch64）。让用户不用自己编译，装 wheel
+       就能用。
+
+【说明】fork 用 build_manual.bat / build_linux.sh 直编 3 个 cpp（无 CMake），
+        所以别用官方 setup.py 的 CMake pipeline 打包——手动把 bitsandbytes/
+        包 + 编译出的 native 库（.dll/.so）装进 wheel。
+        native 库路径：bitsandbytes/ 包目录下（cextension.py 按
+       PACKAGE_DIR/libbitsandbytes_cpu.{dll,so} 找）。
+
+--------------------------------------------------------------------------------
+【Windows 预编译包】
+--------------------------------------------------------------------------------
+① 编译 dll（VS x64 原生终端）：
+    build_manual\build_manual.bat amd
+    # 产出 bitsandbytes\bitsandbytes\libbitsandbytes_cpu.dll
+
+② 打 wheel（Windows，tag = win_amd64）：
+    python -m venv .venv_pack && .venv_pack\Scripts\activate
+    python - <<'PY'
+import os, zipfile
+root = os.getcwd()                    # 仓库根（bitsandbytes/ 的上级）
+ver = "0.50.2"
+pkg = os.path.join(root, "bitsandbytes")
+wheel = f"bitsandbytes-{ver}-py3-none-win_amd64.whl"
+out = os.path.join(root, "dist", wheel); os.makedirs(os.path.dirname(out), exist_ok=True)
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    for dp, dn, fn in os.walk(pkg):
+        dn[:] = [d for d in dn if d != "__pycache__"]
+        for f in fn:
+            fp = os.path.join(dp, f); arc = os.path.relpath(fp, root).replace(os.sep, "/")
+            z.write(fp, arc)
+    di = f"bitsandbytes-{ver}.dist-info"
+    z.writestr(f"{di}/METADATA", f"Metadata-Version: 2.1\nName: bitsandbytes\nVersion: {ver}\nSummary: 8-bit optimizers & quant (CPU fork)\n")
+    z.writestr(f"{di}/WHEEL", "Wheel-Version: 1.0\nGenerator: manual\nRoot-Is-Purelib: false\nTag: py3-none-win_amd64\n")
+    z.writestr(f"{di}/RECORD", "")
+print("[OK]", out)
+PY
+
+③ 验证：pip install dist\bitsandbytes-*.whl，然后
+    python -c "import bitsandbytes; print('ok', bitsandbytes.cextension.PACKAGE_DIR)"
+    # 看 .dll 存在且 import 成功
+
+--------------------------------------------------------------------------------
+【Linux 预编译包】
+--------------------------------------------------------------------------------
+① 编译 .so（WSL/Linux）：
+    sudo apt install -y g++ libomp-dev
+    bash build_linux.sh            # x86_64 AVX2 自动检测；产出 bitsandbytes/libbitsandbytes_cpu.so
+
+② C 层自检（确认数值 OK）：
+    bash build_linux.sh --selftest   # 看到 [PASSED]
+
+③ 打 wheel（tag = linux_x86_64；aarch64 用 linux_aarch64）：
+    python3 - <<'PY'
+import os, zipfile
+root = os.getcwd()
+ver = "0.50.2"
+pkg = os.path.join(root, "bitsandbytes")
+wheel = f"bitsandbytes-{ver}-py3-none-linux_x86_64.whl"
+out = os.path.join(root, "dist", wheel); os.makedirs(os.path.dirname(out), exist_ok=True)
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    for dp, dn, fn in os.walk(pkg):
+        dn[:] = [d for d in dn if d != "__pycache__"]
+        for f in fn:
+            fp = os.path.join(dp, f); arc = os.path.relpath(fp, root).replace(os.sep, "/")
+            z.write(fp, arc)
+    di = f"bitsandbytes-{ver}.dist-info"
+    z.writestr(f"{di}/METADATA", f"Metadata-Version: 2.1\nName: bitsandbytes\nVersion: {ver}\nSummary: 8-bit optimizers & quant (CPU fork)\n")
+    z.writestr(f"{di}/WHEEL", "Wheel-Version: 1.0\nGenerator: manual\nRoot-Is-Purelib: false\nTag: py3-none-linux_x86_64\n")
+    z.writestr(f"{di}/RECORD", "")
+print("[OK]", out)
+PY
+
+④ 验证：python3 -m venv /tmp/v && . /tmp/v/bin/activate && pip install dist\*   # dist/*.whl
+    python -c "import bitsandbytes; print('ok', bitsandbytes.cextension.PACKAGE_DIR)"
+
+--------------------------------------------------------------------------------
+【测试完删这些临时/产物】（不进仓库/release）
+--------------------------------------------------------------------------------
+    Windows: build_manual 中间产物、__pycache__、dist（留 wheel 外其余删）
+    Linux  : build_linux/、bitsandbytes/libbitsandbytes_cpu.so、__pycache__、
+             build_linux/venv（若跑了 torch selftest）、dist 里的中间文件
+    不要删：csrc/、bitsandbytes/、selftest_cpu.c、build_*.sh、build_manual/、
+            setup.py、pyproject.toml、README*.md、docs_cpu/、NOTICE.md、LICENSE
+
+【注意】
+  · platform tag 必须匹配：win_amd64（Windows x64）/ linux_x86_64（Linux x64）/
+    linux_aarch64（ARM64）。
+  · 别用官方 setup.py pip wheel（CMake pipeline 跟 fork 直编不接轨）。
+  · aarch64 的 .so 需在 aarch64 机器编译（或交叉编译）。
+================================================================================

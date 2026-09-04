@@ -1,0 +1,25 @@
+# Contribution Guide
+
+## Setup
+
+### Setup pre-commit hooks
+- Install pre-commit hooks with `pip install pre-commit`.
+- Run `pre-commit install` once to install the hooks, so they will be run on every commit.
+- If the hooks introduce changes, they'll be visible with `git diff`. Review them and `git add` them if everything is fine, then re-execute the before commit, it should pass now.
+- If you want to manually trigger the hooks, you may do `pre-commit run --all-files`
+
+Now all the pre-commit hooks will be automatically run when you try to commit and if they introduce some changes, you need to re-add the changed files before being able to commit and push.
+
+### Ignore formatting revs
+- Run `git config blame.ignoreRevsFile .git-blame-ignore-revs`. This will make it so that `git blame` is aware of commits that were logged to be solely formatting-related.
+
+## Doc-string syntax
+
+We're following NumPy doc-string conventions with the only notable difference being that we use Markdown instead of Rich text format (RTF) for markup within the doc-strings.
+
+Please see the existing documentation to see how to generate autodocs.
+
+## Documentation
+- [guideline for documentation syntax](https://github.com/huggingface/doc-builder#readme)
+- images shall be uploaded via PR in the `bitsandbytes/` directory [here](https://huggingface.co/datasets/huggingface/documentation-images)
+- find the documentation builds for each PR in a link posted to the PR, such as https://moon-ci-docs.huggingface.co/docs/bitsandbytes/pr_1012/en/introduction

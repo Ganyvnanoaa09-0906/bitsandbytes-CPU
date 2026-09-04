@@ -1,0 +1,27 @@
+LIBRARY libbitsandbytes_cpu
+EXPORTS
+    gdn_fwd_cpu
+    gdn_bwd_cpu
+    cquantize_blockwise_cpu_fp32
+    cquantize_blockwise_cpu_bf16
+    cquantize_blockwise_cpu_fp16
+    cdequantize_blockwise_cpu_fp32
+    cdequantize_blockwise_cpu_bf16
+    cdequantize_blockwise_cpu_fp16
+    cdequantize_blockwise_cpu_fp4_fp32
+    cdequantize_blockwise_cpu_fp4_bf16
+    cdequantize_blockwise_cpu_fp4_fp16
+    cdequantize_blockwise_cpu_nf4_fp32
+    cdequantize_blockwise_cpu_nf4_bf16
+    cdequantize_blockwise_cpu_nf4_fp16
+    cquantize_blockwise_cpu_4bit_fp32
+    cquantize_blockwise_cpu_4bit_bf16
+    cquantize_blockwise_cpu_4bit_fp16
+    cint8_vector_quant_cpu_fp32
+    cint8_vector_quant_cpu_bf16
+    cint8_vector_quant_cpu_fp16
+    cgemv_4bit_inference_cpu_fp32
+    cgemv_4bit_inference_cpu_bf16
+    cgemv_4bit_inference_cpu_fp16
+    cgemm_8bit_inference_cpu_fp32
+    coptimizer_update_8bit_blockwise_cpu

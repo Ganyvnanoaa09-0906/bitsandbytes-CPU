@@ -1,0 +1,11 @@
+*.bat text eol=crlf
+
+# C/C++ 源码强制 LF：Windows 用 /utf-8 + CRLF 会吞行（MSVC 已知坑），
+# Linux/WSL/Termux 的 g++/clang 编译需要 LF。统一 LF 保证跨平台编译一致。
+*.c text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+*.hpp text eol=lf
+
+# 构建脚本 LF（bash 需要 LF，CRLF 会报 bad interpreter）
+*.sh text eol=lf

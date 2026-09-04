@@ -1,0 +1,26 @@
+[files]
+# Skip these files in typo checks
+extend-exclude = [
+    "agents/*.md",
+    "csrc/xpu_ops.h",
+    "csrc/xpu_ops.cpp",
+    "csrc/xpu_kernels.h",
+    "csrc/xpu_kernels.cpp"
+]
+
+[default]
+extend-ignore-re = [
+    "@Ther-nul",  # valid Github user
+]
+extend-ignore-identifiers-re = [
+    ".*arange.*",
+    ".*ARANGE.*",
+]
+
+[type.py.extend-words]
+"BA" = "BA"  # used as a commented-out variable in tests
+
+[type.cuda.extend-words]
+"subtile" = "subtile"
+"subtiles" = "subtiles"
+"transation" = "transation"  # TODO: is this transition, transaction, translation..?

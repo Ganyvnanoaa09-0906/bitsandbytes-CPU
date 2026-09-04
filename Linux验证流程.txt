@@ -1,0 +1,61 @@
+================================================================================
+bitsandbytes CPU 后端 — Linux / Termux 验证流程（在 i5 上做）
+================================================================================
+【目标】为 Linux 提供兼容 + 产出预编译 libbitsandbytes_cpu.so
+  · R5 开发机 WinSxS 锁死（wsl --install / DISM 全卡），故到 i5 验证
+  · 这是开源跨平台（Windows/Linux/Termux）收尾的一环
+
+--------------------------------------------------------------------------------
+【阶段 1】Linux 编译兼容验证（核心，先在 Linux 里跑通 build_linux.sh）
+--------------------------------------------------------------------------------
+① 进入 Linux（WSL2 Ubuntu 或原生 Ubuntu/Debian）：
+     wsl -d Ubuntu                      # WSL；或直接 Ubuntu 终端
+
+② 装编译依赖：
+     sudo apt update
+     sudo apt install -y g++ libomp-dev
+
+③ 进仓库（在 Linux 里定位到 bitsandbytes 源码）：
+     # 若仓库在 Windows 盘（C:/D:/E:），WSL 路径 /mnt/<盘>/...
+     cd /mnt/<盘符>/<路径>/那很有乐子了~/bitsandbytes
+     # 例：cd /mnt/d/那很有乐子了~/bitsandbytes
+
+④ 编译 + C 层自检：
+     bash build_linux.sh --selftest
+
+   看到：
+     [AVX2] 启用本机 AVX2
+     -> bitsandbytes/libbitsandbytes_cpu.so (...)
+     CPU 符号数: ...
+     [4/4] selftest ...
+     DONE.   ← 关键
+   即 Linux(x86_64/AVX2) 编码兼容验证通过。
+
+⑤ （可选）完整 WSL 验证（含 torch）：
+     bash wsl_verify.sh
+   或快速版（只到 C 层自检）：
+     bash wsl_verify.sh --no-torch
+
+--------------------------------------------------------------------------------
+【阶段 2】预编译包（阶段1通过后，发布时才做）
+--------------------------------------------------------------------------------
+  · build_linux.sh 产出 bitsandbytes/libbitsandbytes_cpu.so
+  · 把 bitsandbytes/ 包 + 该 .so 打成 wheel（需写打包脚本，platform tag 标 linux_x86_64）
+  · 这一步等阶段1通了再定（涉及 wheel platform tag / 打包细节）
+
+--------------------------------------------------------------------------------
+【Termux（Android ARM64）验证】—— 独立于 Linux，另做
+--------------------------------------------------------------------------------
+  在 Termux 里：
+    pkg install python python-pip clang libomp make
+    bash build_termux.sh          # 编译 libbitsandbytes_cpu.so（NEON）
+    # 无 torch 只跑 C 自检；或 PYTHONPATH=$PWD python -m bitsandbytes.gdn_cpu
+  （Termux 无 torch，仅验证内核数值正确性）
+
+--------------------------------------------------------------------------------
+【注意】
+  · build_linux.sh / build_termux.sh 都只编 3 个 cpp（cpu_ops/cpu_gdn/pythonInterface），
+    不依赖 CMake——轻量、兼容性已设计好。
+  · Windows 盘挂到 WSL 路径 /mnt/<盘>/ 可能有性能/权限问题，建议把仓库拷到
+    Linux 分区（如 WSL 的 ~/bitsandbytes）再编译，更稳。
+--------------------------------------------------------------------------------

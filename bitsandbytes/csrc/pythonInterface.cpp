@@ -1,0 +1,923 @@
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// This source code is licensed under the MIT license found in the
+// LICENSE file in the root directory of this source tree.
+
+#if BUILD_CUDA
+#include <cuda_runtime_api.h>
+#include <ops.cuh>
+#endif
+#if BUILD_HIP
+#include <ops.cuh>
+#endif
+#if BUILD_XPU
+#include <xpu_ops.h>
+#endif
+#include <cpu_ops.h>
+
+// Compatibility between HIP/CUDA APIs
+#if BUILD_HIP
+#define cudaStream_t hipStream_t
+#define cublasLtHandle_t hipblasLtHandle_t
+#define cudaMallocManaged hipMallocManaged
+#define cudaMemAttachHost hipMemAttachHost
+#define cudaPeekAtLastError hipPeekAtLastError
+#define cudaDeviceGetAttribute hipDeviceGetAttribute
+#define cudaDevAttrConcurrentManagedAccess hipDeviceAttributeConcurrentManagedAccess
+#define cudaMemPrefetchAsync hipMemPrefetchAsync
+#endif
+
+// We cannot call templated code from C, so we wrap the template in a C compatible call here if necessary.
+// We use macro functions to expand all the different optimizers. Looks ugly, and is ugly, but its better than to
+// maintain all that boilerplate
+//===================================================================================
+//                               UNMANGLED CALLS
+//===================================================================================
+
+#if BUILD_CUDA || BUILD_HIP
+
+void gemm_4bit_inference_naive_fp16(
+    int m, int n, int k, half* A, unsigned char* B, float* absmax, float* datatype, half* out, int lda, int ldb,
+    int ldc, int blocksize, cudaStream_t stream
+) {
+    gemm_4bit_inference_naive<half, 16>(m, n, k, A, B, absmax, datatype, out, lda, ldb, ldc, blocksize, stream);
+}
+
+void gemm_4bit_inference_naive_bf16(
+    int m, int n, int k, bnb_bfloat16* A, unsigned char* B, float* absmax, float* datatype, bnb_bfloat16* out, int lda,
+    int ldb, int ldc, int blocksize, cudaStream_t stream
+) {
+    gemm_4bit_inference_naive<bnb_bfloat16, 16>(m, n, k, A, B, absmax, datatype, out, lda, ldb, ldc, blocksize, stream);
+}
+
+void gemm_4bit_inference_naive_fp32(
+    int m, int n, int k, float* A, unsigned char* B, float* absmax, float* datatype, float* out, int lda, int ldb,
+    int ldc, int blocksize, cudaStream_t stream
+) {
+    gemm_4bit_inference_naive<float, 32>(m, n, k, A, B, absmax, datatype, out, lda, ldb, ldc, blocksize, stream);
+}
+
+#define MAKE_ELEMENTWISE_FUNC(fname, type_name, ctype, FUNC)                                                           \
+    void fname##_##type_name(ctype* A, ctype* B, ctype value, long n) { func<ctype, FUNC>(A, B, value, n); }
+
+MAKE_ELEMENTWISE_FUNC(fill, fp32, float, FILL)
+MAKE_ELEMENTWISE_FUNC(fill, uint8, unsigned char, FILL)
+MAKE_ELEMENTWISE_FUNC(arange, fp32, float, ARANGE)
+MAKE_ELEMENTWISE_FUNC(_mul, fp32, float, _MUL)
+
+#define MAKE_FUNC32(fname, oname, gtype, gbits)                                                                        \
+    void fname##32bit_grad_##gbits(                                                                                    \
+        gtype* g, gtype* p, float* state1, float* state2, float* unorm, float max_unorm, float param_norm,             \
+        const float beta1, const float beta2, const float beta3, const float alpha, const float eps,                   \
+        const float weight_decay, const int step, const float lr, float gnorm_scale, bool skip_zeros, const int n      \
+    ) {                                                                                                                \
+        optimizer32bit<gtype, oname>(                                                                                  \
+            g, p, state1, state2, unorm, max_unorm, param_norm, beta1, beta2, beta3, alpha, eps, weight_decay, step,   \
+            lr, gnorm_scale, skip_zeros, n                                                                             \
+        );                                                                                                             \
+    }
+
+MAKE_FUNC32(momentum, MOMENTUM, float, 32)
+MAKE_FUNC32(momentum, MOMENTUM, half, 16)
+MAKE_FUNC32(adam, ADAM, float, fp32)
+MAKE_FUNC32(adam, ADAM, half, fp16)
+MAKE_FUNC32(adam, ADAM, bnb_bfloat16, bf16)
+MAKE_FUNC32(rmsprop, RMSPROP, float, 32)
+MAKE_FUNC32(rmsprop, RMSPROP, half, 16)
+MAKE_FUNC32(lion, LION, float, fp32)
+MAKE_FUNC32(lion, LION, half, fp16)
+MAKE_FUNC32(lion, LION, bnb_bfloat16, bf16)
+MAKE_FUNC32(adagrad, ADAGRAD, float, 32)
+MAKE_FUNC32(adagrad, ADAGRAD, half, 16)
+MAKE_FUNC32(ademamix, ADEMAMIX, float, fp32)
+MAKE_FUNC32(ademamix, ADEMAMIX, half, fp16)
+MAKE_FUNC32(ademamix, ADEMAMIX, bnb_bfloat16, bf16)
+
+#define MAKE_BLOCKWISE8(fname, optim_name, gtype, gbits)                                                               \
+    void fname##_8bit_blockwise_grad_##gbits(                                                                          \
+        gtype* p, gtype* g, unsigned char* state1, unsigned char* state2, float beta1, float beta2, float beta3,       \
+        float alpha, float eps, int step, float lr, float* quantiles1, float* quantiles2, float* absmax1,              \
+        float* absmax2, float weight_decay, const float gnorm_scale, bool skip_zeros, int n                            \
+    ) {                                                                                                                \
+        optimizerStatic8bitBlockwise<gtype, optim_name>(                                                               \
+            p, g, state1, state2, beta1, beta2, beta3, alpha, eps, step, lr, quantiles1, quantiles2, absmax1, absmax2, \
+            weight_decay, gnorm_scale, skip_zeros, n                                                                   \
+        );                                                                                                             \
+    }
+
+MAKE_BLOCKWISE8(adam, ADAM, half, fp16)
+MAKE_BLOCKWISE8(adam, ADAM, bnb_bfloat16, bf16)
+MAKE_BLOCKWISE8(adam, ADAM, float, fp32)
+MAKE_BLOCKWISE8(momentum, MOMENTUM, half, fp16)
+MAKE_BLOCKWISE8(momentum, MOMENTUM, bnb_bfloat16, bf16)
+MAKE_BLOCKWISE8(momentum, MOMENTUM, float, fp32)
+MAKE_BLOCKWISE8(rmsprop, RMSPROP, half, fp16)
+MAKE_BLOCKWISE8(rmsprop, RMSPROP, bnb_bfloat16, bf16)
+MAKE_BLOCKWISE8(rmsprop, RMSPROP, float, fp32)
+MAKE_BLOCKWISE8(adagrad, ADAGRAD, half, fp16)
+MAKE_BLOCKWISE8(adagrad, ADAGRAD, bnb_bfloat16, bf16)
+MAKE_BLOCKWISE8(adagrad, ADAGRAD, float, fp32)
+MAKE_BLOCKWISE8(lion, LION, half, fp16)
+MAKE_BLOCKWISE8(lion, LION, bnb_bfloat16, bf16)
+MAKE_BLOCKWISE8(lion, LION, float, fp32)
+MAKE_BLOCKWISE8(ademamix, ADEMAMIX, half, fp16)
+MAKE_BLOCKWISE8(ademamix, ADEMAMIX, bnb_bfloat16, bf16)
+MAKE_BLOCKWISE8(ademamix, ADEMAMIX, float, fp32)
+
+void quantizeBlockwise_fp16(float* code, half* A, float* absmax, unsigned char* out, int blocksize, const int n) {
+    quantizeBlockwise<half, 0, General8bit>(code, A, absmax, out, nullptr, 0, blocksize, n);
+}
+
+void quantizeBlockwise_fp16_fp4(float* code, half* A, float* absmax, unsigned char* out, int blocksize, const int n) {
+    quantizeBlockwise<half, 0, FP4>(nullptr, A, absmax, out, nullptr, 0, blocksize, n);
+}
+
+void quantizeBlockwise_fp16_nf4(float* code, half* A, float* absmax, unsigned char* out, int blocksize, const int n) {
+    quantizeBlockwise<half, 0, NF4>(nullptr, A, absmax, out, nullptr, 0, blocksize, n);
+}
+
+void quantizeBlockwise_bf16(
+    float* code, bnb_bfloat16* A, float* absmax, unsigned char* out, int blocksize, const int n
+) {
+    quantizeBlockwise<bnb_bfloat16, 0, General8bit>(code, A, absmax, out, nullptr, 0, blocksize, n);
+}
+
+void quantizeBlockwise_bf16_fp4(
+    float* code, bnb_bfloat16* A, float* absmax, unsigned char* out, int blocksize, const int n
+) {
+    quantizeBlockwise<bnb_bfloat16, 0, FP4>(nullptr, A, absmax, out, nullptr, 0, blocksize, n);
+}
+
+void quantizeBlockwise_bf16_nf4(
+    float* code, bnb_bfloat16* A, float* absmax, unsigned char* out, int blocksize, const int n
+) {
+    quantizeBlockwise<bnb_bfloat16, 0, NF4>(nullptr, A, absmax, out, nullptr, 0, blocksize, n);
+}
+
+void quantizeBlockwise_fp32(float* code, float* A, float* absmax, unsigned char* out, int blocksize, const int n) {
+    quantizeBlockwise<float, 0, General8bit>(code, A, absmax, out, nullptr, 0, blocksize, n);
+}
+
+void quantizeBlockwise_fp32_fp4(float* code, float* A, float* absmax, unsigned char* out, int blocksize, const int n) {
+    quantizeBlockwise<float, 0, FP4>(nullptr, A, absmax, out, nullptr, 0, blocksize, n);
+}
+
+void quantizeBlockwise_fp32_nf4(float* code, float* A, float* absmax, unsigned char* out, int blocksize, const int n) {
+    quantizeBlockwise<float, 0, NF4>(nullptr, A, absmax, out, nullptr, 0, blocksize, n);
+}
+
+void dequantizeBlockwise_fp16(
+    float* code, unsigned char* A, float* absmax, half* out, int blocksize, const int n, cudaStream_t stream
+) {
+    dequantizeBlockwise<half, General8bit>(code, A, absmax, out, blocksize, n, stream);
+}
+
+void dequantizeBlockwise_fp16_fp4(
+    float* code, unsigned char* A, float* absmax, half* out, int blocksize, const int n, cudaStream_t stream
+) {
+    dequantizeBlockwise<half, FP4>(nullptr, A, absmax, out, blocksize, n, stream);
+}
+
+void dequantizeBlockwise_fp16_nf4(
+    float* code, unsigned char* A, float* absmax, half* out, int blocksize, const int n, cudaStream_t stream
+) {
+    dequantizeBlockwise<half, NF4>(nullptr, A, absmax, out, blocksize, n, stream);
+}
+
+void dequantizeBlockwise_fp32(
+    float* code, unsigned char* A, float* absmax, float* out, int blocksize, const int n, cudaStream_t stream
+) {
+    dequantizeBlockwise<float, General8bit>(code, A, absmax, out, blocksize, n, stream);
+}
+
+void dequantizeBlockwise_fp32_fp4(
+    float* code, unsigned char* A, float* absmax, float* out, int blocksize, const int n, cudaStream_t stream
+) {
+    dequantizeBlockwise<float, FP4>(nullptr, A, absmax, out, blocksize, n, stream);
+}
+
+void dequantizeBlockwise_fp32_nf4(
+    float* code, unsigned char* A, float* absmax, float* out, int blocksize, const int n, cudaStream_t stream
+) {
+    dequantizeBlockwise<float, NF4>(nullptr, A, absmax, out, blocksize, n, stream);
+}
+
+void dequantizeBlockwise_bf16(
+    float* code, unsigned char* A, float* absmax, bnb_bfloat16* out, int blocksize, const int n, cudaStream_t stream
+) {
+    dequantizeBlockwise<bnb_bfloat16, General8bit>(code, A, absmax, out, blocksize, n, stream);
+}
+
+void dequantizeBlockwise_bf16_fp4(
+    float* code, unsigned char* A, float* absmax, bnb_bfloat16* out, int blocksize, const int n, cudaStream_t stream
+) {
+    dequantizeBlockwise<bnb_bfloat16, FP4>(nullptr, A, absmax, out, blocksize, n, stream);
+}
+
+void dequantizeBlockwise_bf16_nf4(
+    float* code, unsigned char* A, float* absmax, bnb_bfloat16* out, int blocksize, const int n, cudaStream_t stream
+) {
+    dequantizeBlockwise<bnb_bfloat16, NF4>(nullptr, A, absmax, out, blocksize, n, stream);
+}
+
+int igemmlt_32(
+    cublasLtHandle_t ltHandle, int m, int n, int k, const int8_t* A, const int8_t* B, void* C, float* row_scale,
+    int lda, int ldb, int ldc, cudaStream_t stream
+) {
+    return igemmlt<32, 0>(ltHandle, m, n, k, A, B, C, row_scale, lda, ldb, ldc, stream);
+}
+
+int igemmlt_8(
+    cublasLtHandle_t ltHandle, int m, int n, int k, const int8_t* A, const int8_t* B, void* C, float* row_scale,
+    int lda, int ldb, int ldc, cudaStream_t stream
+) {
+    return igemmlt<8, 0>(ltHandle, m, n, k, A, B, C, row_scale, lda, ldb, ldc, stream);
+}
+
+int igemmlt_8_rowscale(
+    cublasLtHandle_t ltHandle, int m, int n, int k, const int8_t* A, const int8_t* B, void* C, float* row_scale,
+    int lda, int ldb, int ldc, cudaStream_t stream
+) {
+    return igemmlt<8, 1>(ltHandle, m, n, k, A, B, C, row_scale, lda, ldb, ldc, stream);
+}
+
+#endif
+
+#if BUILD_XPU
+
+void dequantizeBlockwise_fp16(
+    float* code, unsigned char* A, float* absmax, sycl::half* out, int blocksize, const int n, sycl::queue* stream
+) {
+    dequantizeBlockwise<sycl::half, General8bit>(code, A, absmax, out, blocksize, n, stream);
+}
+
+void dequantizeBlockwise_fp16_fp4(
+    float* code, unsigned char* A, float* absmax, sycl::half* out, int blocksize, const int n, sycl::queue* stream
+) {
+    dequantizeBlockwise<sycl::half, FP4>(nullptr, A, absmax, out, blocksize, n, stream);
+}
+
+void dequantizeBlockwise_fp16_nf4(
+    float* code, unsigned char* A, float* absmax, sycl::half* out, int blocksize, const int n, sycl::queue* stream
+) {
+    dequantizeBlockwise<sycl::half, NF4>(nullptr, A, absmax, out, blocksize, n, stream);
+}
+
+void dequantizeBlockwise_fp32(
+    float* code, unsigned char* A, float* absmax, float* out, int blocksize, const int n, sycl::queue* stream
+) {
+    dequantizeBlockwise<float, General8bit>(code, A, absmax, out, blocksize, n, stream);
+}
+
+void dequantizeBlockwise_fp32_fp4(
+    float* code, unsigned char* A, float* absmax, float* out, int blocksize, const int n, sycl::queue* stream
+) {
+    dequantizeBlockwise<float, FP4>(nullptr, A, absmax, out, blocksize, n, stream);
+}
+
+void dequantizeBlockwise_fp32_nf4(
+    float* code, unsigned char* A, float* absmax, float* out, int blocksize, const int n, sycl::queue* stream
+) {
+    dequantizeBlockwise<float, NF4>(nullptr, A, absmax, out, blocksize, n, stream);
+}
+
+void dequantizeBlockwise_bf16(
+    float* code, unsigned char* A, float* absmax, sycl::ext::oneapi::bfloat16* out, int blocksize, const int n,
+    sycl::queue* stream
+) {
+    dequantizeBlockwise<sycl::ext::oneapi::bfloat16, General8bit>(code, A, absmax, out, blocksize, n, stream);
+}
+
+void dequantizeBlockwise_bf16_fp4(
+    float* code, unsigned char* A, float* absmax, sycl::ext::oneapi::bfloat16* out, int blocksize, const int n,
+    sycl::queue* stream
+) {
+    dequantizeBlockwise<sycl::ext::oneapi::bfloat16, FP4>(nullptr, A, absmax, out, blocksize, n, stream);
+}
+
+void dequantizeBlockwise_bf16_nf4(
+    float* code, unsigned char* A, float* absmax, sycl::ext::oneapi::bfloat16* out, int blocksize, const int n,
+    sycl::queue* stream
+) {
+    dequantizeBlockwise<sycl::ext::oneapi::bfloat16, NF4>(nullptr, A, absmax, out, blocksize, n, stream);
+}
+
+void gemv_4bit_inference_fp16(
+    int m, int n, int k, sycl::half* A, unsigned char* B, float* absmax, float* datatype, sycl::half* out, int lda,
+    int ldb, int ldc, int blocksize, sycl::queue* stream
+) {
+    gemv_4bit_inference<sycl::half, 16>(m, n, k, A, B, absmax, datatype, out, lda, ldb, ldc, blocksize, stream);
+}
+
+void gemv_4bit_inference_bf16(
+    int m, int n, int k, sycl::ext::oneapi::bfloat16* A, unsigned char* B, float* absmax, float* datatype,
+    sycl::ext::oneapi::bfloat16* out, int lda, int ldb, int ldc, int blocksize, sycl::queue* stream
+) {
+    gemv_4bit_inference<sycl::ext::oneapi::bfloat16, 16>(
+        m, n, k, A, B, absmax, datatype, out, lda, ldb, ldc, blocksize, stream
+    );
+}
+
+void gemv_4bit_inference_fp32(
+    int m, int n, int k, float* A, unsigned char* B, float* absmax, float* datatype, float* out, int lda, int ldb,
+    int ldc, int blocksize, sycl::queue* stream
+) {
+    gemv_4bit_inference<float, 32>(m, n, k, A, B, absmax, datatype, out, lda, ldb, ldc, blocksize, stream);
+}
+
+#endif
+
+#if BUILD_XPU
+// Helper: get default SYCL queue for XPU paged memory operations.
+// SYCL USM (Unified Shared Memory) provides equivalent functionality to:
+//   - CUDA's cudaMallocManaged / Level Zero's zeMemAllocShared
+//   - CUDA's cudaMemPrefetchAsync / Level Zero's zeCommandListAppendMemoryPrefetch
+// Level Zero has no equivalent to cudaPeekAtLastError; each L0 call returns ze_result_t.
+// SYCL wraps L0 and uses exceptions for error reporting.
+static sycl::queue& xpu_default_queue() {
+    static sycl::queue q{sycl::gpu_selector_v, sycl::property::queue::in_order{}};
+    return q;
+}
+#endif
+
+extern "C" {
+#if BUILD_CUDA || BUILD_HIP
+
+void cdequantize_blockwise_fp16_fp4(
+    float* code, unsigned char* A, float* absmax, half* out, int blocksize, const int n, cudaStream_t stream
+) {
+    dequantizeBlockwise_fp16_fp4(code, A, absmax, out, blocksize, n, stream);
+}
+
+void cdequantize_blockwise_fp16(
+    float* code, unsigned char* A, float* absmax, half* out, int blocksize, const int n, cudaStream_t stream
+) {
+    dequantizeBlockwise_fp16(code, A, absmax, out, blocksize, n, stream);
+}
+
+void cdequantize_blockwise_fp16_nf4(
+    float* code, unsigned char* A, float* absmax, half* out, int blocksize, const int n, cudaStream_t stream
+) {
+    dequantizeBlockwise_fp16_nf4(code, A, absmax, out, blocksize, n, stream);
+}
+
+void cquantize_blockwise_fp16(float* code, half* A, float* absmax, unsigned char* out, int blocksize, const int n) {
+    quantizeBlockwise_fp16(code, A, absmax, out, blocksize, n);
+}
+
+void cquantize_blockwise_fp16_fp4(float* code, half* A, float* absmax, unsigned char* out, int blocksize, const int n) {
+    quantizeBlockwise_fp16_fp4(code, A, absmax, out, blocksize, n);
+}
+
+void cquantize_blockwise_fp16_nf4(float* code, half* A, float* absmax, unsigned char* out, int blocksize, const int n) {
+    quantizeBlockwise_fp16_nf4(code, A, absmax, out, blocksize, n);
+}
+
+void cquantize_blockwise_fp32(float* code, float* A, float* absmax, unsigned char* out, int blocksize, const int n) {
+    quantizeBlockwise_fp32(code, A, absmax, out, blocksize, n);
+}
+
+void cquantize_blockwise_fp32_fp4(
+    float* code, float* A, float* absmax, unsigned char* out, int blocksize, const int n
+) {
+    quantizeBlockwise_fp32_fp4(code, A, absmax, out, blocksize, n);
+}
+
+void cquantize_blockwise_fp32_nf4(
+    float* code, float* A, float* absmax, unsigned char* out, int blocksize, const int n
+) {
+    quantizeBlockwise_fp32_nf4(code, A, absmax, out, blocksize, n);
+}
+
+void cdequantize_blockwise_fp32(
+    float* code, unsigned char* A, float* absmax, float* out, int blocksize, const int n, cudaStream_t stream
+) {
+    dequantizeBlockwise_fp32(code, A, absmax, out, blocksize, n, stream);
+}
+
+void cdequantize_blockwise_fp32_fp4(
+    float* code, unsigned char* A, float* absmax, float* out, int blocksize, const int n, cudaStream_t stream
+) {
+    dequantizeBlockwise_fp32_fp4(code, A, absmax, out, blocksize, n, stream);
+}
+
+void cdequantize_blockwise_fp32_nf4(
+    float* code, unsigned char* A, float* absmax, float* out, int blocksize, const int n, cudaStream_t stream
+) {
+    dequantizeBlockwise_fp32_nf4(code, A, absmax, out, blocksize, n, stream);
+}
+
+void cquantize_blockwise_bf16(
+    float* code, bnb_bfloat16* A, float* absmax, unsigned char* out, int blocksize, const int n
+) {
+    quantizeBlockwise_bf16(code, A, absmax, out, blocksize, n);
+}
+
+void cquantize_blockwise_bf16_fp4(
+    float* code, bnb_bfloat16* A, float* absmax, unsigned char* out, int blocksize, const int n
+) {
+    quantizeBlockwise_bf16_fp4(code, A, absmax, out, blocksize, n);
+}
+
+void cquantize_blockwise_bf16_nf4(
+    float* code, bnb_bfloat16* A, float* absmax, unsigned char* out, int blocksize, const int n
+) {
+    quantizeBlockwise_bf16_nf4(code, A, absmax, out, blocksize, n);
+}
+
+void cdequantize_blockwise_bf16(
+    float* code, unsigned char* A, float* absmax, bnb_bfloat16* out, int blocksize, const int n, cudaStream_t stream
+) {
+    dequantizeBlockwise_bf16(code, A, absmax, out, blocksize, n, stream);
+}
+
+void cdequantize_blockwise_bf16_fp4(
+    float* code, unsigned char* A, float* absmax, bnb_bfloat16* out, int blocksize, const int n, cudaStream_t stream
+) {
+    dequantizeBlockwise_bf16_fp4(code, A, absmax, out, blocksize, n, stream);
+}
+
+void cdequantize_blockwise_bf16_nf4(
+    float* code, unsigned char* A, float* absmax, bnb_bfloat16* out, int blocksize, const int n, cudaStream_t stream
+) {
+    dequantizeBlockwise_bf16_nf4(code, A, absmax, out, blocksize, n, stream);
+}
+
+#define MAKE_CFUNC32(name, gtype, gbits)                                                                               \
+    void c##name##32bit_grad_##gbits(                                                                                  \
+        gtype* g, gtype* p, float* state1, float* state2, float* unorm, float max_unorm, float param_norm,             \
+        const float beta1, const float beta2, const float beta3, const float alpha, const float eps,                   \
+        const float weight_decay, const int step, const float lr, const float gnorm_scale, bool skip_zeros,            \
+        const int n                                                                                                    \
+    ) {                                                                                                                \
+        name##32bit_grad_##gbits(                                                                                      \
+            g, p, state1, state2, unorm, max_unorm, param_norm, beta1, beta2, beta3, alpha, eps, weight_decay, step,   \
+            lr, gnorm_scale, skip_zeros, n                                                                             \
+        );                                                                                                             \
+    }
+
+MAKE_CFUNC32(adam, float, fp32)
+MAKE_CFUNC32(adam, half, fp16)
+MAKE_CFUNC32(adam, bnb_bfloat16, bf16)
+MAKE_CFUNC32(momentum, float, 32)
+MAKE_CFUNC32(momentum, half, 16)
+MAKE_CFUNC32(rmsprop, float, 32)
+MAKE_CFUNC32(rmsprop, half, 16)
+MAKE_CFUNC32(lion, float, fp32)
+MAKE_CFUNC32(lion, half, fp16)
+MAKE_CFUNC32(lion, bnb_bfloat16, bf16)
+MAKE_CFUNC32(adagrad, float, 32)
+MAKE_CFUNC32(adagrad, half, 16)
+MAKE_CFUNC32(ademamix, float, fp32)
+MAKE_CFUNC32(ademamix, half, fp16)
+MAKE_CFUNC32(ademamix, bnb_bfloat16, bf16)
+
+#define MAKE_CBLOCKWISE8(fname, optim_name, gtype, gbits)                                                              \
+    void c##fname##_8bit_blockwise_grad_##gbits(                                                                       \
+        gtype* p, gtype* g, unsigned char* state1, unsigned char* state2, float beta1, float beta2, float beta3,       \
+        float alpha, float eps, int step, float lr, float* quantiles1, float* quantiles2, float* absmax1,              \
+        float* absmax2, float weight_decay, const float gnorm_scale, bool skip_zeros, int n                            \
+    ) {                                                                                                                \
+        fname##_8bit_blockwise_grad_##gbits(                                                                           \
+            p, g, state1, state2, beta1, beta2, beta3, alpha, eps, step, lr, quantiles1, quantiles2, absmax1, absmax2, \
+            weight_decay, gnorm_scale, skip_zeros, n                                                                   \
+        );                                                                                                             \
+    }
+
+MAKE_CBLOCKWISE8(adam, ADAM, half, fp16)
+MAKE_CBLOCKWISE8(adam, ADAM, float, fp32)
+MAKE_CBLOCKWISE8(adam, ADAM, bnb_bfloat16, bf16)
+MAKE_CBLOCKWISE8(momentum, MOMENTUM, half, fp16)
+MAKE_CBLOCKWISE8(momentum, MOMENTUM, float, fp32)
+MAKE_CBLOCKWISE8(momentum, MOMENTUM, bnb_bfloat16, bf16)
+MAKE_CBLOCKWISE8(rmsprop, RMSPROP, half, fp16)
+MAKE_CBLOCKWISE8(rmsprop, RMSPROP, float, fp32)
+MAKE_CBLOCKWISE8(rmsprop, RMSPROP, bnb_bfloat16, bf16)
+MAKE_CBLOCKWISE8(adagrad, ADAGRAD, half, fp16)
+MAKE_CBLOCKWISE8(adagrad, ADAGRAD, float, fp32)
+MAKE_CBLOCKWISE8(adagrad, ADAGRAD, bnb_bfloat16, bf16)
+MAKE_CBLOCKWISE8(lion, LION, half, fp16)
+MAKE_CBLOCKWISE8(lion, LION, float, fp32)
+MAKE_CBLOCKWISE8(lion, LION, bnb_bfloat16, bf16)
+MAKE_CBLOCKWISE8(ademamix, ADEMAMIX, half, fp16)
+MAKE_CBLOCKWISE8(ademamix, ADEMAMIX, float, fp32)
+MAKE_CBLOCKWISE8(ademamix, ADEMAMIX, bnb_bfloat16, bf16)
+
+void cigemm(
+    Context* context, bool transposeA, bool transposeB, int m, int n, int k, void* A, void* B, void* C, int lda,
+    int ldb, int ldc
+) {
+    gemmex(context, transposeA, transposeB, m, n, k, A, B, C, lda, ldb, ldc);
+}
+
+void cbatched_igemm(
+    Context* context, bool transposeA, bool transposeB, int m, int n, int k, void* A, void* B, void* C, int lda,
+    int ldb, int ldc, long strideA, long strideB, long strideC, int batchCount
+) {
+    strided_gemmex(
+        context, transposeA, transposeB, m, n, k, A, B, C, lda, ldb, ldc, strideA, strideB, strideC, batchCount
+    );
+}
+
+Context* get_context() { return new Context(); }
+
+int cigemmlt_32(
+    Context* context, int m, int n, int k, const int8_t* A, const int8_t* B, void* C, float* row_scale, int lda,
+    int ldb, int ldc, cudaStream_t stream
+) {
+    return igemmlt_32((cublasLtHandle_t)context->m_handle, m, n, k, A, B, C, row_scale, lda, ldb, ldc, stream);
+}
+
+int cigemmlt_8(
+    Context* context, int m, int n, int k, const int8_t* A, const int8_t* B, void* C, float* row_scale, int lda,
+    int ldb, int ldc, cudaStream_t stream
+) {
+    return igemmlt_8((cublasLtHandle_t)context->m_handle, m, n, k, A, B, C, row_scale, lda, ldb, ldc, stream);
+}
+
+int cigemmlt_8_rowscale(
+    Context* context, int m, int n, int k, const int8_t* A, const int8_t* B, void* C, float* row_scale, int lda,
+    int ldb, int ldc, cudaStream_t stream
+) {
+    return igemmlt_8_rowscale((cublasLtHandle_t)context->m_handle, m, n, k, A, B, C, row_scale, lda, ldb, ldc, stream);
+}
+
+void cdequant_mm_int32_fp16(
+    int* A, float* rowStats, float* colStats, half* out, half* bias, int numRows, int numCols, cudaStream_t stream
+) {
+    dequant_mm_int32_fp16(A, rowStats, colStats, out, bias, numRows, numCols, stream);
+}
+
+void cint8_vector_quant(
+    half* __restrict__ A, int8_t* out, float* rowStats, float threshold, int rows, int cols, cudaStream_t stream
+) {
+    int8VectorQuant(A, out, rowStats, threshold, rows, cols, stream);
+}
+
+void* cget_managed_ptr(size_t bytes) {
+    void* ptr;
+    CUDA_CHECK_RETURN(cudaMallocManaged(&ptr, bytes, cudaMemAttachHost));
+    CUDA_CHECK_RETURN(cudaPeekAtLastError());
+
+    return ptr;
+}
+
+void cprefetch(void* ptr, size_t bytes, int device) {
+
+    int hasPrefetch = 0;
+    CUDA_CHECK_RETURN(
+        cudaDeviceGetAttribute(&hasPrefetch, cudaDevAttrConcurrentManagedAccess, device)
+    ); // 40ns overhead
+    if (hasPrefetch == 0)
+        return;
+
+#if CUDART_VERSION >= 13000
+    cudaMemLocation loc{};
+    loc.type = cudaMemLocationTypeDevice;
+    loc.id = device;
+    CUDA_CHECK_RETURN(cudaMemPrefetchAsync(ptr, bytes, loc, 0u, 0));
+#else
+    CUDA_CHECK_RETURN(cudaMemPrefetchAsync(ptr, bytes, device, 0));
+#endif
+
+    CUDA_CHECK_RETURN(cudaPeekAtLastError());
+}
+
+#define CMAKE_ELEMENTWISE_FUNC(fname, type_name, ctype, FUNC)                                                          \
+    void c##fname##_##type_name(ctype* A, ctype* B, ctype value, long n) { fname##_##type_name(A, B, value, n); }
+
+CMAKE_ELEMENTWISE_FUNC(fill, fp32, float, FILL)
+CMAKE_ELEMENTWISE_FUNC(fill, uint8, unsigned char, FILL)
+CMAKE_ELEMENTWISE_FUNC(arange, fp32, float, ARANGE)
+CMAKE_ELEMENTWISE_FUNC(_mul, fp32, float, _MUL)
+
+void cgemm_4bit_inference_naive_fp16(
+    int m, int n, int k, half* A, unsigned char* B, float* absmax, float* datatype, half* out, int lda, int ldb,
+    int ldc, int blocksize, cudaStream_t stream
+) {
+    gemm_4bit_inference_naive_fp16(m, n, k, A, B, absmax, datatype, out, lda, ldb, ldc, blocksize, stream);
+}
+
+void cgemm_4bit_inference_naive_bf16(
+    int m, int n, int k, bnb_bfloat16* A, unsigned char* B, float* absmax, float* datatype, bnb_bfloat16* out, int lda,
+    int ldb, int ldc, int blocksize, cudaStream_t stream
+) {
+    gemm_4bit_inference_naive_bf16(m, n, k, A, B, absmax, datatype, out, lda, ldb, ldc, blocksize, stream);
+}
+
+void cgemm_4bit_inference_naive_fp32(
+    int m, int n, int k, float* A, unsigned char* B, float* absmax, float* datatype, float* out, int lda, int ldb,
+    int ldc, int blocksize, cudaStream_t stream
+) {
+    gemm_4bit_inference_naive_fp32(m, n, k, A, B, absmax, datatype, out, lda, ldb, ldc, blocksize, stream);
+}
+
+#endif
+
+#if BUILD_XPU
+
+void cdequantize_blockwise_fp16_fp4(
+    float* code, unsigned char* A, float* absmax, sycl::half* out, int blocksize, const int n, sycl::queue* stream
+) {
+    dequantizeBlockwise_fp16_fp4(code, A, absmax, out, blocksize, n, stream);
+}
+
+void cdequantize_blockwise_fp16(
+    float* code, unsigned char* A, float* absmax, sycl::half* out, int blocksize, const int n, sycl::queue* stream
+) {
+    dequantizeBlockwise_fp16(code, A, absmax, out, blocksize, n, stream);
+}
+
+void cdequantize_blockwise_fp16_nf4(
+    float* code, unsigned char* A, float* absmax, sycl::half* out, int blocksize, const int n, sycl::queue* stream
+) {
+    dequantizeBlockwise_fp16_nf4(code, A, absmax, out, blocksize, n, stream);
+}
+
+void cdequantize_blockwise_fp32(
+    float* code, unsigned char* A, float* absmax, float* out, int blocksize, const int n, sycl::queue* stream
+) {
+    dequantizeBlockwise_fp32(code, A, absmax, out, blocksize, n, stream);
+}
+
+void cdequantize_blockwise_fp32_fp4(
+    float* code, unsigned char* A, float* absmax, float* out, int blocksize, const int n, sycl::queue* stream
+) {
+    dequantizeBlockwise_fp32_fp4(code, A, absmax, out, blocksize, n, stream);
+}
+
+void cdequantize_blockwise_fp32_nf4(
+    float* code, unsigned char* A, float* absmax, float* out, int blocksize, const int n, sycl::queue* stream
+) {
+    dequantizeBlockwise_fp32_nf4(code, A, absmax, out, blocksize, n, stream);
+}
+
+void cdequantize_blockwise_bf16(
+    float* code, unsigned char* A, float* absmax, sycl::ext::oneapi::bfloat16* out, int blocksize, const int n,
+    sycl::queue* stream
+) {
+    dequantizeBlockwise_bf16(code, A, absmax, out, blocksize, n, stream);
+}
+
+void cdequantize_blockwise_bf16_fp4(
+    float* code, unsigned char* A, float* absmax, sycl::ext::oneapi::bfloat16* out, int blocksize, const int n,
+    sycl::queue* stream
+) {
+    dequantizeBlockwise_bf16_fp4(code, A, absmax, out, blocksize, n, stream);
+}
+
+void cdequantize_blockwise_bf16_nf4(
+    float* code, unsigned char* A, float* absmax, sycl::ext::oneapi::bfloat16* out, int blocksize, const int n,
+    sycl::queue* stream
+) {
+    dequantizeBlockwise_bf16_nf4(code, A, absmax, out, blocksize, n, stream);
+}
+
+void cgemv_4bit_inference_fp16(
+    int m, int n, int k, sycl::half* A, unsigned char* B, float* absmax, float* datatype, sycl::half* out, int lda,
+    int ldb, int ldc, int blocksize, sycl::queue* stream
+) {
+    gemv_4bit_inference_fp16(m, n, k, A, B, absmax, datatype, out, lda, ldb, ldc, blocksize, stream);
+}
+
+void cgemv_4bit_inference_bf16(
+    int m, int n, int k, sycl::ext::oneapi::bfloat16* A, unsigned char* B, float* absmax, float* datatype,
+    sycl::ext::oneapi::bfloat16* out, int lda, int ldb, int ldc, int blocksize, sycl::queue* stream
+) {
+    gemv_4bit_inference_bf16(m, n, k, A, B, absmax, datatype, out, lda, ldb, ldc, blocksize, stream);
+}
+
+void cgemv_4bit_inference_fp32(
+    int m, int n, int k, float* A, unsigned char* B, float* absmax, float* datatype, float* out, int lda, int ldb,
+    int ldc, int blocksize, sycl::queue* stream
+) {
+    gemv_4bit_inference_fp32(m, n, k, A, B, absmax, datatype, out, lda, ldb, ldc, blocksize, stream);
+}
+
+// XPU Paged Memory Support using SYCL USM (Unified Shared Memory)
+// Equivalent CUDA APIs -> SYCL/Level Zero APIs:
+//   cudaMallocManaged     -> sycl::malloc_shared / zeMemAllocShared
+//   cudaMemPrefetchAsync  -> sycl::queue::prefetch / zeCommandListAppendMemoryPrefetch
+//   cudaPeekAtLastError   -> N/A (SYCL uses exceptions; L0 returns ze_result_t per call)
+
+void* cget_managed_ptr(size_t bytes) {
+    try {
+        auto& q = xpu_default_queue();
+        void* ptr = sycl::malloc_shared(bytes, q);
+        if (ptr == nullptr) {
+            fprintf(stderr, "XPU Error: sycl::malloc_shared returned nullptr for %zu bytes\n", bytes);
+        }
+        return ptr;
+    } catch (const sycl::exception& e) {
+        fprintf(stderr, "XPU SYCL Error in cget_managed_ptr: %s\n", e.what());
+        return nullptr;
+    }
+}
+
+void cprefetch(void* ptr, size_t bytes, int device) {
+    // device == -1 means prefetch to host; for SYCL we skip in that case
+    // since SYCL prefetch targets the device associated with the queue.
+    if (device < 0)
+        return;
+    try {
+        auto& q = xpu_default_queue();
+        q.prefetch(ptr, bytes);
+    } catch (const sycl::exception& e) {
+        fprintf(stderr, "XPU Warning: sycl::queue::prefetch failed: %s\n", e.what());
+    }
+}
+
+void cfill_fp32(float* A, float* B, float value, long n) {
+    try {
+        auto& q = xpu_default_queue();
+        q.fill(A, value, static_cast<size_t>(n)).wait();
+    } catch (const sycl::exception& e) {
+        fprintf(stderr, "XPU Error in cfill_fp32: %s\n", e.what());
+    }
+}
+
+void cfill_uint8(unsigned char* A, unsigned char* B, unsigned char value, long n) {
+    // Use host-side memset instead of sycl::queue::fill<unsigned char>
+    // which segfaults on certain Intel GPU drivers (e.g. Max 1550).
+    // USM shared memory is host-accessible, so memset works directly.
+    memset(A, value, static_cast<size_t>(n));
+}
+
+#endif
+
+void cquantize_blockwise_cpu_fp32(
+    float* code, float* A, float* absmax, unsigned char* out, long long blocksize, long long n
+) {
+    quantize_cpu(code, A, absmax, out, blocksize, n);
+}
+
+void cquantize_blockwise_cpu_bf16(
+    float* code, bf16_t* A, float* absmax, unsigned char* out, long long blocksize, long long n
+) {
+    quantize_cpu_bf16(code, A, absmax, out, blocksize, n);
+}
+
+void cquantize_blockwise_cpu_fp16(
+    float* code, fp16_t* A, float* absmax, unsigned char* out, long long blocksize, long long n
+) {
+    quantize_cpu_fp16(code, A, absmax, out, blocksize, n);
+}
+
+void cdequantize_blockwise_cpu_fp32(
+    float* code, unsigned char* A, const float* absmax, float* out, long long blocksize, long long n
+) {
+    dequantizeBlockwise8bitCpu<float>(code, A, absmax, out, blocksize, n);
+}
+
+void cdequantize_blockwise_cpu_bf16(
+    float* code, unsigned char* A, const float* absmax, bf16_t* out, long long blocksize, long long n
+) {
+    dequantizeBlockwise8bitCpu<bf16_t>(code, A, absmax, out, blocksize, n);
+}
+
+void cdequantize_blockwise_cpu_fp16(
+    float* code, unsigned char* A, const float* absmax, fp16_t* out, long long blocksize, long long n
+) {
+    dequantizeBlockwise8bitCpu<fp16_t>(code, A, absmax, out, blocksize, n);
+}
+
+void cdequantize_blockwise_cpu_fp4_fp32(
+    unsigned char* A, const float* absmax, float* out, long long blocksize, long long m, long long n
+) {
+    dequantizeBlockwise4bitCpu<float, FP4>(A, absmax, out, blocksize, m, n);
+}
+
+void cdequantize_blockwise_cpu_fp4_bf16(
+    unsigned char* A, const float* absmax, bf16_t* out, long long blocksize, long long m, long long n
+) {
+    dequantizeBlockwise4bitCpu<bf16_t, FP4>(A, absmax, out, blocksize, m, n);
+}
+
+void cdequantize_blockwise_cpu_fp4_fp16(
+    unsigned char* A, const float* absmax, fp16_t* out, long long blocksize, long long m, long long n
+) {
+    dequantizeBlockwise4bitCpu<fp16_t, FP4>(A, absmax, out, blocksize, m, n);
+}
+
+void cdequantize_blockwise_cpu_nf4_fp32(
+    unsigned char* A, const float* absmax, float* out, long long blocksize, long long m, long long n
+) {
+    dequantizeBlockwise4bitCpu<float, NF4>(A, absmax, out, blocksize, m, n);
+}
+
+void cdequantize_blockwise_cpu_nf4_bf16(
+    unsigned char* A, const float* absmax, bf16_t* out, long long blocksize, long long m, long long n
+) {
+    dequantizeBlockwise4bitCpu<bf16_t, NF4>(A, absmax, out, blocksize, m, n);
+}
+
+void cdequantize_blockwise_cpu_nf4_fp16(
+    unsigned char* A, const float* absmax, fp16_t* out, long long blocksize, long long m, long long n
+) {
+    dequantizeBlockwise4bitCpu<fp16_t, NF4>(A, absmax, out, blocksize, m, n);
+}
+
+// 4-bit blockwise quantization (FP4=1 / NF4=2): CPU port of kQuantizeBlockwiseSmall
+void cquantize_blockwise_cpu_4bit_fp32(
+    float* A, float* absmax, unsigned char* out, long long blocksize, long long m, long long n, int data_type
+) {
+    quantize_4bit_cpu(A, absmax, out, blocksize, m, n, data_type);
+}
+
+void cquantize_blockwise_cpu_4bit_bf16(
+    bf16_t* A, float* absmax, unsigned char* out, long long blocksize, long long m, long long n, int data_type
+) {
+    quantize_4bit_cpu_bf16(A, absmax, out, blocksize, m, n, data_type);
+}
+
+void cquantize_blockwise_cpu_4bit_fp16(
+    fp16_t* A, float* absmax, unsigned char* out, long long blocksize, long long m, long long n, int data_type
+) {
+    quantize_4bit_cpu_fp16(A, absmax, out, blocksize, m, n, data_type);
+}
+
+// int8 vector quantization: CPU port of kInt8VectorQuant
+void cint8_vector_quant_cpu_fp32(
+    float* A, int8_t* out, float* rowStats, float threshold, long long rows, long long cols
+) {
+    int8_vector_quant_cpu(A, out, rowStats, threshold, rows, cols);
+}
+
+void cint8_vector_quant_cpu_bf16(
+    bf16_t* A, int8_t* out, float* rowStats, float threshold, long long rows, long long cols
+) {
+    int8_vector_quant_cpu_bf16(A, out, rowStats, threshold, rows, cols);
+}
+
+void cint8_vector_quant_cpu_fp16(
+    fp16_t* A, int8_t* out, float* rowStats, float threshold, long long rows, long long cols
+) {
+    int8_vector_quant_cpu_fp16(A, out, rowStats, threshold, rows, cols);
+}
+
+// fused 4-bit inference GEMV/GEMM (AVX2, kgemm_4bit_inference_naive port):
+// out[m, n] = sum_k A[m, k] * (quant_map[nib(B[n, k/2])] * absmax[n, k/blocksize])
+void cgemv_4bit_inference_cpu_fp32(
+    float* A, unsigned char* B, const float* absmax, float* out, long long M, long long N, long long K,
+    long long lda, long long ldb, long long ldc, long long blocksize, int data_type
+) {
+    gemv_4bit_inference_cpu_fp32(A, B, absmax, out, M, N, K, lda, ldb, ldc, blocksize, data_type);
+}
+
+void cgemv_4bit_inference_cpu_bf16(
+    bf16_t* A, unsigned char* B, const float* absmax, bf16_t* out, long long M, long long N, long long K,
+    long long lda, long long ldb, long long ldc, long long blocksize, int data_type
+) {
+    gemv_4bit_inference_cpu_bf16(A, B, absmax, out, M, N, K, lda, ldb, ldc, blocksize, data_type);
+}
+
+void cgemv_4bit_inference_cpu_fp16(
+    fp16_t* A, unsigned char* B, const float* absmax, fp16_t* out, long long M, long long N, long long K,
+    long long lda, long long ldb, long long ldc, long long blocksize, int data_type
+) {
+    gemv_4bit_inference_cpu_fp16(A, B, absmax, out, M, N, K, lda, ldb, ldc, blocksize, data_type);
+}
+
+// fused 8-bit blockwise-dequant GEMM: out = A @ dequant8(B)（不落地 fp32 权重）
+void cgemm_8bit_inference_cpu_fp32(
+    const float* A, const unsigned char* B, const float* absmax, float* out, long long M, long long N,
+    long long K, long long lda, long long ldb, long long ldc, long long blocksize
+) {
+    gemm_8bit_inference_cpu_fp32(A, B, absmax, out, M, N, K, lda, ldb, ldc, blocksize);
+}
+
+// fused blockwise 8-bit optimizer step (kOptimizerStatic8bit{1,2}StateBlockwise port).
+// optimizer_id: 0=adam 1=momentum 2=lion 3=rmsprop 4=adagrad 5=ademamix
+void coptimizer_update_8bit_blockwise_cpu(
+    int optimizer_id, void* g, void* p, unsigned char* state1, unsigned char* state2, float beta1, float beta2,
+    float beta3, float alpha, float eps, int step, float lr, const float* qmap1, const float* qmap2,
+    float* absmax1, float* absmax2, float weight_decay, float gnorm_scale, int skip_zeros, long long n, int dtype
+) {
+    optimizer_update_8bit_blockwise_cpu(
+        optimizer_id, g, p, state1, state2, beta1, beta2, beta3, alpha, eps, step, lr, qmap1, qmap2, absmax1,
+        absmax2, weight_decay, gnorm_scale, skip_zeros != 0, n, dtype
+    );
+}
+
+#if defined(__AVX512F__) && defined(__AVX512BF16__)
+void gemv_4bit_inference_cpu_fp4_bf16(
+    int64_t M, int64_t N, int64_t K, const bf16_t* __restrict__ x, const unsigned char* __restrict__ w,
+    const bf16_t* __restrict__ absmax, bf16_t* __restrict__ out, int64_t blocksize, int64_t x_stride, int64_t out_stride
+) {
+    gemv_4bit_inference<bf16_t, FP4>(M, N, K, x, w, absmax, out, blocksize, x_stride, out_stride);
+}
+
+void gemv_4bit_inference_cpu_nf4_bf16(
+    int64_t M, int64_t N, int64_t K, const bf16_t* __restrict__ x, const unsigned char* __restrict__ w,
+    const bf16_t* __restrict__ absmax, bf16_t* __restrict__ out, int64_t blocksize, int64_t x_stride, int64_t out_stride
+) {
+    gemv_4bit_inference<bf16_t, NF4>(M, N, K, x, w, absmax, out, blocksize, x_stride, out_stride);
+}
+#endif
+#if defined(__AVX512F__)
+bool has_avx512f_cpu() { return has_avx512f(); }
+#if defined(__AVX512BF16__)
+bool has_avx512bf16_cpu() { return has_avx512bf16(); }
+#endif
+#endif
+}

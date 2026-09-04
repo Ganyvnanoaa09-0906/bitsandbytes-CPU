@@ -1,0 +1,63 @@
+================================================================================
+bitsandbytes CPU 后端 — Termux(Android/ARM) 验证流程
+================================================================================
+【目标】在 Android 的 Termux 里编译 libbitsandbytes_cpu.so（ARM64/NEON）+ C 层自检，
+       验证 ARM 兼容（开源跨平台 Termux 收尾）。Termux 无 torch，只跑 C 自检。
+
+【前置】手机装好 Termux（F-Droid 或 GitHub releases，别用 Play 版——太旧）。
+       手机需能联网（git clone）或有文件传输（拷贝仓库）。
+
+--------------------------------------------------------------------------------
+步骤① 装依赖（Termux 终端）
+--------------------------------------------------------------------------------
+    pkg update && pkg install -y clang libomp make git python
+
+--------------------------------------------------------------------------------
+步骤② 拿仓库源码（二选一）
+--------------------------------------------------------------------------------
+    # 方式A：git clone（需手机联网）
+    git clone <你的bnb仓库地址> bnb      # 例 git clone https://github.com/you/bnb.git bnb
+
+    # 方式B：从 Windows 拷贝（把 R5 的 那很有乐子了~\bitsandbytes 文件夹传手机）
+    #   cp -r /sdcard/<传输路径>/bitsandbytes ~/bnb
+
+    cd ~/bnb
+
+--------------------------------------------------------------------------------
+步骤③ 编译 ARM .so + C 层自检
+--------------------------------------------------------------------------------
+    bash build_termux.sh
+
+    预期输出：
+      clang: ...
+      -> bitsandbytes/libbitsandbytes_cpu.so (...)
+      导出 CPU 符号检查: ...（cquantize/cdequantize/cgemm/...）
+      编译并运行无 torch 的 C 层自检：
+        === bitsandbytes CPU 内核独立自检（无 torch）===
+        [PASS] ... (5项全 PASS)
+      DONE. 若 C 层自检 PASSED 则 Termux 编译成功。
+
+    【关键】：这次 build_termux.sh 已改为【编译并运行 selftest_cpu（C 自检）】，
+     不再需要 torch（之前那步 python -m gdn_cpu 会因无 torch 失败）。
+
+--------------------------------------------------------------------------------
+步骤④ 若想看全量（可选，需装 torch——Termux 一般装不上 torch）
+--------------------------------------------------------------------------------
+    说明：Termux 的 torch 支持很受限（通常装不了官方 CPU wheel）。所以
+     Termux 验证就到【C 层自检】为止（验证内核数值正确性，非训练）。
+    若实在要 torch：pip install torch --extra-index-url <Termux torch 镜像>
+    （见 README，大概率失败/很慢，不推荐）
+
+--------------------------------------------------------------------------------
+【预期结果 / 验收】
+  · build_termux.sh 最后 "DONE. 若 C 层自检 PASSED 则 Termux 编译成功"
+  · selftest_cpu 5 项全 PASS（quantize/gemm_8bit/optimizer/gemv_4bit/gdn_fwd）
+  → Termux(ARM64/NEON) 兼容验证通过，开源跨平台 Termux 收尾
+
+--------------------------------------------------------------------------------
+【注意】
+  · Termux 无 torch、无 AVX2，走 NEON + scalar——理论能跑（非训练，仅内核自检）。
+  · 之前 build_termux.sh 验证步用 "python -m bitsandbytes.gdn_cpu"（需 torch）在
+    Termux 会失败，已改为 C 自检（779ad38）。
+  · 若手机空间不足：Termux 装 clang/libomp 约占几百 MB；仓库 ~1.5MB（不含模型）。
+================================================================================

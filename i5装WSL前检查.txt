@@ -1,0 +1,52 @@
+================================================================================
+i5 装 WSL 前 —— 关键状态检查（务必先跑，避免像 R5 那样卡死 4 小时）
+================================================================================
+【为什么必须先检查】R5 的 WSL 卡死根因 = WinSxS 组件存储被一个「Hyper-V/WSL
+  组件卸载事务」锁死（pending.xml 里有 Uninstall），导致 wsl --install / DISM
+  全部卡住。如果 i5 也有这个锁死，装 WSL 会重蹈覆辙。所以装之前先查。
+
+【在 i5 上，用【管理员 PowerShell】(右键管理员) 跑以下检查】
+
+----------------------------------------------------------------------------
+检查 1 —— CPU 虚拟化(BIOS) 开启了吗？
+----------------------------------------------------------------------------
+   Get-CimInstance Win32_Processor | Select-Object VirtualizationFirmwareEnabled
+   → 应为 True。False = BIOS 没开 VT-x，需进 BIOS 开启。
+
+----------------------------------------------------------------------------
+检查 2 —— Windows「虚拟机平台」功能状态
+----------------------------------------------------------------------------
+   dism /online /get-featureinfo /featurename:VirtualMachinePlatform
+   → State 应为 Disabled(可启用) 或 Enabled。若卡住/需要管理员，用：
+   Get-WindowsOptionalFeature -Online -FeatureName "VirtualMachinePlatform"
+   （管理员下）查看 State。
+
+----------------------------------------------------------------------------
+检查 3 —— 是否有 WinSxS 锁死（R5 的坑！最关键）
+----------------------------------------------------------------------------
+   看 pending.xml 是否存在且非空（存在=有挂起组件操作，可能锁死 DISM）：
+   Get-Item C:\Windows\WinSxS\pending.xml | Select-Object Length, LastWriteTime
+   → 若 Length > 0 且很久没变，说明有挂起的组件操作（R5 就是这问题）。
+   还要看它内容是不是 Uninstall Hyper-V/WSL（那最麻烦）：
+   Select-String -Path C:\Windows\WinSxS\pending.xml -Pattern "Uninstall" | Select-Object -First 3
+
+----------------------------------------------------------------------------
+检查 4 —— 试一条不卡的命令，确认 DISM 能响应
+----------------------------------------------------------------------------
+   dism /online /get-featureinfo /featurename:VirtualMachinePlatform
+   → 如果这个【立刻返回】状态（而不是卡住），说明 i5 的 DISM 正常，可继续装 WSL。
+   → 如果【卡住不动】(像 R5)，说明 i5 也可能锁死，先别装 WSL。
+
+----------------------------------------------------------------------------
+【结论判断】
+  如果 检查1=True，检查3 的 pending.xml 为空/不存在，检查4 立刻返回
+  → i5 状态健康，可以直接：
+       wsl --install --no-distribution
+       wsl --install -d Ubuntu
+  如果 检查3 有非空 pending.xml 或 检查4 卡住
+  → i5 也有 WinSxS 问题，先别装 WSL，发我结果再定。
+
+【注意】千万不要手动删 C:\Windows\WinSxS\pending.xml（会导致系统不稳定）。
+  如果 i5 也有 WinSxS 锁死，得用别的环境(原生 Linux / Docker / WSL1-若可用)
+  验证 Linux 构建。
+================================================================================

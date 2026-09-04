@@ -1,0 +1,175 @@
+[build-system]
+requires = ["scikit-build-core", "setuptools >= 77.0.3", "trove-classifiers>=2025.8.6.13"]
+build-backend = "scikit_build_core.setuptools.build_meta"
+
+[project]
+name = "bitsandbytes"
+dynamic = ["version"]
+description = "k-bit optimizers and matrix multiplication routines."
+authors = [{name="Tim Dettmers", email="dettmers@cs.washington.edu"}]
+maintainers = [
+    {name="Titus von Köller", email="titus@huggingface.co"},
+    {name="Matthew Douglas", email="matthew.douglas@huggingface.co"}
+]
+requires-python = ">=3.10"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+    "gpu",
+    "optimizers",
+    "optimization",
+    "8-bit",
+    "quantization",
+    "compression"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: GPU :: NVIDIA CUDA :: 11.8",
+    "Environment :: GPU :: NVIDIA CUDA :: 12",
+    "Environment :: GPU :: NVIDIA CUDA :: 13",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence"
+]
+dependencies = [
+    "torch>=2.4,<3",
+    "numpy>=1.17",
+    "packaging>=20.9",
+]
+
+[project.urls]
+homepage = "https://github.com/bitsandbytes-foundation/bitsandbytes"
+changelog = "https://github.com/bitsandbytes-foundation/bitsandbytes/blob/main/CHANGELOG.md"
+docs = "https://huggingface.co/docs/bitsandbytes/main"
+issues = "https://github.com/bitsandbytes-foundation/bitsandbytes/issues"
+
+[project.optional-dependencies]
+benchmark = ["pandas", "matplotlib"]
+docs = ["hf-doc-builder==0.5.0"]
+dev = [
+    "bitsandbytes[test]",
+    "build>=1.0.0,<2",
+    "ruff~=0.14.3",
+    "pre-commit>=3.5.0,<4",
+    "wheel>=0.42,<1"
+]
+test = [
+    "einops~=0.8.0",
+    "lion-pytorch==0.2.3",
+    "pytest~=8.3",
+    "scipy>=1.11.4,<2",
+    "transformers>=4.30.1,<5"
+]
+
+[tool.setuptools]
+package-data = { "*" = ["libbitsandbytes*.*", "py.typed"] }
+
+[tool.setuptools.packages.find]
+include = ["bitsandbytes*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "bitsandbytes.__version__"}
+
+[tool.coverage.report]
+exclude_also = [
+    # exclude backward() functions from coverage, as they are invoked from C++
+    'def backward\(ctx'
+]
+
+[tool.pytest.ini_options]
+addopts = "-rP -m 'not slow and not benchmark and not deprecated'"
+#    ; --cov=bitsandbytes
+#    ; # contexts: record which test ran which line; can be seen in html coverage report
+#    ; --cov-context=test
+#    ; --cov-report html
+log_cli = true
+log_cli_level = "INFO"
+log_file = "logs/pytest.log"
+markers = [
+    "benchmark: mark test as a benchmark",
+    "deprecated: mark test as covering a deprecated feature",
+    "slow: mark test as slow",
+]
+testpaths = ["tests"]
+
+[tool.ruff]
+src = [
+    "bitsandbytes",
+    "tests",
+    "benchmarking"
+]
+target-version = "py310"
+line-length = 119
+
+[tool.ruff.lint]
+select = [
+    "B",    # bugbear: security warnings
+    "E",    # pycodestyle (error)
+    "W",    # pycodestyle (warning)
+    "F",    # pyflakes
+    "I",    # isort
+    "ISC",  # implicit string concatenation
+    "UP",   # alert you when better syntax is available in your python version
+    "RUF",  # the ruff developer's own rules
+]
+ignore = [
+    "B007",  # Loop control variable not used within the loop body (TODO: enable)
+    "B028",  # Warning without stacklevel (TODO: enable)
+    "B905",  # zip without explicit `strict=` kwarg
+    "E501",  # Suppress line-too-long warnings: trust yapf's judgement on this one.
+    "E701",  # Multiple statements on one line (TODO: enable)
+    "E712",  # Allow using if x == False, as it's not always equivalent to if x.
+    "E731",  # Do not use lambda
+    "RUF012",# Mutable class attribute annotations
+    "RUF034",# Useless if-else (TODO: enable)
+    "UP045", # Use `X | None` instead of `Optional[X]`
+]
+
+[tool.ruff.lint.extend-per-file-ignores]
+"**/__init__.py" = ["F401"]  # allow unused imports in __init__.py
+"{benchmarking,tests}/**/*.py" = [
+    "B007",
+    "B011",
+    "B023",
+    "E701",
+    "E731",
+    "F841",
+    "UP030",
+]
+"bitsandbytes/**/triton/**/*.py" = [
+    "I001",  # import order
+]
+"bitsandbytes/backends/utils.py" = [
+    "I001",  # import order
+]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+detect-same-package = true
+force-sort-within-sections = true
+known-first-party = ["bitsandbytes"]
+
+[[tool.mypy.overrides]]
+module = "triton.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "scipy.stats"
+ignore_missing_imports = true
+
+[tool.scikit-build]
+cmake.build-type = "Release"
+cmake.build-args = ["--config", "Release"]
+wheel.cmake = false
+editable.mode = "inplace"

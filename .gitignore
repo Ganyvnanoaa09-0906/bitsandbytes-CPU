@@ -1,0 +1,70 @@
+# ============================================================
+# bitsandbytes-CPU — .gitignore
+# 只提交源码/文档；编译产物、缓存、虚拟环境、模型、数据一律不入库。
+# ============================================================
+
+# ---- 编译产物 / 中间文件 ----
+*.obj
+*.lib
+*.exp
+*.dll
+*.so
+*.o
+*.a
+*.pyc
+*.pyo
+__pycache__/
+*.egg-info/
+
+# ---- 构建产物 ----
+build/
+build_linux/
+build-dbg/
+dist/
+dist_windows/
+dist_linux/
+build_manual/build.log
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# ---- 灾难/发布工具编译产物(源码保留,exe 不提交) ----
+tools/*.exe
+tools/*.exe.manifest
+selftest_cpu
+
+# ---- 虚拟环境 / 缓存 / 训练产物 ----
+.venv/
+.venv_dml/
+venv/
+env/
+env.bak/
+.flash_cache/
+cache_latents/
+output/
+rloo_out/
+.prebuilt/
+*.zip
+*.tar.gz
+*.img
+*.bin
+
+# ---- 模型 / 数据(私有,不开源) ----
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+model/
+models/
+textmodel/
+sujvji/
+data/
+*.jsonl
+*.parquet
+
+# ---- 其它 ----
+.idea/
+.vscode/
+*.swp
+node_modules/
