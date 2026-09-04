@@ -1,0 +1,47 @@
+name: build-linux-release
+
+# 在 GitHub 的 ubuntu runner 上编译 Linux 预编译包（不需要本地 WSL / Linux）。
+# push 到 main/master 时产出 artifact；打 tag（如 v1.0.0）时额外上传到 GitHub Release。
+#
+# 用途：给用户一个「解压即用」的 Linux 分发包（libbitsandbytes_cpu.so + 工具 + 双语文档）。
+# 产物：dist_linux/bitsandbytes-cpu-linux_<ver>.tar.gz
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain (g++/openmp + python)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++ libomp-dev python3 python3-pip
+
+      - name: Build Linux prebuilt package
+        run: |
+          cd bitsandbytes
+          bash build_linux.sh            # 编译 libbitsandbytes_cpu.so（x86_64 AVX2）
+          cd ..
+          bash bitsandbytes/build_release_linux.sh --out dist_linux
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitsandbytes-cpu-linux
+          path: dist_linux/*.tar.gz
+          if-no-files-found: warn
+
+      - name: Upload to GitHub Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist_linux/*.tar.gz
+          fail_on_unmatched_files: true
