@@ -35,16 +35,20 @@ jobs:
           cmd /c "call `"$($vcvars.FullName)`" && cd /d bitsandbytes && build_manual\build_manual.bat amd"
           $batExit = $LASTEXITCODE
 
-          # 核心判定：只要 DLL 编译成功就算构建通过（灾难工具是可选、非致命——它们
-          # 编译失败不影响 CPU 内核预编译包的价值，且 build_manual.bat 已容错）。
-          $dll = "bitsandbytes\libbitsandbytes_cpu.dll"
-          if (-not (Test-Path $dll)) {
+          # 核心判定：只要 DLL 编译成功就算构建通过（灾难工具是可选、非致命）。
+          # 用递归定位 DLL（build_manual.bat 的目录定位在不同环境下可能不同；[2/2]
+          # 已确认生成，这里找到它即可）。
+          $dll = Get-ChildItem -Path . -Recurse -Filter "libbitsandbytes_cpu.dll" -ErrorAction SilentlyContinue |
+                 Where-Object { $_.FullName -match "bitsandbytes[\\/]bitsandbytes[\\/]libbitsandbytes_cpu.dll" -or $_.Name -eq "libbitsandbytes_cpu.dll" } |
+                 Select-Object -First 1
+          if (-not $dll) {
             Write-Host "build_manual.bat 未生成 DLL（退出码=$batExit）；尝试直接用 cl 编译核心 DLL ..."
             cmd /c "call `"$($vcvars.FullName)`" && cd /d bitsandbytes && cl /nologo /O2 /Ob2 /arch:AVX2 /fp:fast /openmp:experimental /GL /Qpar /favor:AMD64 /std:c++17 /EHsc /utf-8 /DNOMINMAX /DNDEBUG /DWIN32 /D_WINDOWS /MT /I csrc /LD csrc\cpu_ops.cpp csrc\cpu_gdn.cpp csrc\pythonInterface.cpp /Fe:bitsandbytes\libbitsandbytes_cpu.dll /link /LTCG /DEF:build_manual\export.def"
-            if (-not (Test-Path $dll)) { throw "核心 DLL 仍未能生成（cl 直编退出码=$LASTEXITCODE）；无法打包 CPU 预编译包。" }
+            $dll = Get-ChildItem -Path . -Recurse -Filter "libbitsandbytes_cpu.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $dll) { throw "核心 DLL 仍未能生成（cl 直编退出码=$LASTEXITCODE）；无法打包 CPU 预编译包。" }
             Write-Host "[OK] 核心 DLL 由 cl 直编生成"
           } else {
-            Write-Host "[OK] 核心 DLL 生成：$dll  (build_manual.bat 退出码=$batExit；工具可容错)"
+            Write-Host "[OK] 核心 DLL 生成：$($dll.FullName)  (build_manual.bat 退出码=$batExit；工具可容错)"
           }
 
       - name: Run Windows release packager
