@@ -36,12 +36,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bitsandbytes-cpu-linux
-          path: dist_linux/*.tar.gz
+          path: bitsandbytes/dist_linux/*.tar.gz
           if-no-files-found: warn
 
       - name: Upload to GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist_linux/*.tar.gz
+          files: bitsandbytes/dist_linux/*.tar.gz
           fail_on_unmatched_files: true
