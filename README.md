@@ -31,8 +31,8 @@ This repo is the whole toolbox (`那很有乐子了~`), which contains:
   - `peft_backends.py` / `diffusion_backends.py` — method dispatch
   - `disk_balancer.py` / `gpu_scheduler.py` / `quant_lora.py` / `sd_quant.py` / `efst.py`
   - `bench_*` / `verify_*` / `test_*` — benchmarks, verification, smoke tests
-- **Docs** — `使用指南.md`, `开发进度.txt` (dev log), plus `bitsandbytes/docs_cpu/`
-  bilingual (zh+en) technical guide / quickstart / tech report / disaster recovery.
+- **Docs** — `使用指南.md` (usage guide), plus `bitsandbytes/docs_cpu/` bilingual
+  (zh+en) technical guide / quickstart / tech report / disaster recovery.
 
 > **Note**: models / datasets / caches are **private** and NOT included. Repo contains
 > only source + docs; compiled artifacts (`.dll` / `.so` / `.exe`) are git-ignored and
@@ -57,7 +57,7 @@ python train_diffusion.py --method lora --model bk-sdm-tiny --data <image dir> -
 ```
 
 See `bitsandbytes/docs_cpu/` for the full technical guide, quickstart, and tech report
-(bilingual), and `使用指南.md` / `开发进度.txt` for the toolbox usage and dev log.
+(bilingual), and `使用指南.md` for the toolbox usage guide.
 
 ## Requirements
 

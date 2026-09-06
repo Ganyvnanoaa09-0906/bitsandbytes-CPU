@@ -208,7 +208,8 @@ extensions make pure-CPU LoRA / quantization / diffusion training practical.
 > - `TECHNICAL_GUIDE.md` — **技术文档**：改了什么、每个内核的架构与细节（面向技术人员）
 > - `QUICKSTART.md` — **快速入门手册**：命令、用途与参数（面向首次使用者）
 > - `TECH_REPORT.md` — **技术报告**：完整方法论、实验数据与结论（含负面结论）
-> - 🌐 **English**: `TECHNICAL_GUIDE_EN.md` / `QUICKSTART_EN.md` / `TECH_REPORT_EN.md`
+> - 灾难恢复指南已并入 `QUICKSTART.md` §9（英文版见该文件附录）。
+> - 🌐 **English**: 英文版已合并至上述中文文档的「附录：English Reference」中（以中文为准）；灾难恢复指南已并入 `QUICKSTART.md` §9
 >
 > 🌐 **English README**: see [`README_EN.md`](README_EN.md).
 >

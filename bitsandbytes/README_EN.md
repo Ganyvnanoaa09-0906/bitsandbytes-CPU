@@ -30,9 +30,10 @@ LLMs and diffusion models.
 | **iGPU (DirectML) scheduler** | `gpu_scheduler.py` (`IgpuExecutor`, `train.py --igpu`) | Experimental: frozen weights resident on the DirectML iGPU, forward/backward on-device, **one sync per step**; **off by default** — measured **+30~35%** for GEMM-dense seq≤256 training, **negative** at long sequences (driver limits) |
 
 > **Docs** (`docs_cpu/`):
-> - [`TECHNICAL_GUIDE_EN.md`](docs_cpu/TECHNICAL_GUIDE_EN.md) — what was modified + per-kernel architecture (engineer-facing)
-> - [`QUICKSTART_EN.md`](docs_cpu/QUICKSTART_EN.md) — beginner manual: commands, parameters, copy-and-runnable
-> - [`TECH_REPORT_EN.md`](docs_cpu/TECH_REPORT_EN.md) — methodology, measured data, conclusions (incl. negative findings)
+> - [`TECHNICAL_GUIDE.md`](docs_cpu/TECHNICAL_GUIDE.md) — what was modified + per-kernel architecture (engineer-facing)
+> - [`QUICKSTART.md`](docs_cpu/QUICKSTART.md) — beginner manual: commands, parameters, copy-and-runnable
+> - [`TECH_REPORT.md`](docs_cpu/TECH_REPORT.md) — methodology, measured data, conclusions (incl. negative findings)
+> - The docs are merged Chinese-primary files; each contains an **English Reference appendix** (Chinese is authoritative). Disaster recovery is merged into `QUICKSTART.md` §9.
 
 > **About disk_balancer**: it can help keep training running when memory is tight, but it
 > **does not replace Windows virtual memory**. During training we still **recommend keeping
@@ -93,7 +94,7 @@ On an **AVX2-only machine** (e.g. AMD Ryzen 5 4500U, 16 GB — measured):
 | SD image LoRA (bk-sdm-small, 256px) | ~2.1 s/step, peak ~3.2 GB |
 | KTO alignment (1.7B nf4, batch 2) | ~10 s/step (max_len 64) |
 
-**Hard rules on this hardware** (see `docs_cpu/TECH_REPORT_EN.md`):
+**Hard rules on this hardware** (see `docs_cpu/TECH_REPORT.md`):
 - **Use fp32** — bf16 GEMM is software-emulated on AVX2 and >90 s per matmul (effectively hangs).
 - **Don't offload base weights to lower precision for training** — 8-bit/bf16 storage + forward
   conversion is **10–29× slower** (measured). Optimize via activation size + 8-bit optimizer
@@ -104,9 +105,9 @@ On an **AVX2-only machine** (e.g. AMD Ryzen 5 4500U, 16 GB — measured):
 ## 📄 Documentation
 
 Detailed docs live in `docs_cpu/`:
-- [TECHNICAL_GUIDE_EN.md](docs_cpu/TECHNICAL_GUIDE_EN.md) — each kernel's design & data
-- [QUICKSTART_EN.md](docs_cpu/QUICKSTART_EN.md) — beginner-friendly walkthrough
-- [TECH_REPORT_EN.md](docs_cpu/TECH_REPORT_EN.md) — full measured results, incl. negative findings
+- [TECHNICAL_GUIDE.md](docs_cpu/TECHNICAL_GUIDE.md) — each kernel's design & data
+- [QUICKSTART.md](docs_cpu/QUICKSTART.md) — beginner-friendly walkthrough
+- [TECH_REPORT.md](docs_cpu/TECH_REPORT.md) — full measured results, incl. negative findings
 
 ---
 
