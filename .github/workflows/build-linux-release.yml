@@ -13,6 +13,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write    # 打 tag 时上传预编译包到 GitHub Release 需要这个权限
+
 jobs:
   build-linux:
     runs-on: ubuntu-latest
