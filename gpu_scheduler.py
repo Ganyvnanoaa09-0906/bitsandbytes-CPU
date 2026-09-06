@@ -408,7 +408,19 @@ class IgpuExecutor:
             self.ok = True
             return "OK"
         except Exception as e:
-            self.reason = f"迁移到核显失败: {type(e).__name__}: {e}"
+            # 迁移中途失败（如大模型搬运 OOM）：model.to() 可能已把一部分参数搬到核显，
+            # 若只设 reason 就返回，调用方拿到的模型是半 CPU 半核显的异构设备，后续纯
+            # CPU 前向会崩。逐参数检查并把非 CPU 的搬回 CPU，确保回退后模型是纯 CPU。
+            try:
+                for p in self.model.parameters():
+                    if p.device.type != "cpu":
+                        p.data = p.data.cpu()
+                # 若还有在核显上的可训练镜像/梯度，一并清理
+                self.cpu_mirror = []
+                self.trainable = []
+            except Exception as rollback_e:
+                print(f"[gpu_scheduler] 迁移失败回滚时又出错: {rollback_e}", flush=True)
+            self.reason = f"迁移到核显失败: {type(e).__name__}: {e}（已回滚到纯 CPU）"
             return self.reason
 
     def grad_to_cpu(self):

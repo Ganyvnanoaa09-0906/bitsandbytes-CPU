@@ -189,7 +189,7 @@ compiled with MSVC, so you can **extract and use it directly** -- no local C++ t
 `tools/sector_mirror_gui.exe` is a pure Win32 GUI: **double-click to run**, pick source drive in a
 drop-down, Browse the target image, click Start Mirror, progress bar + log, cancel anytime. It
 mirrors a damaged drive at raw sector level, bypassing the filesystem (see
-`docs_cpu/DISASTER_RECOVERY*.md`). It is the reliable entry point when `cmd.exe` / `powershell.exe`
+`docs_cpu/QUICKSTART.md` (Section 9: Disaster Recovery Guide)). It is the reliable entry point when `cmd.exe` / `powershell.exe`
 cannot open.
 
 ## License

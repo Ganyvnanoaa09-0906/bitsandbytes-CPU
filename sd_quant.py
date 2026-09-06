@@ -41,6 +41,8 @@ _BLOCK_CANDIDATES = (256, 128, 64, 32)
 
 def _pick_bs(k: int):
     """选一个能整除 K 的块大小（fused 内核的向量路径要求 K % bs == 0）。"""
+    if k <= 0:
+        return 0                      # 0/负数无有效的块大小（0 能被任意数整除，应视为无）
     for bs in _BLOCK_CANDIDATES:
         if k % bs == 0:
             return bs
@@ -108,14 +110,27 @@ class _DequantConvFn(torch.autograd.Function):
         ctx.shape = shape
         ctx.stride, ctx.padding, ctx.dilation, ctx.groups = stride, padding, dilation, groups
         ctx.kernel_sz = (shape[2], shape[3])
+        ctx.in_hw = (x.shape[-2], x.shape[-1])   # 存 forward 输入 H/W，供反向算 output_padding
         return out
 
     @staticmethod
     def backward(ctx, dout):
         w = _dequantize(ctx.wq, ctx.state, ctx.quant_dtype, ctx.shape, ctx.bs)
-        op = ctx.stride[0] - 1 if ctx.stride[0] > 1 else 0
-        dx = F.conv_transpose2d(dout, w, None, ctx.stride, ctx.padding, op,
-                                ctx.groups, ctx.dilation)
+        # output_padding 必须逐维度算，使 conv_transpose2d 输出尺寸 == forward 输入尺寸。
+        # PyTorch 公式：out = (in-1)*stride - 2*pad + dil*(k-1) + 1 + op
+        #  => op = in - ((out-1)*stride - 2*pad + dil*(k-1) + 1)，且 op 需非负。
+        in_h, in_w = ctx.in_hw
+        out_h, out_w = dout.shape[-2], dout.shape[-1]
+        k_h, k_w = ctx.kernel_sz
+        kh = (k_h - 1) * ctx.dilation[0]
+        kw = (k_w - 1) * ctx.dilation[1]
+        op_h = in_h - ((out_h - 1) * ctx.stride[0] - 2 * ctx.padding[0] + kh + 1)
+        op_w = in_w - ((out_w - 1) * ctx.stride[1] - 2 * ctx.padding[1] + kw + 1)
+        # 夹到合法范围 [0, stride-1]（PyTorch 要求），并保证非负
+        op_h = max(0, min(op_h, ctx.stride[0] - 1))
+        op_w = max(0, min(op_w, ctx.stride[1] - 1))
+        dx = F.conv_transpose2d(dout, w, None, ctx.stride, ctx.padding,
+                                (op_h, op_w), ctx.groups, ctx.dilation)
         return dx, None, None, None, None, None, None, None, None, None, None
 
 
@@ -240,6 +255,8 @@ def apply_quant_frozen(module: nn.Module, quant_dtype: str = "8bit", cache: bool
     """
     if not _BNB_OK:
         raise RuntimeError("bitsandbytes (CPU fork) 不可用，无法量化冻结层")
+    if module is None:
+        raise ValueError("apply_quant_frozen: module 不能为 None")
 
     ex_heads = tuple(e.split(".")[0] for e in exclude_names)
 

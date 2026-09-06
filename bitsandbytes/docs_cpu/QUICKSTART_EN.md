@@ -485,3 +485,127 @@ training flow is unaffected.
 
 - Technical guide: `docs_cpu/TECHNICAL_GUIDE_EN.md` (per-kernel changes)
 - Tech report: `docs_cpu/TECH_REPORT_EN.md` (full measured results and conclusions)
+
+---
+
+## 9. Disaster Recovery (Data Recovery)
+
+> **Scope**: host-Windows-filesystem (NTFS / Master File Table, MFT) corruption and data loss
+> that may result from using `disk_balancer` (`--flash`) in an **unsupported environment**
+> (especially WSL).
+>
+> **Prerequisite**: read §5 "Disclaimer & Usage Restrictions" and confirm you are in a
+> **supported environment**. This is a general recovery path and **does not guarantee any
+> specific outcome**; if the data is important, **consult a professional data-recovery
+> service first**.
+
+> ### ⚠️ Required: prepare an independent storage medium (USB stick / external drive)
+>
+> **Before any mirror/recovery**, prepare an independent medium — a device on a **DIFFERENT
+> physical disk** from the damaged one — with free space ≥ the damaged drive's total
+> capacity. The mirror target **must be on another physical disk**, never the damaged drive
+> or another partition on the same disk. **Usable** targets: USB stick, external HDD/SSD, or
+> another truly-different internal drive (a different `PhysicalDriveN`). **Never**: another
+> partition on the damaged drive / any partition on the same physical disk. Confirm via Disk
+> Management or `diskpart` → `list disk` that it is really a different disk.
+
+### 9.1 Diagnosis: read-only checks only (do not modify data)
+
+The **only correct first step** is a **read-only diagnosis** that does **not modify** the disk:
+
+```
+chkdsk <drive>:          (no /f — read-only report)
+```
+
+- If `chkdsk` reports MFT / filesystem errors → proceed to recovery;
+- **Never** run `chkdsk /f` immediately (may mark recoverable data as lost);
+- **Never** format / overwrite / write to the damaged drive until a recovery plan is set.
+
+### 9.2 Tier 1: this repo's `sector_mirror` (bypass the filesystem)
+
+> **Use**: when this repo is still available (incl. a compiled `sector_mirror.exe` /
+> `sector_mirror_gui.exe`). It reads raw sectors (`\\.\PhysicalDriveN`) and mirrors the whole
+> damaged drive to a healthy drive. **No Python dependency**. Two builds, same kernel:
+> - **`sector_mirror_gui.exe` (GUI, recommended)** — double-click, no command line; most
+>   reliable when `cmd`/`powershell` won't open.
+> - **`sector_mirror.exe` (CLI)** — specify source & target in an admin prompt.
+
+#### 9.2.1 Build (on a healthy machine)
+
+```bat
+:: CLI (VS x64 Native Tools prompt)
+cl /O2 tools\sector_mirror.c /Fe:sector_mirror.exe /link advapi32.lib
+:: GUI (deps declared via #pragma; no manual /link)
+cl /O2 /utf-8 /DNOMINMAX /DNDEBUG tools\sector_mirror_gui.c /Fe:sector_mirror_gui.exe
+```
+
+#### 9.2.2 Use (GUI, recommended — no command line)
+
+Double-click `sector_mirror_gui.exe`: pick source drive, Browse target image, Start Mirror,
+progress bar + log, cancel anytime. Auto-UAC; validates the target isn't the source/`C:`.
+
+#### 9.2.3 Use (CLI, admin prompt)
+
+```bat
+sector_mirror.exe                       :: list drives (letter/capacity/physical disk)
+sector_mirror.exe D: E:\d_drive.img     :: mirror D: to a healthy drive
+sector_mirror.exe 1 E:\d_drive.img      :: legacy: physical disk number 1
+```
+
+- Source by **drive letter** (auto-resolves to `PhysicalDriveN`);
+- **Target ≠ source / `C:`** (anti-secondary-damage); **sparse mirror** (all-zero as holes);
+- **admin required**; **Ctrl+C** keeps the written portion.
+
+#### 9.2.4 Recover (on a healthy machine after the mirror)
+
+- **TestDisk** (portable) from `d_drive.img`; or **7-Zip** extract `.img`; or
+  **Windows File Recovery** deep scan (`winfr` supports image recovery).
+
+#### 9.2.5 Signature carve `sector_carve` (built-in; beats winfr's signature mode)
+
+> When the **MFT is wrecked but data sectors remain**, use file signatures to carve
+> still-intact files straight from the image/raw sectors — what winfr's signature mode does,
+> but this tool works on an already-mirrored `.img` / raw sectors, no winfr needed. When the
+> MFT is broken, winfr's segment mode fails while signature carve still works.
+
+```bat
+sector_carve.exe D:\usb_mom.img D:\carved_mom
+sector_carve.exe E: D:\carved_mom
+```
+
+- **Formats**: PNG/JPEG/GIF/ZIP(auto-detects docx/xlsx/pptx)/PDF/MP4 — streamed cross-block.
+- **GUI `sector_carve_gui.exe` (recommended)** — double-click, no command line.
+- **Zero writes to the source**; **never write the outdir back to the damaged drive**.
+
+> **Measured**: on an MFT-damaged 7.5GB USB stick, mirror + carve recovered **3200+ files**
+> (photos/zip/PDF/MP4/Word/Excel/PPT); PNG 99.6% open, docx 10/10 valid, MP4 complete;
+> the GUI physical-drive scan recovers **~95%** usable.
+
+### 9.3 Tier 2: Windows File Recovery (when repo/tool unavailable)
+
+> **Use**: when **MFT corruption is too severe that even this repo / Python / the exe can't
+> run**. Fall back to **Windows File Recovery** (Store).
+
+```bat
+winfr D: E:\recovered /extensive /n *
+```
+
+- **Output to another drive (E)**; **never write back to the damaged drive (D)**;
+- `/extensive` = deep scan, higher recovery chance when the MFT is damaged.
+
+### 9.4 Prevent secondary damage (must follow)
+
+1. **No writes to the damaged drive until recovery is done**;
+2. **Mirror first (Tier 1) then operate** on the healthy copy;
+3. Run recovery tools (TestDisk / PhotoRec / winfr) **from another drive**, output to another;
+4. If unsure / important data, **read-only `chkdsk` first and consult a professional**.
+
+### 9.5 Conclusion
+
+- If recovery **succeeds**: data can be recovered — follow this guide.
+- If it **fails** (deep MFT damage / sectors overwritten): data **may be unrecoverable** —
+  rely on **backup / mirror**; **never keep retrying overwrite-like operations** on the
+  damaged drive (only worsens it).
+
+> **Final note**: any data recovery carries uncertainty. If the data is valuable, **prefer a
+> professional recovery service** over repeated DIY attempts.

@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 setlocal
 REM ============================================================
 REM  bitsandbytes CPU DLL - manual cl build (no CMake), Windows x86/x64
@@ -80,7 +80,7 @@ REM  1) sector_mirror.exe (standalone exe, no bnb kernel dep).
 REM     Built with the most basic cl (no /arch:AVX2 /fp:fast --- keep max CPU
 REM     compatibility). It reads raw sectors (\.\PhysicalDriveN) to mirror a whole
 REM     drive, as a safety net when disk_balancer corrupts data
-REM     (see docs_cpu/DISASTER_RECOVERY.md).
+REM     (see docs_cpu/QUICKSTART.md Section 9: Disaster Recovery Guide).
 REM  2) sector_mirror_gui.exe (pure Win32 GUI: double-click to run, pick source
 REM     drive, Browse target image, progress bar --- no command line, no args;
 REM     usable when cmd/powershell are broken). Deps (shell32/comdlg32/comctl32/

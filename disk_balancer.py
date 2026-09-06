@@ -45,7 +45,7 @@ API 触发方式（在训练脚本中）:
     --flash manual   # 手动模式，需配合 --flash_sizes
     --flash true     # 同 --flash，启用
     --flash_sizes C:2048,D:4096,E:8192   # 手动指定每盘缓存大小(MB)
-    --flash_paths D:\cache1,E:\cache2    # 指定缓存路径（默认脚本同目录）
+    --flash_paths C:\cache,D:\cache,E:\cache   # 指定缓存路径（默认脚本同目录）
     --flash_speed    # 速度优先模式（不管硬盘死活）
     --flash_keep     # 训练结束后保留缓存文件
 """
@@ -170,14 +170,16 @@ def _win_is_ssd(mount: str) -> str:
             query = STORAGE_PROPERTY_QUERY(0, 0, (0, 0, 0, 0))
             out = ctypes.create_string_buffer(1024)
             ret = ctypes.c_ulong(0)
-            if ctypes.windll.kernel32.DeviceIoControl(
-                    handle, 0x002D1400, ctypes.byref(query), ctypes.sizeof(query),
-                    out, ctypes.sizeof(out), ctypes.byref(ret), None):
-                desc = STORAGE_ADAPTER_DESCRIPTOR.from_buffer_copy(out)
-                if desc.BusType == 17:  # NVMe
-                    ctypes.windll.kernel32.CloseHandle(handle)
-                    return "nvme"
-            ctypes.windll.kernel32.CloseHandle(handle)
+            try:
+                if ctypes.windll.kernel32.DeviceIoControl(
+                        handle, 0x002D1400, ctypes.byref(query), ctypes.sizeof(query),
+                        out, ctypes.sizeof(out), ctypes.byref(ret), None):
+                    desc = STORAGE_ADAPTER_DESCRIPTOR.from_buffer_copy(out)
+                    if desc.BusType == 17:  # NVMe
+                        return "nvme"
+            finally:
+                # 确保句柄被关闭，即使 from_buffer_copy/DeviceIoControl 抛异常也不泄漏
+                ctypes.windll.kernel32.CloseHandle(handle)
     except OSError:
         pass
 
@@ -216,8 +218,34 @@ def detect_disks() -> List[DiskInfo]:
 
     自动识别 SSD/NVMe/HDD，获取容量和剩余空间。
     只返回固定磁盘（排除网络盘、光驱、可移动磁盘）。
+    跨平台：Windows 用 ctypes（GetDriveTypeW），Linux/WSL 用 psutil.disk_partitions。
     """
     disks: List[DiskInfo] = []
+    if os.name != "nt":  # Linux / WSL / macOS：psutil 跨平台路径
+        import psutil as _ps
+        for part in _ps.disk_partitions(all=False):
+            # 【防炸机】WSL 会把宿主 NTFS 经 9P 挂成 /mnt/c、/mnt/d——9P（网络文件
+            # 系统语义）在高负载下对 NTFS 做冷参数卸载会扰乱宿主 MFT（已实测炸机）。
+            # 必须排除 9p/fuse/宿主 NTFS 挂载，绝不对它们卸载冷参数。
+            if _is_wsl_host_mount(part):
+                continue
+            try:
+                usg = _ps.disk_usage(part.mountpoint)
+            except Exception:
+                continue
+            mount = part.mountpoint
+            # Linux 不区分 removable/remote（psutil 的 fstype 判 ssd/hdd 不准确，
+            # 退化按 SSD 处理——Linux 上卸载保护磁盘寿命的策略以 SSD 为准）
+            drive_type = "ssd" if _fs_ssd_like(part.fstype) else "hdd"
+            disks.append(DiskInfo(
+                mount=mount,
+                drive_type=drive_type,
+                total_bytes=usg.total,
+                free_bytes=usg.free,
+            ))
+        return disks
+
+    # Windows：ctypes 路径（原逻辑）
     for letter in range(ord("A"), ord("Z") + 1):
         mount = f"{chr(letter)}:"
         if _win_drive_type(mount) != "fixed":
@@ -234,8 +262,105 @@ def detect_disks() -> List[DiskInfo]:
     return disks
 
 
+def _is_wsl_host_mount(part) -> bool:
+    """判断一个 psutil.disk_partitions 项是否为「WSL 宿主 NTFS / 网络文件系统挂载」。
+
+    在 WSL 里，宿主 Windows 的 NTFS 盘经 9P 协议挂在 /mnt/c、/mnt/d 等。9P 是网络
+    文件系统语义，在高负载/极端内存压力下对 NTFS 做冷参数卸载（SSD/HDD 高频读写/删除）
+    会扰乱宿主 MFT、导致数据无法落盘（已实测炸机）。disk_balancer 绝不该卸载它们。
+
+    True = 是该排除的挂载（9P / fuse / 宿主 NTFS / 网络盘）→ detect_disks 跳过。
+    """
+    try:
+        fs = (part.fstype or "").lower()
+        mount = (part.mountpoint or "").lower()
+        # 9P / fuse / NFS / CIFS（网络文件系统）—— 一律排除
+        if any(t in fs for t in ("9p", "9pfs", "fuse", "nfs", "cifs", "smb", "vfat", "ntfs", "exfat", "fat")):
+            return True
+        # WSL 宿主挂载：/mnt/c、/mnt/d 等 —— 只匹配【单字母盘符】的 /mnt/[a-z]
+        # （WSL 用 /mnt/c、/mnt/d 挂宿主 Windows 盘）。真实 Linux 用户常把数据盘挂到
+        # /mnt/data、/mnt/sda1 这类【多字符】路径，那不是 WSL 宿主挂载，不应排除。
+        if mount.startswith("/mnt/"):
+            import re
+            tail = mount[len("/mnt/"):]
+            # 单字母盘符（如 c、d）→ WSL 宿主；多字符（data、sda1、wsl 等）→ 保留
+            if re.match(r"^[a-z][a-z]?$", tail):
+                return True
+        elif mount == "/mnt":
+            return True
+        # 明显的网络/虚拟挂载
+        if fs in ("fuseblk", "drvfs", "9p", "cif"):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _in_wsl() -> bool:
+    """是否运行在 WSL（Windows Subsystem for Linux）宿主环境——此时均衡负载必须整体禁用。
+
+    disk_balancer 只应在两处运行：真 Windows（os.name == "nt"，ctypes）或纯 Linux
+    （非 WSL 宿主挂载，psutil）。WSL 是"从 Windows 挂进来的"——宿主 NTFS 经 9P/drvfs
+    挂在 /mnt/c、/mnt/d 等，9P（网络文件系统语义）在高负载/极端内存压力下对 NTFS
+    卸载冷参数会扰乱宿主 MFT、导致数据无法落盘（已实测炸机）。所以 WSL 环境一律跳过。
+
+    识别 WSL（三重确认，防止误判）：
+      1) /proc/version 含 "microsoft"/"WSL"（WSL 内核版本特征，最可靠）；
+      2) psutil.disk_partitions 里存在 9P/宿主 NTFS 挂载（/mnt/c、/mnt/d、drvfs 等）；
+      3) 环境变量 WSL_DISTRO_NAME / WSL_INTEROP 存在（WSL 特有）。
+
+    Windows（os.name == "nt"）永远返回 False（不在 WSL）。
+    """
+    if os.name == "nt":
+        return False
+    # 1) WSL 内核版本标记（最可靠）
+    try:
+        with open("/proc/version", "r", errors="ignore") as f:
+            ver = f.read().lower()
+        if "microsoft" in ver or "wsl" in ver:
+            return True
+    except OSError:
+        pass
+    # 2) WSL 环境变量
+    if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
+        return True
+    # 3) psutil 检测到 9P/宿主 NTFS 挂载
+    try:
+        import psutil as _ps
+        for part in _ps.disk_partitions(all=False):
+            if _is_wsl_host_mount(part):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _fs_ssd_like(fstype: str) -> bool:
+    """粗略判断文件系统/挂载点是否更像 SSD（Linux 无设备级 SSD 检测，用 psutil
+    disk_io_counters 无法区分 ssd/hdd，这里用 fstype 兜底：NVMe/常见 SSD 挂载）。
+
+    Linux 上无法 100% 识别设备类型，这里保守返回 True（按 SSD 策略走，
+    卸载以保护磁盘寿命为优先）。psutil 也提供 disk_io_counters 按磁盘（perdisk），
+    但拿不到物理介质类型。保持简单、安全。
+    """
+    return True
+
+
 def _get_disk_io(disk: DiskInfo) -> Tuple[int, int, float]:
-    """获取磁盘累计读写字节数。返回 (read_bytes, write_bytes, timestamp)。"""
+    """获取磁盘累计读写字节数。返回 (read_bytes, write_bytes, timestamp)。
+    跨平台：Windows 用 DeviceIoControl（按盘符）；Linux/WSL 用 psutil.disk_io_counters
+    （全局累计，足够 disk_balancer 估算活动率）。
+    """
+    if os.name != "nt":  # Linux / WSL：psutil 跨平台
+        try:
+            io = psutil.disk_io_counters(perdisk=False)  # 全局累计
+            if io is not None:
+                return io.read_bytes, io.write_bytes, time.time()
+        except Exception:
+            pass
+        return 0, 0, time.time()
+
+    # Windows：DeviceIoControl（原逻辑）
     class DISK_PERFORMANCE(ctypes.Structure):
         _fields_ = [
             ("BytesRead", ctypes.c_longlong), ("BytesWritten", ctypes.c_longlong),
@@ -323,6 +448,25 @@ class DiskBalancerConfig:
     min_free_ratio: float = 0.05
     offload_prefix: str = ""            # 只卸载匹配前缀的冷参数（空=全部），如 "_cold_"
 
+    def __post_init__(self):
+        """校验关键配置，避免非法值导致静默禁用 / 负缓存 / None 崩。"""
+        if self.memory_threshold is None:
+            raise ValueError("memory_threshold 不能为 None（应为 0.0~1.0）")
+        if not (0.0 <= self.memory_threshold <= 1.0):
+            raise ValueError(
+                f"memory_threshold 必须在 [0,1] 内，得到 {self.memory_threshold}"
+                f"（>1 会永久禁用冷参数卸载，<0 会误判）")
+        if self.min_param_size is None or self.min_param_size < 0:
+            raise ValueError(
+                f"min_param_size 必须是非负整数，得到 {self.min_param_size}")
+        if self.min_free_ratio is None or not (0.0 <= self.min_free_ratio <= 1.0):
+            raise ValueError(
+                f"min_free_ratio 必须在 [0,1] 内，得到 {self.min_free_ratio}"
+                f"（>1 会让可用缓存为负）")
+        if self.throttle_threshold is None or not (0.0 <= self.throttle_threshold <= 1.0):
+            raise ValueError(
+                f"throttle_threshold 必须在 [0,1] 内，得到 {self.throttle_threshold}")
+
 
 # ---------------------------------------------------------------------------
 # 核心：DiskLoadBalancer
@@ -362,6 +506,10 @@ class DiskLoadBalancer:
 
     def __init__(self, config: Optional[DiskBalancerConfig] = None):
         self._cfg = config or DiskBalancerConfig()
+        # 【WSL 环境整体禁用】在 WSL 里，宿主 NTFS 经 9P/drvfs 挂在 /mnt/c、/mnt/d 等。
+        # 9P（网络文件系统语义）在高负载下对 NTFS 卸载冷参数会扰乱宿主 MFT（已实测炸机）。
+        # 所以：当处于 WSL / 9P 宿主环境时，均衡负载整体跳过、忽略用户参数，不卸载任何冷参数。
+        self._9p_skip = _in_wsl()
         self._disks: List[DiskInfo] = []
         self._paths: List[str] = []        # 排序后的缓存路径（SSD→HDD）
         self._write_queue: queue.Queue = queue.Queue()
@@ -393,6 +541,12 @@ class DiskLoadBalancer:
         Args:
             script_dir: 训练脚本所在目录。缓存路径默认在此目录下。
         """
+        if getattr(self, "_9p_skip", False):
+            print("[disk_balancer] 检测到 WSL 9P/宿主 NTFS 挂载，均衡负载已整体禁用——"
+                  "为避免 9P 写宿主 NTFS 扰乱 MFT（会炸机），本次不卸载任何冷参数"
+                  "（用户 --flash 参数已忽略）。建议在纯 Linux 分区使用才对磁盘做均衡。")
+            return self
+
         if self._started:
             return self
 
@@ -509,7 +663,12 @@ class DiskLoadBalancer:
                     with open(path, "wb") as f:
                         f.write(data)
                 except Exception as e:
-                    print(f"[disk_balancer] 写盘失败 {key}: {e}", flush=True)
+                    # 写盘失败：不能静默丢数据 —— 从索引摘除该 key（内存已释放，必须显式
+                    # 摘除并报警，否则调用方拿回一个"已登记但文件不存在/未被占用"的参数，
+                    # 冻结层前向会悄悄变垃圾）。
+                    with self._lock:
+                        self._cold_index.pop(key, None)
+                    print(f"[disk_balancer] 写盘失败 {key}: {e} —— 已从索引摘除，该参数将被丢弃（无法读回）", flush=True)
                 finally:
                     self._write_queue.task_done()
             except Exception:
@@ -576,6 +735,10 @@ class DiskLoadBalancer:
         Returns:
             本次迁移的参数数量（0 或 1）。
         """
+        # 【9P 环境整体禁用】WSL 的 9P/宿主 NTFS 挂载下，卸载冷参数会扰宿主 MFT（炸机）。
+        # 直接跳过、忽略用户参数（不迁移任何冷参数），宁可不做也要安全。
+        if getattr(self, "_9p_skip", False):
+            return 0
         if self._model is None:
             return 0
         if not self._started:
@@ -626,8 +789,12 @@ class DiskLoadBalancer:
         with self._lock:
             self._cold_index[key] = (path, numel, dtype)
 
-        # 异步写盘
-        data = tensor.detach().cpu().contiguous().numpy().tobytes()
+        # 异步写盘。bf16 的 numpy() 不支持（torch numpy 不支持 bf16），需先 view 成
+        # uint16（bf16 原始字节）再 tobytes；其余 dtype 直接 numpy().tobytes()。
+        if dtype == torch.bfloat16:
+            data = tensor.detach().cpu().contiguous().view(torch.uint16).numpy().tobytes()
+        else:
+            data = tensor.detach().cpu().contiguous().numpy().tobytes()
         self._write_queue.put((key, data, path))
 
         # 释放内存
@@ -656,6 +823,9 @@ class DiskLoadBalancer:
                 return None
             path, numel, dtype = entry
 
+        # 若该 key 仍在异步写盘队列中（在途），先等写完，避免把"待写"误判为"不存在"。
+        self.wait_writes()
+
         if not os.path.exists(path):
             return None
 
@@ -663,11 +833,17 @@ class DiskLoadBalancer:
             with open(path, "rb") as f:
                 mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
                 import numpy as np
+                # bf16 没有 numpy 原生类型（位布局 ≠ fp16），用 uint16 视图读再 view 成
+                # bf16，否则按 fp16 解释会得到完全错误的数值（静默错值）。
+                if dtype == torch.bfloat16:
+                    arr = np.frombuffer(mm, dtype=np.uint16).copy()
+                    mm.close()
+                    tensor = torch.from_numpy(arr).view(torch.bfloat16)
+                    return tensor[:numel].reshape(-1)
                 _DTYPE_MAP = {
                     torch.float32: np.float32,
                     torch.float16: np.float16,
                     torch.float64: np.float64,
-                    torch.bfloat16: np.float16,
                     torch.int64: np.int64,
                     torch.int32: np.int32,
                     torch.int16: np.int16,
@@ -715,9 +891,19 @@ class DiskLoadBalancer:
             except OSError:
                 pass
 
-    def wait_writes(self):
-        """等待所有异步写盘完成。"""
-        self._write_queue.join()
+    def wait_writes(self, timeout: float = 60.0):
+        """等待所有异步写盘完成。
+
+        加超时：若写盘线程意外死亡（如 print 到已关闭管道抛异常、解释器关闭），
+        queue.join() 会永久阻塞（未消费的 item 永远不 task_done）。超时后放弃等待，
+        避免 cleanup()/读盘 挂死，并打印警告。
+        """
+        deadline = time.time() + timeout
+        while self._write_queue.unfinished_tasks > 0:
+            if time.time() > deadline:
+                print("[disk_balancer] wait_writes 超时：写盘线程可能已死亡，放弃等待", flush=True)
+                return
+            time.sleep(0.05)
 
     def cleanup(self):
         """清理所有缓存文件。
@@ -829,7 +1015,10 @@ def parse_flash_args(args) -> Optional[DiskBalancerConfig]:
     if getattr(args, "flash_sizes", None):
         for part in args.flash_sizes.split(","):
             mount, size = part.split(":")
-            sizes[mount.strip().upper()] = int(size.strip())
+            m = mount.strip().upper()
+            if not m.endswith(":"):          # "c" -> "C:"，补上盘符冒号（_start_manual 用 "C:"）
+                m += ":"
+            sizes[m] = int(size.strip())
 
     paths: List[str] = []
     if getattr(args, "flash_paths", None):

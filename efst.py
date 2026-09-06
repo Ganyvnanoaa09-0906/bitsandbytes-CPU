@@ -274,12 +274,16 @@ def _normalize_expert_indices(
 # ---------------------------------------------------------------------------
 def freeze_all(model: nn.Module) -> None:
     """冻结全部参数。"""
+    if model is None:
+        raise ValueError("freeze_all: model 不能为 None")
     for p in model.parameters():
         p.requires_grad_(False)
 
 
 def unfreeze_all(model: nn.Module) -> None:
     """解冻全部参数。"""
+    if model is None:
+        raise ValueError("unfreeze_all: model 不能为 None")
     for p in model.parameters():
         p.requires_grad_(True)
 
@@ -472,6 +476,7 @@ def collect_expert_usage(
             for key, expert in g.children:
                 handles.append(expert.register_forward_hook(make_hook(g.path, key)))
 
+    was_training = model.training   # 记录原来的 train/eval 模式，finally 恢复
     try:
         model.eval()
         with torch.no_grad():
@@ -485,6 +490,8 @@ def collect_expert_usage(
     finally:
         for h in handles:
             h.remove()
+        if was_training:   # 用户校准前若本来就是 train 模式，恢复（避免静默改掉 dropout 状态）
+            model.train()
         model.train()
 
     return counters
@@ -498,6 +505,8 @@ def select_top_experts(
     max_batches: Optional[int] = None,
 ) -> Dict[str, List[Union[int, str]]]:
     """根据校准数据选出每个专家容器里最热的 top_k 个专家。"""
+    if top_k < 1:
+        raise ValueError(f"top_k 必须是 >=1 的整数，得到 {top_k}（0/负数会导致选不到 / 选反）")
     usage = collect_expert_usage(model, dataloader, forward_fn=forward_fn, max_batches=max_batches)
     selected: Dict[str, List[Union[int, str]]] = {}
     for path, counter in usage.items():
@@ -623,6 +632,8 @@ def apply_efst(model: nn.Module, config: Optional[EFSTConfig] = None) -> EFSTRes
     """
     if config is None:
         config = EFSTConfig()
+    if model is None:
+        raise ValueError("apply_efst: model 不能为 None")
 
     groups = find_expert_groups(model)
     total = sum(p.numel() for p in model.parameters())
