@@ -71,10 +71,14 @@ jobs:
       - name: Zip the release dir
         shell: pwsh
         run: |
-          $stage = Get-ChildItem dist_windows -Directory | Select-Object -First 1
-          $ver = (Get-ChildItem dist_windows -Directory | Select-Object -First 1).Name
-          Compress-Archive -Path (Join-Path $stage.FullName "*") -DestinationPath "dist_windows\$ver.zip" -Force
-          Get-ChildItem dist_windows\*.zip
+          # 当前目录是 checkout 根；packager(s4) 在 bitsandbytes\ 里生成了 dist_windows\。
+          $dw = "bitsandbytes/dist_windows"
+          $stage = Get-ChildItem $dw -Directory | Select-Object -First 1
+          if (-not $stage) { throw "未找到发布目录（$dw）" }
+          $ver = $stage.Name
+          $zip = Join-Path $dw "$ver.zip"
+          Compress-Archive -Path (Join-Path $stage.FullName "*") -DestinationPath $zip -Force
+          Get-ChildItem $dw\*.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
