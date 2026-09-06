@@ -39,9 +39,13 @@ jobs:
           # 编译失败不影响 CPU 内核预编译包的价值，且 build_manual.bat 已容错）。
           $dll = "bitsandbytes\libbitsandbytes_cpu.dll"
           if (-not (Test-Path $dll)) {
-            throw "核心 DLL 未生成（build_manual.bat 退出码=$batExit）；无法打包 CPU 预编译包。"
+            Write-Host "build_manual.bat 未生成 DLL（退出码=$batExit）；尝试直接用 cl 编译核心 DLL ..."
+            cmd /c "call `"$($vcvars.FullName)`" && cd /d bitsandbytes && cl /nologo /O2 /Ob2 /arch:AVX2 /fp:fast /openmp:experimental /GL /Qpar /favor:AMD64 /std:c++17 /EHsc /utf-8 /DNOMINMAX /DNDEBUG /DWIN32 /D_WINDOWS /MT /I csrc /LD csrc\cpu_ops.cpp csrc\cpu_gdn.cpp csrc\pythonInterface.cpp /Fe:bitsandbytes\libbitsandbytes_cpu.dll /link /LTCG /DEF:build_manual\export.def"
+            if (-not (Test-Path $dll)) { throw "核心 DLL 仍未能生成（cl 直编退出码=$LASTEXITCODE）；无法打包 CPU 预编译包。" }
+            Write-Host "[OK] 核心 DLL 由 cl 直编生成"
+          } else {
+            Write-Host "[OK] 核心 DLL 生成：$dll  (build_manual.bat 退出码=$batExit；工具可容错)"
           }
-          Write-Host "[OK] 核心 DLL 生成：$dll  (build_manual.bat 退出码=$batExit；工具可容错)"
 
       - name: Run Windows release packager
         shell: pwsh
