@@ -1,7 +1,7 @@
 *.bat text eol=crlf
 
 # C/C++ 源码强制 LF：Windows 用 /utf-8 + CRLF 会吞行（MSVC 已知坑），
-# Linux/WSL/Termux 的 g++/clang 编译需要 LF。统一 LF 保证跨平台编译一致。
+# Linux/WSL 的 g++/clang 编译需要 LF。统一 LF 保证跨平台编译一致。
 *.c text eol=lf
 *.cpp text eol=lf
 *.h text eol=lf

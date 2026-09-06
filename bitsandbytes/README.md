@@ -201,7 +201,7 @@ bitsandbytes has the following minimum requirements for all platforms:
 
 This fork adds **training-grade CPU kernels** to the bitsandbytes CPU backend, for
 machines **without NVIDIA GPUs** (AVX2 only / ARM64 NEON, e.g. consumer laptops,
-Mini-PCs, Android Termux). The upstream CPU backend is inference-oriented; these
+Mini-PCs). The upstream CPU backend is inference-oriented; these
 extensions make pure-CPU LoRA / quantization / diffusion training practical.
 
 > 📚 **Docs** (`docs_cpu/`):

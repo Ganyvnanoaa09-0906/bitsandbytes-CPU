@@ -7,7 +7,7 @@
 This is a fork of [`bitsandbytes`](https://github.com/bitsandbytes-foundation/bitsandbytes)
 (v0.45.1) that adds **fused training kernels** to its **CPU backend**, so that
 low-resource machines — **no discrete GPU, only an AVX2 CPU or ARM64 NEON
-(consumer laptops, mini-PCs, Android Termux, 12–16 GB RAM)** — can actually train
+(consumer laptops, mini-PCs, 12–16 GB RAM)** — can actually train
 LLMs and diffusion models.
 
 > Upstream bitsandbytes' CPU backend is **inference-oriented**. This fork makes

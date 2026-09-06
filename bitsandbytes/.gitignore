@@ -160,12 +160,11 @@ cuda-spec.md
 cuda-spec-additions.md
 agents/*_issues.json
 
-# 鏈湴缂栬瘧浜х墿锛圵indows build_manual / Linux / Termux锛?*.lib
+# 本地编译产物（Windows build_manual / Linux build_linux）
 *.exp
 *.bak
 build-*/
 build_linux/
-build_termux/
 *.so
 
 
