@@ -42,8 +42,15 @@ if /i "%~1"=="amd" (
 ) else if /i "%~1"=="intel" (
     set FAVOR=/favor:INTEL64
 ) else (
-    for /f "tokens=1* delims==" %%a in ('wmic cpu get Manufacturer /value 2^>nul') do (
-        echo %%b | find /i "AMD" >nul && set FAVOR=/favor:AMD64
+    REM 用 wmic 检测 CPU 厂商（仅本机）。GitHub CI 的 windows-latest 常无 wmic：
+    REM wmic 缺失时保持默认 /favor:INTEL64，不报错。
+    where wmic >nul 2>&1
+    if not errorlevel 1 (
+        for /f "tokens=1* delims==" %%a in ('wmic cpu get Manufacturer /value 2^>nul') do (
+            echo %%b | find /i "AMD" >nul && set FAVOR=/favor:AMD64
+        )
+    ) else (
+        echo [build] wmic 不可用，采用默认 /favor:INTEL64（跨机器通用）
     )
 )
 echo [build] CPU vendor favor: %FAVOR%
