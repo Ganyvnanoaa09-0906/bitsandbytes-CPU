@@ -1,6 +1,6 @@
 # bitsandbytes-CPU
 
-**Train LLMs & image/video models on pure CPU** — a CPU-backend fork of
+**Train LLMs & image models on pure CPU** — a CPU-backend fork of
 [bitsandbytes](https://github.com/bitsandbytes-foundation/bitsandbytes) plus a
 training toolbox that runs on machines with **no discrete GPU** (just an AVX2 CPU /
 ARM64 NEON and 12–16 GB RAM).
@@ -26,8 +26,8 @@ This repo is the whole toolbox (`那很有乐子了~`), which contains:
 - **Training toolbox** (repo root `.py`):
   - `train.py` — unified CLI (`--method`: lora/qlora/p_tuning_v2/bitfit/vera/ia3/full/
     quant_base/efst + rest/rloo), with disk_balancer + 8-bit optimizer integration
-  - `train_diffusion.py` — image/video generation training (lora/ti/dreambooth/full/
-    controlnet/ip_adapter/video)
+  - `train_diffusion.py` — image generation training (lora/ti/dreambooth/full/
+    controlnet/ip_adapter)
   - `peft_backends.py` / `diffusion_backends.py` — method dispatch
   - `disk_balancer.py` / `gpu_scheduler.py` / `quant_lora.py` / `sd_quant.py` / `efst.py`
   - `bench_*` / `verify_*` / `test_*` — benchmarks, verification, smoke tests
@@ -67,4 +67,7 @@ See `bitsandbytes/docs_cpu/` for the full technical guide, quickstart, and tech 
 
 ## License
 
-MIT (see `LICENSE` and `bitsandbytes/LICENSE`).
+MIT. The `bitsandbytes/` subdirectory is a fork of upstream
+[bitsandbytes](https://github.com/bitsandbytes-foundation/bitsandbytes) (also MIT,
+Copyright (c) Facebook, Inc. and its affiliates) — see `bitsandbytes/LICENSE`.
+This fork's own code is MIT, Copyright (c) 2026 Ganyvnanoaa09-0906 (see `LICENSE`).
