@@ -29,11 +29,14 @@ constexpr int block_size_m() { return 2 * TILE_M; }
 
 constexpr int block_size_n() { return 2 * TILE_N; }
 
-template <typename T> inline int get_cache_blocks(int chunk_size) {
-    // L2 2MB and ratio of 50%
-    const int L2_size = 2048 * 1024 >> 1;
-    return std::max(1, int(L2_size / (chunk_size * sizeof(T))));
-}
+// 2026-09-22: `get_cache_blocks` 原先在这里硬编码 L2 = 2MB。那个常数只在大型 Intel
+// 服务器上成立；三台目标机器（Zen2 4500U / Comet Lake 10代 i5 / EPYC Zen2-3）的
+// 真实 L2/核是 512 / 256 / 512 KB。按 2MB 分块会让工作集比 L2 大 4~8 倍。
+// 实测（本机 blocked SGEMM）：k-block 2048 → 12.44 GFLOPS，k-block 512 → 26.88 GFLOPS，
+// 即硬编码常数导致 2.2x 损失。
+// 现在改为【运行时发现】，并顺带提供 NT store 的分档阈值。
+// 注意 AMD 上 Intel 的 CPUID leaf 4 返回全零，必须走 leaf 0x8000001D —— 细节见该头文件。
+#include "cpu_cache.h"
 
 // forced unroll for perf critical path
 #if defined(__has_attribute) && __has_attribute(always_inline)
@@ -181,9 +184,39 @@ void gemv_4bit_inference_cpu_fp16(
     long long lda, long long ldb, long long ldc, long long blocksize, int data_type
 );
 
+// fused FP16-WEIGHT inference GEMV/GEMM (AVX2 + F16C):
+// out[m, n] = sum_k A[m, k] * fp16_to_float(W[n, k])
+// W is plain row-major fp16, N rows of `ldb` elements each (pass ldb = K). No absmax:
+// fp16 is the storage format itself, not a quantized code.
+//
+// WHY: on AVX2-only CPUs the NF4 LUT-plane decode costs more than the bytes it saves
+// (measured 2.87 GB/s vs a 25 GB/s ceiling; the fp16 path reaches 25.8 GB/s and is
+// bandwidth-bound). fp16 uses 4x the memory of NF4 but still half of fp32, and its
+// 10-bit mantissa is much more accurate than NF4's 4 bits.
+// See membw/FP16_WEIGHT_VERDICT.md. F16C ships with AVX2 on all target CPUs.
+void gemv_fp16w_inference_cpu_fp32(
+    float* A, unsigned short* W, float* out, long long M, long long N, long long K,
+    long long lda, long long ldb, long long ldc
+);
+void gemv_fp16w_inference_cpu_bf16(
+    bf16_t* A, unsigned short* W, bf16_t* out, long long M, long long N, long long K,
+    long long lda, long long ldb, long long ldc
+);
+void gemv_fp16w_inference_cpu_fp16(
+    fp16_t* A, unsigned short* W, fp16_t* out, long long M, long long N, long long K,
+    long long lda, long long ldb, long long ldc
+);
+
 // fused 8-bit blockwise-dequant GEMM (AVX2, new):
 // out[m, n] = sum_k A[m, k] * (code(B[n, k]) * (2/255) - 1) * absmax[n, k/blocksize]
 // B is [N, K] uint8 code stream (per-row quantized, block layout [N, K/blocksize]).
+//
+// ⚠️ 码表契约：本内核硬编码【线性码表】2*i/255 - 1 ⇒ 调用方必须用
+//    quantize_blockwise(..., code=create_linear_map()) 量化权重。
+//    而 quantize_blockwise 的【默认】码表是 create_dynamic_map()（非线性）
+//    ⇒ 直接把默认量化的权重喂给本 op 会【静默算错】（实测相对误差约 100%）。
+//    2026-09-23 验证过这一点；当时的修法（改成传 dynamic 码表）已撤回，
+//    因为它会破坏按文档调用的代码。正确用法见 fused_dequant_linear_8bit 的文档。
 // AVX2 path requires K % blocksize == 0 and blocksize % 8 == 0; else scalar.
 void gemm_8bit_inference_cpu_fp32(
     const float* A, const unsigned char* B, const float* absmax, float* out, long long M, long long N, long long K,
@@ -495,6 +528,69 @@ int gdn_bwd_cpu(const void* q, const void* k, const void* v, const float* beta, 
                 const void* do_, const float* ds_final, const float* ckpts, void* dq, void* dk,
                 void* dv, float* dbeta, float* dg, float* ds_init, int B, int H, int T, int K, int V,
                 int dtype, int C, int layout);
+#if defined(__cplusplus)
+}
+#endif
+
+
+// ----------------------------------------------------------------------------
+// Fused elementwise kernels (2026-09-18).  Training-step profiling on
+// R5-4500U (30.49M AR model, batch=8 T=256) showed GEMM already at 92% of a
+// same-shape pure-GEMM baseline while elementwise ops burn 20.8% of the step
+// for <5% of the FLOPs -- the eager RMSNorm expands to six aten ops per call.
+// These kernels fuse those chains into single passes.
+// ----------------------------------------------------------------------------
+#if defined(__cplusplus)
+extern "C" {
+#endif
+// RMSNorm forward。⚠️ 别名约束（2026-09-22 外部 review 指出，此前未文档化）：
+//   实现先把 h = x + res 写进 out，再从 out 读回来做 scale ⇒
+//   【out 不能与 x 或 res 重叠】。传别名指针会得到错误结果。
+//   （xs 是输出的一行一个的 rstd，与 out 不同形状，无此约束。）
+long long fused_rmsnorm_fwd_cpu(
+    const float* x, const float* res, const float* weight, float* out, float* xs,
+    long long M, long long D, float eps
+);
+long long fused_rmsnorm_bwd_cpu(
+    const float* x, const float* weight, const float* dout, const float* xs,
+    float* dx, float* dw, long long M, long long D
+);
+long long fused_swiglu_fwd_cpu(const float* gate, const float* up, float* out, long long n);
+long long fused_swiglu_bwd_cpu(
+    const float* gate, const float* up, const float* dout, float* dgate, float* dup, long long n
+);
+long long fused_add_scale_cpu(
+    const float* x, const float* y, const float* scale, float* out, long long M, long long D
+);
+#if defined(__cplusplus)
+}
+#endif
+
+
+// ---- fused v2: strided SwiGLU + in-place add_scale + 融合链 (2026-09-18) ----
+#if defined(__cplusplus)
+extern "C" {
+#endif
+long long fused_swiglu_strided_fwd_cpu(
+    const float* gate, long long gs0, long long gs1,
+    const float* up, long long us0, long long us1,
+    float* out, long long os0, long long M, long long D
+);
+long long fused_swiglu_strided_bwd_cpu(
+    const float* gate, long long gs0, long long gs1,
+    const float* up, long long us0, long long us1,
+    const float* dout, long long ds0, long long ds1,
+    float* dgate, long long dg0, long long dg1,
+    float* dup, long long du0, long long du1,
+    long long M, long long D
+);
+long long fused_add_scale_inplace_cpu(
+    float* x, const float* y, const float* scale, long long M, long long D
+);
+long long fused_add_scale_rmsnorm_cpu(
+    float* x, const float* y, const float* scale,
+    const float* weight, float* out, float* xs, long long M, long long D, float eps
+);
 #if defined(__cplusplus)
 }
 #endif

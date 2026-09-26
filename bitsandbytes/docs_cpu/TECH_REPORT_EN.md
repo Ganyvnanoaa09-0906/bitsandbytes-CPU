@@ -102,6 +102,49 @@ a real Qwen3Next decoder layer (with Gated DeltaNet linear attention), with
 
 Shapes tested: M∈[1,8], K,N∈[320,1280], blocksize∈[64,256] — all relative error ≤ 4.7e-7.
 
+**Measured speed on R5-4500U (important negative finding)**: the `gemm_8bit` CPU kernel
+(`cgemm_8bit_inference_cpu_fp32`) is a **single-thread / not-optimized** naive implementation,
+measured **clearly slower than oneDNN multithreaded fp32 BLAS**:
+
+| GEMM (M=256) | fp32 oneDNN | gemm_8bit | 8bit-store + dequant + fp32 BLAS |
+|---|---|---|---|
+| 2048×2048 | 11.6ms | 29.4ms | 19.0ms |
+| 2048×10944 | 81ms | 134ms | 90ms |
+| 10944×2048 | 54ms | **500ms** | 72ms |
+| 4096×2048 | 19ms | 76ms | 29ms |
+
+→ **8bit kernel 0.2–0.6×, 8bit-store+dequant 0.7–0.9×, both slower than fp32 (1.0×, ~200 GFLOP/s)**.
+**Conclusion: quantized GEMM does NOT save time on pure CPU** (DRAM bandwidth is not the
+bottleneck; the dequant / unoptimized kernel is the overhead instead). Quantization's real value
+on CPU is **memory saving** (8bit weight storage + 8bit optimizer avoids swap) — see §3.5 — not speed.
+The fastest CPU GEMM remains **oneDNN multithreaded fp32** (train in fp32 with physical-core threads).
+
+### 3.3.1 gemm_4bit: M-dependent dispatch — the table above holds only for **LARGE M**
+
+Every shape in §3.3 starts at 2048×2048. The **training-path** 4-bit linear (`gemm_4bit`,
+which is what `autograd/_functions.py:324/334/462/472` calls) behaves the opposite way at **small M**:
+
+| M | fused kernel ms | default (oneDNN dense) ms | winner |
+|---|---|---|---|
+| 1 | **1.20** | ~14.5 | fused **12×** |
+| 8 | **4.71** | 25.14 | fused 5.3× |
+| 32 | **16.20** | 28.41 | fused 1.75× |
+| 64 | **28.79** | 31.37 | fused 1.09× |
+| 96 | 43.45 | **37.01** | default overtakes |
+| 256 | 166.11 | **64.94** | default **2.56×** |
+
+(K=N=4096, OMP=6)
+
+→ Threshold `_GEMM_4BIT_FUSED_MAX_M = 64`: **M ≤ 64 uses this fork's fused kernel, M > 64 goes back to oneDNN dense**.
+→ That threshold used to be **16**, so M=17–64 was misrouted to default and was up to **3.4× slower than necessary**.
+→ The fused kernel loses at large M for a **structural** reason: its inner loop is `m0 += 4`, re-reading the whole
+weight block every 4 rows ⇒ weight traffic is O(M/4).
+
+**⇒ So §3.3's line "the fastest CPU GEMM remains oneDNN multithreaded fp32" needs a scope qualifier**:
+it holds only for **M ≳ 96**; for **M ≤ 64 this fork's fused kernel is faster** (per-token inference is M=1,
+exactly that range). The two do not contradict — it is a **dispatch by M**. Implementation and one easily
+inverted polarity note: `TECHNICAL_GUIDE.md §3.5.1` and `§6 item 9`.
+
 ### 3.4 Threads & precision (empirical)
 
 | Task | 6 threads | 8 threads | 12 threads |
@@ -113,6 +156,19 @@ Shapes tested: M∈[1,8], K,N∈[320,1280], blocksize∈[64,256] — all relativ
 - Text GEMM-heavy → 8 threads optimal; image conv-heavy → **12 threads**;
 - R5-4500U (6C6T, no SMT) → **6 threads** (all physical cores);
 - **bf16 unusable on AVX2** (software-emulated >90 s hang) — always fp32.
+
+**Real gap between the two target machines (qwen3-1.7B LoRA, seq256, batch1, pure CPU fp32)**:
+
+| Machine | Threads | Per step | Note |
+|---|---|---|---|
+| **i5-10400** | 6C12T (SMT) | ~4s | Desktop, stronger AVX2, 12 threads |
+| **R5-4500U** | 6C6T (no SMT) | **12–17s** | Low-power laptop U, 6 threads |
+
+Measured (R5) with fp32 / 8bit-quantized base / Trainer+use_cache=False / torch_cpu_kit(lm) —
+all 12–17 s/step (no real gain). **Conclusion: 12s (R5) vs 4s (i5) is a hardware gap
+(threads 12 vs 6 + AVX2 single-core strength + power), NOT a bug and NOT fixable by
+quantization/optimization.** i5 is the primary training machine; R5 (dev box) is at its ceiling.
+Do not compare per-step time across the two machines directly.
 
 ### 3.5 Negative finding: lower-precision base-weight storage (important)
 
@@ -135,6 +191,45 @@ truly stored as 8bit/NF4/FP4 codes (no fp32 master), saving ~75% (8-bit) / ~87.5
 only per-block scales adapt, not the base codes. This is implemented by the upper
 layer `quant_lora.QuantLinearTrainable`, reusing this repo's `quantize_blockwise` /
 `quantize_4bit` / codebook (`create_dynamic_map` / `get_4bit_type`).
+
+### 3.5.1 Fused elementwise kernel family: the only block left in a training step (+5~8%)
+
+**Where it comes from** (`probe_step_breakdown.py`, R5-4500U pure CPU, ~30M model):
+```
+one step = 2.819 s:
+    GEMM        63.6%   already at 92% of a same-shape pure-GEMM baseline => no room
+    elementwise 20.8%   the only block with room left
+    attention    7.6%
+```
+In eager mode `RMSNorm` expands into 6 aten operators, so the activation is fully read and
+written 6 times => pure bandwidth waste.
+
+**Measured gain** (6 alternating rounds, paired-ratio median; `enable_fused.py`):
+```
+RMSNorm only                +5.0% (conservative) ~ +8.0% (median)
+RMSNorm + SwiGLU + residual +5.5% (conservative) ~ +7.1% (median)
+=> the two are close => default is RMSNorm only
+```
+**Numerics**: `max|delta| ~1e-7` vs eager (fp32 accumulation order); `state_dict` keys are
+unchanged, so checkpoints interload.
+
+**NT store measured (the bandwidth optimisation inside the same kernels)**:
+| kernel | normal store | NT store | ratio |
+|---|---|---|---|
+| copy | 13.40 GB/s | **25.40** | 1.90x |
+| triad | 16.09 | **23.86** | 1.48x |
+The threshold derives from the **runtime L3 size**: outputs >= 4.2 MB win (2.0~3.1x),
+<= 1.0 MB lose (0.69~0.73x). Note the optimizer's `p` write must **not** use NT
+(read-modify-write; measured 21% regression).
+
+**Boundary (important)**: this family saves **bandwidth, not FLOPs**.
+On the same machine, **convolution-dominated** UNet training has elementwise at only 9.4% with
+an arithmetic intensity of 394 FLOP/byte (far above the crossover of 9) => fusing elementwise
+gains ~0 there; different work is needed (see `TECHNICAL_GUIDE_EN.md` section 3.5.2).
+The "elementwise 20.8%" figure comes from a **Transformer-shaped** load and must not be
+extrapolated to convolutional ones.
+
+Full usage: [`FUSED_KERNELS_EN.md`](FUSED_KERNELS_EN.md).
 
 ### 3.6 EFST: MoE expert-specific fine-tuning (efst.py)
 
@@ -327,6 +422,29 @@ cold); mmap zero-copy read-back.
 returns immediately); it offloads on demand (one param/step, bounded) near the
 threshold and does not slow training.
 
+**Crash found on a real LLM (fixed)**: §5's stress test used "self-supplied dummy cold
+params" (`4×200MB dummy`), not a real model. On **Qwen3-1.7B LoRA training** (fp32 base
+~7GB, memory near threshold triggering offload), `update_step()` iterates `named_parameters()`
+and treats the `requires_grad=False` **`embed_tokens.embedding.weight` (1.24GB) as a cold
+param**; `put_cold` does `tensor.data = torch.empty(0)`, so the embedding forward errors with
+`'weight' must be 2-D`.
+
+**Root cause**: the auto-offload is safe **only when a param is not used in forward** (needs a
+manual `get_cold` read-back later). But `update_step()` auto-offloads frozen layers (LoRA
+frozen base), which **participate in forward every step**; with no read-back they crash. And it's
+not just embeddings from the day one — any frozen layer read in forward (incl. transformer
+Linear, whose shape becomes `[0]`) will crash.
+
+**Fix (`_is_cold_param`)**: skip embed/output/norm layers (`embed_tokens`/`lm_head`/
+`word_embeddings`/`layernorm`/`layer_norm`, etc. — weights read directly in forward and most
+prone to crashing). After the fix, `--flash` runs normally on real Qwen3-1.7B LoRA training.
+
+**Applicability (important)**: auto-offload fits only "this layer is not in forward this round"
+or with a manual `get_cold` read-back. If every frozen layer is in forward (ordinary LoRA frozen
+base), auto-offload may still hit a transformer Linear and crash — in that case **do not enable
+`--flash`** (quantized base saves memory more robustly), or use `offload_prefix` to restrict
+offload to truly non-forward params.
+
 ---
 
 ## 6. Cross-platform build & self-test
@@ -365,6 +483,61 @@ only by toolchain).
    **negative** here (R5 AMD + i5 AMD R5 M240 are both slower than same-gen CPU), so
    it is **not recommended**; this direction only applies to real low-end cards with
    dedicated VRAM and needs separate hardware to validate.
+
+**Video generation (AnimateDiff) adaptation measured + high-res path + training support (this addendum)**
+
+**Adaptation works (standard diffusers, no format mismatch)**: SD1.5 unet (3.2GB) + motion
+adapter (v1-5-2) + standard SD1.5 vae/text_encoder + **vocab fix** (CLIP vocab = 49408; missing
+vocab before made prompts meaningless / output abstract — after the fix 512x512 is sharp).
+Measured video generation:
+
+| Config | Speed (oneDNN+threads) | Peak memory |
+|---|---|---|
+| 256×8 frame×15 steps | 341–375s | ~9GB |
+| 512×8 frame×3 steps | 369s | **11.56GB** (runs in 16GB) |
+| 1080p×15s | **infeasible** | est. >90GB |
+
+**Key honest conclusions**: `oneDNN + more threads` (visual conv-heavy optimal, R5 6-core) makes
+CPU video ~31% faster (543→341s); `512×8 frame` peak 11.56GB is the **limit config that runs in 16GB**.
+
+**1080p×15s hardware reality**: 512→1080p scales space by `(1920/512)×(1080/512)≈7.9×`; memory
+est. >90GB (far beyond 16GB) and CPU takes minutes/frame/step. **16GB CPU cannot generate 1080p long
+video** — this is a hardware (no dedicated VRAM) limit; 1080p long video is a GPU use case.
+
+**1080p optimization path (if stronger hardware)**: (1) generate low-res then VAE upscale; (2) tiled
+generation (infer tile-by-tile); (3) `attention/Vae slicing` (measured INEFFECTIVE on 16GB — slightly
+increases, recorded as negative); (4) 8bit/4bit quantize + offload (saves memory, dequant overhead);
+(5) activation checkpointing (for training). **Memory-squeeze conclusion**: `attention_slicing` is
+ineffective here (11.84 vs 11.56GB, slightly up + slower); real memory savings come from lower
+resolution/frames (lower quality) or stronger hardware.
+
+**Training support (AnimateDiff motion fine-tune)**: data pipeline works — `facebook/PE-Video` (798MB)
+downloaded + 500 video+json pairs extracted + PyAV 8-frame extraction (`.npy`). But **training** on 16GB
+stalls on (1) video-latent layout (AnimateDiff internal temporal frame alignment, needs diffusers'
+training implementation) and (2) 1.3G unet (fp32) + video latent + backward = 16GB segfault. **Plan**: use
+`DDPMScheduler + video-latent handling` + **gradient checkpointing** (saves activation memory) + smaller
+frames/resolution + CPU offload (adapt disk_balancer for device/memory offload). **Training motion on
+16GB needs lower config or stronger hardware**; data + adaptation are ready, training is the next step
+(incl. memory strategy).
+
+**Low-res generation + super-resolution to 1080p/2K ("DLSS-like") — measured + trilemma conclusion**:
+
+User workflow = generate at low res (256/512) then upscale to 1080p/2K. Measured (512/384 source):
+
+| SR method | 512→2K speed | 4x quality | Video feasible |
+|---|---|---|---|
+| FSR 1.0 (spatial, official algo) | 0.55s/frame | ❌ **smear/grain** (real video 4x) | ✅ |
+| Real-ESRGAN x4plus (AI, 16.7M) | 110s/frame | ✅ **sharp & natural** (learns real detail) | ❌ (582 frames = 18h) |
+| Self-trained FSRCNN (light, 22.5k params) | 0.4s/frame | ⚠️ **no grain but color-shift/soft** (small-model limit) | ✅ |
+
+**Key**: on 16GB CPU, SR is a **trilemma** — fast (video-feasible) requires a small model, but small
+models are either slow (Real-ESRGAN) or color-shift/soft (self-trained FSRCNN); **natural quality +
+lightweight + video-feasible** cannot all be had on pure CPU. A 64px source **still collapses on any
+upscale** (only 4096 pixels, no detail to reconstruct — "garbage in, garbage out"). **Conclusion**: CPU
+video SR reality = FSR (fast but 4x grain) or Real-ESRGAN (good but slow); "light + natural" needs an
+official lightweight SR weight (not self-trained) or a GPU (Real-ESRGAN real-time video). Upstream
+(AMD FSR 2/3 temporal, FSR 4.0 AI) and AI SR (Real-ESRGAN) measured and characterized as a hardware
+boundary.
 
 ---
 

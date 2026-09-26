@@ -1681,10 +1681,15 @@ def fused_dequant_linear_8bit(A: torch.Tensor, wq: torch.Tensor, absmax: torch.T
     的 uint8 码流（[N,K]），absmax 为逐行块绝对最大值（[N, K//blocksize]，
     需 K % blocksize == 0）。权重全程保持 uint8：不产生 fp32 权重临时张量，
     DRAM 流量为 fp32 的 1/4 —— 适合大模型冻结线性层 / 训练时的 dx 计算。
+
+    A 支持任意前导维：`A.shape == (..., K)`，输出 `A.shape[:-1] + (N,)`。
+    视频 latent 典型用法：先 permute 到通道在最后（[B,T,H,W,K]），或把
+    (B,T,H,W) 展平成 2D；不要直接传 [B,C,T,H,W]（最后一维不是 K）。
     """
     # 融合 AVX2 内核按行块布局，要求 K % blocksize == 0；否则会静默返回错值。
     # 显式校验，避免调用方拿错误结果（而不是报一个可读的错误）。
-    k = A.shape[1]
+    # 支持任意前导维（如视频 5D [B,T,H,W,K] / [B,C,T,H,W] 先 permute 到通道在最后）
+    k = A.shape[-1]
     if k % blocksize != 0:
         raise ValueError(
             f"fused_dequant_linear_8bit requires K % blocksize == 0, got K={k} "

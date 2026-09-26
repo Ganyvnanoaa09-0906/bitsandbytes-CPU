@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 setlocal
 REM ============================================================
 REM  bitsandbytes CPU DLL - manual cl build (no CMake), Windows x86/x64

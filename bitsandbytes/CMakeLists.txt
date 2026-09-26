@@ -382,20 +382,65 @@ if (BUILD_CPU)
         target_compile_options(bitsandbytes PRIVATE -ffp-contract=off)
 
         if (HOST_ARCH MATCHES "x86_64|amd64")
-            include(CheckCXXCompilerFlag)
-            check_cxx_compiler_flag(-mavx512f HAS_AVX512F_FLAG)
-            check_cxx_compiler_flag(-mavx512bf16 HAS_AVX512BF16_FLAG)
-            if (HAS_AVX512F_FLAG)
-                target_compile_options(
-                    bitsandbytes PRIVATE
-                    -mavx512f
-                    -mavx512bw
-                    -mavx512dq
-                    -mavx512vl
-                )
-            endif()
-            if (HAS_AVX512BF16_FLAG)
-                target_compile_options(bitsandbytes PRIVATE -mavx512bf16)
+            # ── AVX512 is OPT-IN, and the probe must ask "can this CPU RUN it",
+            #    not "does this compiler ACCEPT the flag".
+            #
+            # Why (measured on an AVX2-only host; report §10.95):
+            #   · `check_cxx_compiler_flag` only proves the COMPILER accepts
+            #     -mavx512f. It says nothing about the CPU that executes the result.
+            #   · These are target-wide flags, so GCC/Clang may emit EVEX-encoded
+            #     instructions (e.g. `vmulps ... {1to4}`) anywhere — including in
+            #     translation units that used to be AVX2-only.
+            #   · The only thing preventing that today is a per-function
+            #     `#pragma GCC target("...no-avx512f")` in cpu_ops.cpp, which does
+            #     not cover the rest of the build. An AVX512-only binary then dies
+            #     with SIGILL on an AVX2-only CPU.
+            #
+            # So: default OFF (today's safe behaviour). Opting in additionally
+            # requires the build host to RUN an AVX512 probe. Under cross-compilation
+            # that probe cannot run, so it correctly stays off.
+            #
+            # NOTE: MSVC never reaches this block (guarded by `if (NOT MSVC)`), so
+            # this change cannot alter the Windows/MSVC build.
+            option(BNB_ENABLE_AVX512
+                   "Build the CPU backend with AVX512 kernels (needs an AVX512-capable build host)" OFF)
+            if (BNB_ENABLE_AVX512)
+                include(CheckCXXSourceRuns)
+                # The probe needs the flag itself, otherwise <immintrin.h> hides the
+                # _mm512_* intrinsics and the check would fail for the wrong reason
+                # (a feature silently disabling itself — exactly what we are fixing).
+                set(CMAKE_REQUIRED_FLAGS "-mavx512f")
+                check_cxx_source_runs("
+                    #include <immintrin.h>
+                    int main(void) {
+                        __m512 a = _mm512_set1_ps(1.0f);
+                        __m512 b = _mm512_set1_ps(2.0f);
+                        __m512 c = _mm512_add_ps(a, b);
+                        return _mm512_cvtss_f32(c) > 0.0f ? 0 : 1;
+                    }" BNB_AVX512_RUNS)
+                unset(CMAKE_REQUIRED_FLAGS)
+                if (BNB_AVX512_RUNS)
+                    target_compile_options(
+                        bitsandbytes PRIVATE
+                        -mavx512f
+                        -mavx512bw
+                        -mavx512dq
+                        -mavx512vl
+                    )
+                    # `-mavx512bf16` is gated on the same probe on purpose: enabling
+                    # BF16 alone would still emit AVX512 instructions (and the Python
+                    # side gates the BF16 kernels on has_avx512bf16()).
+                    include(CheckCXXCompilerFlag)
+                    check_cxx_compiler_flag(-mavx512bf16 HAS_AVX512BF16_FLAG)
+                    if (HAS_AVX512BF16_FLAG)
+                        target_compile_options(bitsandbytes PRIVATE -mavx512bf16)
+                    endif()
+                    message(STATUS "bitsandbytes: AVX512 ENABLED (probe actually ran on this host)")
+                else()
+                    message(STATUS "bitsandbytes: BNB_ENABLE_AVX512=ON but the AVX512 probe could not RUN here -> AVX512 NOT enabled")
+                endif()
+            else()
+                message(STATUS "bitsandbytes: AVX512 disabled (default; -DBNB_ENABLE_AVX512=ON to opt in)")
             endif()
             target_compile_options(
                 bitsandbytes PRIVATE

@@ -104,10 +104,10 @@ class AdamW8bit(Optimizer2State):
         if amsgrad:
             raise ValueError("AdamW8bit does not support amsgrad=True")
 
-        if optim_bits != 32:
+        if optim_bits not in (8, 32):
             # We allow the default value of 32 to maintain compatibility with the function signature,
             # but any other value is invalid since AdamW8bit always uses 8-bit optimization
-            raise ValueError("AdamW8bit only supports optim_bits=32 (default value for compatibility)")
+            raise ValueError("AdamW8bit only supports optim_bits=8 or 32 (8-bit state is always used)")
 
         super().__init__(
             "adam",
@@ -268,10 +268,10 @@ class PagedAdamW8bit(Optimizer2State):
         if amsgrad:
             raise ValueError("PagedAdamW8bit does not support amsgrad=True")
 
-        if optim_bits != 32:
+        if optim_bits not in (8, 32):
             # We allow the default value of 32 to maintain compatibility with the function signature,
             # but any other value is invalid since PagedAdamW8bit always uses 8-bit optimization
-            raise ValueError("PagedAdamW8bit only supports optim_bits=32 (default value for compatibility)")
+            raise ValueError("PagedAdamW8bit only supports optim_bits=8 or 32 (8-bit state is always used)")
 
         super().__init__(
             "adam",

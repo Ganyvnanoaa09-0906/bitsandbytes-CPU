@@ -14,6 +14,9 @@ from ...cextension import ErrorHandlerMockBNBNativeLibrary, lib
 
 logger = logging.getLogger(__name__)
 
+# 256 项 fp32 8-bit 码表缓存（见 _gemm_8bit_cpu 的说明）
+_GEMM_8BIT_CODE = None
+
 _has_avx512 = torch.backends.cpu.get_cpu_capability() == "AVX512"
 
 # torch._int_mm for s8@s8->s32 is supported on CPU from torch 2.4+.
@@ -239,6 +242,14 @@ if not isinstance(lib, ErrorHandlerMockBNBNativeLibrary):
 
         return out
 
+    # NOTE 2026-09-22: the registration below used to live INSIDE `if has_avx512bf16():`,
+    # which meant AVX2-only CPUs (Zen2 4500U / Comet Lake i5 / EPYC Zen2-3) never
+    # registered a CPU kernel for gemv_4bit at all. They silently fell through to the
+    # default backend, which dequantizes the whole weight matrix and then runs a dense
+    # linear -- measured 12.3 ms per call vs 1.16 ms for the fused kernel below (10.6x).
+    # The guard is therefore narrowed to cover only the AVX512-BF16-only HuggingFace
+    # kernel load; the fused registration is unconditional.
+    gemm_4bit_forward_kernel = None
     if has_avx512bf16():
         gemm_4bit_forward_kernel = None
         try:
@@ -254,76 +265,180 @@ if not isinstance(lib, ErrorHandlerMockBNBNativeLibrary):
                 exc,
             )
 
-        @register_kernel("bitsandbytes::gemv_4bit", "cpu")
-        def _(
-            A: torch.Tensor,
-            B: torch.Tensor,
-            shapeB: Sequence[int],
-            absmax: torch.Tensor,
-            code: torch.Tensor,
-            blocksize: int,
-        ) -> torch.Tensor:
-            if B.dtype != torch.uint8:
-                B = B.contiguous().view(torch.uint8)
-            dtype = A.dtype
-            A_orig = A
-            absmax_orig = absmax
-            quant_type = "fp4" if code[1] > 0 else "nf4"
-            # cpu fused op only support bf16 for now.
-            if dtype != torch.bfloat16:
-                A = A.to(torch.bfloat16)
-            if absmax.dtype != torch.bfloat16:
-                absmax = absmax.to(torch.bfloat16)
+    @register_kernel("bitsandbytes::gemv_4bit", "cpu")
+    def _(
+        A: torch.Tensor,
+        B: torch.Tensor,
+        shapeB: Sequence[int],
+        absmax: torch.Tensor,
+        code: torch.Tensor,
+        blocksize: int,
+    ) -> torch.Tensor:
+        if B.dtype != torch.uint8:
+            B = B.contiguous().view(torch.uint8)
+        dtype = A.dtype
+        A_orig = A
+        absmax_orig = absmax
+        quant_type = "fp4" if code[1] > 0 else "nf4"
+        # cpu fused op only support bf16 for now.
+        if dtype != torch.bfloat16:
+            A = A.to(torch.bfloat16)
+        if absmax.dtype != torch.bfloat16:
+            absmax = absmax.to(torch.bfloat16)
 
-            final_out_shape = (*A.shape[:-1], shapeB[0])
-            A = A.reshape(-1, A.shape[-1])
-            out_shape = (*A.shape[:-1], shapeB[0])
-            if gemm_4bit_forward_kernel is not None:
-                quant_type_num = 1 if quant_type == "fp4" else 0
-                # C++ kernel expects weight shape (N, K_packed), ensure 2D contiguous
-                B_2d = B.reshape(shapeB[0], -1).contiguous()
-                out = gemm_4bit_forward_kernel(A, B_2d, absmax, blocksize, quant_type_num)
+        final_out_shape = (*A.shape[:-1], shapeB[0])
+        A = A.reshape(-1, A.shape[-1])
+        out_shape = (*A.shape[:-1], shapeB[0])
+        if gemm_4bit_forward_kernel is not None:
+            quant_type_num = 1 if quant_type == "fp4" else 0
+            # C++ kernel expects weight shape (N, K_packed), ensure 2D contiguous
+            B_2d = B.reshape(shapeB[0], -1).contiguous()
+            out = gemm_4bit_forward_kernel(A, B_2d, absmax, blocksize, quant_type_num)
+        else:
+            # AVX2 回退：用所有 CPU 构建都导出的 cgemv_4bit_inference_cpu_* 融合内核
+            # （lib.gemv_4bit_inference_cpu_fp4/nf4_bf16 只存在于 AVX512+BF16 构建，
+            #  AVX2 机器走到会 AttributeError；data_type: FP4=1 / NF4=2）
+            A_c = A_orig.reshape(-1, A_orig.shape[-1]).contiguous()
+            B_c = B.reshape(shapeB[0], -1).contiguous()
+            absmax_c = absmax_orig.float().contiguous()
+            data_type_num = 1 if quant_type == "fp4" else 2
+            M, K = A_c.shape[0], A_c.shape[1]
+            N = shapeB[0]
+            out = torch.empty(out_shape, dtype=A_c.dtype, device=A_c.device)
+            if dtype == torch.float32:
+                lib.cgemv_4bit_inference_cpu_fp32(
+                    get_ptr(A_c), get_ptr(B_c), get_ptr(absmax_c), get_ptr(out),
+                    ct.c_longlong(M), ct.c_longlong(N), ct.c_longlong(K),
+                    ct.c_longlong(A_c.stride(0)), ct.c_longlong(K // 2),
+                    ct.c_longlong(out.stride(0)), ct.c_longlong(blocksize),
+                    ct.c_int(data_type_num),
+                )
+            elif dtype == torch.bfloat16:
+                lib.cgemv_4bit_inference_cpu_bf16(
+                    get_ptr(A_c), get_ptr(B_c), get_ptr(absmax_c), get_ptr(out),
+                    ct.c_longlong(M), ct.c_longlong(N), ct.c_longlong(K),
+                    ct.c_longlong(A_c.stride(0)), ct.c_longlong(K // 2),
+                    ct.c_longlong(out.stride(0)), ct.c_longlong(blocksize),
+                    ct.c_int(data_type_num),
+                )
             else:
-                # AVX2 回退：用所有 CPU 构建都导出的 cgemv_4bit_inference_cpu_* 融合内核
-                # （lib.gemv_4bit_inference_cpu_fp4/nf4_bf16 只存在于 AVX512+BF16 构建，
-                #  AVX2 机器走到会 AttributeError；data_type: FP4=1 / NF4=2）
-                A_c = A_orig.reshape(-1, A_orig.shape[-1]).contiguous()
-                B_c = B.reshape(shapeB[0], -1).contiguous()
-                absmax_c = absmax_orig.float().contiguous()
-                data_type_num = 1 if quant_type == "fp4" else 2
-                M, K = A_c.shape[0], A_c.shape[1]
-                N = shapeB[0]
-                out = torch.empty(out_shape, dtype=A_c.dtype, device=A_c.device)
-                if dtype == torch.float32:
-                    lib.cgemv_4bit_inference_cpu_fp32(
-                        get_ptr(A_c), get_ptr(B_c), get_ptr(absmax_c), get_ptr(out),
-                        ct.c_longlong(M), ct.c_longlong(N), ct.c_longlong(K),
-                        ct.c_longlong(A_c.stride(0)), ct.c_longlong(K // 2),
-                        ct.c_longlong(out.stride(0)), ct.c_longlong(blocksize),
-                        ct.c_int(data_type_num),
-                    )
-                elif dtype == torch.bfloat16:
-                    lib.cgemv_4bit_inference_cpu_bf16(
-                        get_ptr(A_c), get_ptr(B_c), get_ptr(absmax_c), get_ptr(out),
-                        ct.c_longlong(M), ct.c_longlong(N), ct.c_longlong(K),
-                        ct.c_longlong(A_c.stride(0)), ct.c_longlong(K // 2),
-                        ct.c_longlong(out.stride(0)), ct.c_longlong(blocksize),
-                        ct.c_int(data_type_num),
-                    )
-                else:
-                    lib.cgemv_4bit_inference_cpu_fp16(
-                        get_ptr(A_c), get_ptr(B_c), get_ptr(absmax_c), get_ptr(out),
-                        ct.c_longlong(M), ct.c_longlong(N), ct.c_longlong(K),
-                        ct.c_longlong(A_c.stride(0)), ct.c_longlong(K // 2),
-                        ct.c_longlong(out.stride(0)), ct.c_longlong(blocksize),
-                        ct.c_int(data_type_num),
-                    )
+                lib.cgemv_4bit_inference_cpu_fp16(
+                    get_ptr(A_c), get_ptr(B_c), get_ptr(absmax_c), get_ptr(out),
+                    ct.c_longlong(M), ct.c_longlong(N), ct.c_longlong(K),
+                    ct.c_longlong(A_c.stride(0)), ct.c_longlong(K // 2),
+                    ct.c_longlong(out.stride(0)), ct.c_longlong(blocksize),
+                    ct.c_int(data_type_num),
+                )
 
-            if dtype != torch.bfloat16:
-                out = out.to(dtype)
+        if dtype != torch.bfloat16:
+            out = out.to(dtype)
 
-            return out.reshape(final_out_shape)
+        return out.reshape(final_out_shape)
 
+    # ---- gemm_4bit: CPU 注册（2026-09-22 新增）----
+    # 此前这个 op 【没有 cpu 注册】，于是退到 default 后端做"反量化 + 稠密线性"。
+    # autograd/_functions.py:324/334/462/472 调的就是它 ⇒ 真实模型里
+    # 【每一次批量 4-bit 线性前向】都在走慢路径。实测（K=N=4096）：
+    #     M=1   gemm_4bit 14.483 ms  vs 融合内核  1.448 ms  ⇒ 10.00x
+    #     M=8   gemm_4bit 32.494 ms  vs 融合内核  4.124 ms  ⇒  7.88x
+    #     M=64  gemm_4bit 38.576 ms  vs 融合内核 30.382 ms  ⇒  1.27x
+    #     M=256 gemm_4bit 75.532 ms  vs 融合内核 164.840 ms ⇒  0.46x  ← 融合反而慢
+    # 融合内核的 m 循环每 4 行重读一遍权重，所以大 M 时它输给 oneDNN 稠密。
+    # ⇒ 按 M 分档：小 M 走融合内核，大 M 交回 default。
+    # ---- 2026-09-22 实测三方交叉点（K=N=4096，OMP=6）----
+    #        M     融合 ms    default ms   融合优势
+    #        1      1.20       ~14.5       12x
+    #        8      4.71        25.14       5.3x
+    #       16      7.04        25.75       3.7x
+    #       17      7.79        26.43       3.4x
+    #       32     16.20        28.41       1.75x
+    #       64     28.79        31.37       1.09x
+    #       96     43.45        37.01       default 反超
+    #      128     62.11        41.77       default 快 1.49x
+    #      192     85.78        54.67       default 快 1.57x
+    #      256    166.11        64.94       default 快 2.56x
+    # ⇒ 融合内核一直赢到 M=64，default 要到 M≈96 才反超。
+    # 阈值原先写 16 ⇒ M=17~64 被错误地分给 default，白慢最多 3.4x。
+    #
+    # ⚠️ 一个被实测否决的尝试：给 C 层加"权重行解码一次、对全部 M 行复用"的路径，
+    #    结果是【负优化】（M=17 慢 1.52x、M=192 慢 1.44x）——
+    #    它把权重解码从 O(M/4) 降到 O(1)，却让 A 被每个输出列重读一次，
+    #    A 流量变成 O(N*M*K)（M=17 时 1.14 GB），远比重新解码权重贵。
+    #    已删除，只在 cpu_ops.cpp 里留了说明。
+    _GEMM_4BIT_FUSED_MAX_M = 64
+
+    @register_kernel("bitsandbytes::gemm_4bit", "cpu")
+    def _gemm_4bit_cpu(
+        A: torch.Tensor,
+        B: torch.Tensor,
+        shapeB: Sequence[int],
+        absmax: torch.Tensor,
+        blocksize: int,
+        quant_type: str,
+        bias: Optional[torch.Tensor] = None,
+        absmax_8bit: Optional[torch.Tensor] = None,
+        absmax_code: Optional[torch.Tensor] = None,
+        absmax_offset: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        m_rows = A.numel() // A.shape[-1] if A.numel() else 0
+        # 融合路径的限制：无 bias、非 nested absmax、张量是 2D 可 reshape 的、
+        # 且 M 足够小（大 M 时 oneDNN 稠密更快）。
+        can_fuse = (
+            gemm_4bit_forward_kernel is None      # 没有 HF kernel 时才用我们的融合内核
+            and bias is None
+            and absmax_8bit is None
+            and m_rows > 0
+            and m_rows <= _GEMM_4BIT_FUSED_MAX_M
+        )
+        if can_fuse:
+            dtype = A.dtype
+            A_c = A.reshape(-1, A.shape[-1]).contiguous()
+            B_c = B.reshape(shapeB[0], -1)
+            if B_c.dtype != torch.uint8:
+                B_c = B_c.contiguous().view(torch.uint8)
+            else:
+                B_c = B_c.contiguous()
+            absmax_c = absmax.float().contiguous()
+            M, K = A_c.shape[0], A_c.shape[1]
+            N = shapeB[0]
+            data_type_num = 1 if quant_type == "fp4" else 2
+            out = torch.empty((M, N), dtype=dtype, device=A_c.device)
+            fn = {
+                torch.float32: lib.cgemv_4bit_inference_cpu_fp32,
+                torch.bfloat16: lib.cgemv_4bit_inference_cpu_bf16,
+                torch.float16: lib.cgemv_4bit_inference_cpu_fp16,
+            }[dtype]
+            fn(
+                get_ptr(A_c), get_ptr(B_c), get_ptr(absmax_c), get_ptr(out),
+                ct.c_longlong(M), ct.c_longlong(N), ct.c_longlong(K),
+                ct.c_longlong(A_c.stride(0)), ct.c_longlong(K // 2),
+                ct.c_longlong(out.stride(0)), ct.c_longlong(blocksize),
+                ct.c_int(data_type_num),
+            )
+            return out.reshape(*A.shape[:-1], N)
+
+        from ..default.ops import _gemm_4bit_default_impl
+
+        return _gemm_4bit_default_impl(
+            A, B, shapeB, absmax, blocksize, quant_type,
+            bias, absmax_8bit, absmax_code, absmax_offset,
+        )
+
+    # ---- 大 M 分档（2026-09-23 实测）----
+    # 融合内核的内层是 m0 += 4，每 4 行就把整块权重重新读一遍 ⇒ 权重流量 O(M/4)，
+    # 大 M 时输给"反量化 + oneDNN 稠密 matmul"。
+    # 干净基准（gemm8_test.py：每格子进程 + 取 7 次最小值），融合/两步 的比值：
+    #     M=16   0.18x / 0.15x / 0.25x     融合远优
+    #     M=64   0.89x / 0.65x / 0.77x     融合仍优
+    #     M=128  1.34x / 1.14x / 1.32x     ← 交叉点在这一带
+    #     M=256  1.54x / 1.34x / 1.51x
+    #     M=512  2.04x / 1.82x / 2.04x     两步快约一倍
+    # ⇒ 阈值取 64（保守：M=64 时融合还是赢的，且真实推理的 M 是 seq_len）。
+    #
+    # ⚠️ 这个 op 【没有 default 后端回退】（全库只注册了 cpu 与 cuda），
+    #    所以大 M 路径必须在这里自己实现。8-bit 的码表是 create_dynamic_map()，
+    #    与 quantize_blockwise 默认用的同一个 ⇒ 数值一致。
+    _GEMM_8BIT_FUSED_MAX_M = 64
 
     @register_kernel("bitsandbytes::gemm_8bit", "cpu")
     def _gemm_8bit_cpu(
@@ -335,6 +450,7 @@ if not isinstance(lib, ErrorHandlerMockBNBNativeLibrary):
         """融合 8bit 反量化 GEMM：out = A @ dequant8(B)（B 为 uint8 码流，逐行块量化）。
 
         权重在整个乘法中保持 uint8（DRAM 流量为 fp32 的 1/4），无 fp32 临时张量。
+        小 M（<= 64）走融合内核；大 M 退到"反量化 + 稠密 matmul"（见上面的分档说明）。
         """
         if A.numel() == 0:
             return torch.empty((*A.shape[:-1], B.shape[0]), dtype=torch.float32, device=A.device)
@@ -343,6 +459,15 @@ if not isinstance(lib, ErrorHandlerMockBNBNativeLibrary):
         absmax_c = absmax.contiguous().float()
         M, K = A_f.shape
         N = B_c.shape[0]
+
+        if M > _GEMM_8BIT_FUSED_MAX_M:
+            # 大 M：两步更快（实测 M=512 时 1.8~2.0x）
+            from bitsandbytes.functional import create_dynamic_map, dequantize_blockwise
+
+            code = create_dynamic_map().to(B_c.device)
+            W = dequantize_blockwise(B_c, absmax=absmax_c, code=code, blocksize=blocksize)
+            return (A_f @ W.t()).reshape(*A.shape[:-1], N)
+
         out = torch.empty((M, N), dtype=torch.float32, device=A_f.device)
         lib.cgemm_8bit_inference_cpu_fp32(
             get_ptr(A_f),

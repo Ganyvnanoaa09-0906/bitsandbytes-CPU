@@ -65,6 +65,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import psutil
 import torch
+try:
+    from latent_chunk_store import LatentChunkStore
+except Exception:  # pragma: no cover - optional integration
+    LatentChunkStore = None
 
 __all__ = [
     "DiskBalancerConfig",
@@ -522,6 +526,9 @@ class DiskLoadBalancer:
         self._script_dir: str = ""
         self._ssd_paths: List[str] = []
         self._hdd_paths: List[str] = []
+        self._latent_store = None                 # LatentChunkStore（时间维 latent 分块）
+        self._latent_keys: List[str] = []         # 已卸载的 latent chunk key 顺序
+        self._latent_offloaded: int = 0
 
     # ------------------------------------------------------------------
     # 初始化
@@ -565,6 +572,12 @@ class DiskLoadBalancer:
         self._writer_thread.start()
 
         self._started = True
+
+        # 时间维 latent 分块缓存：复用第一个缓存路径下的 latent_chunks/
+        if LatentChunkStore is not None and self._paths:
+            latent_dir = os.path.join(self._paths[0], "latent_chunks")
+            os.makedirs(latent_dir, exist_ok=True)
+            self._latent_store = LatentChunkStore(latent_dir, keep=self._cfg.keep_cache)
         self._print_summary()
         return self
 
@@ -724,6 +737,53 @@ class DiskLoadBalancer:
     # 公共 API
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # 时间维 latent 分块卸载（5D 视频 latent）
+    # ------------------------------------------------------------------
+
+    def _mem_pressure(self) -> bool:
+        """内存接近阈值时返回 True（与 update_step 同一口径）。"""
+        mem = psutil.virtual_memory()
+        return mem.available / mem.total < (1.0 - self._cfg.memory_threshold)
+
+    def put_latent_chunk(self, key: str, latent: torch.Tensor,
+                         t0: Optional[int] = None, t1: Optional[int] = None) -> Dict[str, Any]:
+        """把 5D latent 按时间块写入 SSD（mmap 可读）。"""
+        if self._latent_store is None:
+            raise RuntimeError("latent_chunk_store 未就绪：请先 start() 且环境支持")
+        info = self._latent_store.put(key, latent)
+        self._latent_keys.append(key)
+        info.update({"t0": t0, "t1": t1, "key": key})
+        return info
+
+    def get_latent_chunk(self, key: str, clone: bool = False) -> Optional[torch.Tensor]:
+        """mmap 零拷贝读回 latent chunk。"""
+        if self._latent_store is None:
+            return None
+        return self._latent_store.get(key, clone=clone)
+
+    def maybe_offload_latent(self, key: str, latent: torch.Tensor,
+                             t0: Optional[int] = None, t1: Optional[int] = None) -> Optional[torch.Tensor]:
+        """内存接近阈值时自动把 latent 分块卸载；返回 None 表示已卸载，调用方应释放原张量。"""
+        if getattr(self, "_9p_skip", False) or self._latent_store is None or not self._started:
+            return latent
+        if not self._mem_pressure():
+            return latent
+        self.put_latent_chunk(key, latent, t0=t0, t1=t1)
+        self._latent_offloaded += 1
+        return None
+
+    def maybe_offload_latent_window(self, key: str, latent: torch.Tensor,
+                                    t0: int, t1: int) -> Optional[torch.Tensor]:
+        """按时间窗口 [t0, t1) 卸载；调用方通常传 latent[:, :, t0:t1]。"""
+        return self.maybe_offload_latent(key, latent, t0=t0, t1=t1)
+
+    def drop_latent_chunk(self, key: str):
+        if self._latent_store is not None:
+            self._latent_store.drop(key)
+        if key in self._latent_keys:
+            self._latent_keys.remove(key)
+
     def update_step(self) -> int:
         """每步调用：检查内存压力，自动迁移冷参数到磁盘。
 
@@ -826,6 +886,10 @@ class DiskLoadBalancer:
         # 若该 key 仍在异步写盘队列中（在途），先等写完，避免把"待写"误判为"不存在"。
         self.wait_writes()
 
+        if self._latent_store is not None:
+            self._latent_store.cleanup()
+            self._latent_keys.clear()
+
         if not os.path.exists(path):
             return None
 
@@ -913,6 +977,10 @@ class DiskLoadBalancer:
         """
         self.wait_writes()
 
+        if self._latent_store is not None:
+            self._latent_store.cleanup()
+            self._latent_keys.clear()
+
         with self._lock:
             if not self._cfg.keep_cache:
                 for d in self._disks:
@@ -937,6 +1005,8 @@ class DiskLoadBalancer:
             "memory_percent": mem.percent,
             "memory_available_mb": mem.available / (1 << 20),
             "queue_size": self._write_queue.qsize(),
+            "latent_chunks": len(self._latent_keys),
+            "latent_offloaded": self._latent_offloaded,
             "disks": [
                 {
                     "mount": d.mount,

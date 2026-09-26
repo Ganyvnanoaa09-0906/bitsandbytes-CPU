@@ -158,6 +158,84 @@ This fork:
 - uses the kernel constants **FP4=1 / NF4=2** for `data_type`;
 - after the fix, nf4/fp4 are bit-identical to the reference (error 0).
 
+### 3.5.1 `gemm_4bit`: CPU registration for the **training / batched-forward** 4-bit path
+
+> §3.5 fixes the **inference** `gemv_4bit` (M=1, one token at a time); this section is a **different path**.
+
+**Upstream problem**: `autograd/_functions.py:324/334/462/472` calls `gemm_4bit`, but the CPU backend
+**never registered it** ⇒ it fell through to the default backend's "dequantize the whole block + dense linear"
+⇒ **every batched 4-bit linear forward took the slow path**.
+
+**Fix: dispatch by M** (not either/or). Measured at K=N=4096, OMP=6:
+
+| M | fused kernel ms | default ms | winner |
+|---|---|---|---|
+| 1 | **1.20** | ~14.5 | fused **12×** |
+| 32 | **16.20** | 28.41 | fused 1.75× |
+| 64 | **28.79** | 31.37 | fused 1.09× |
+| 96 | 43.45 | **37.01** | default overtakes |
+| 256 | 166.11 | **64.94** | default **2.56×** |
+
+⇒ `_GEMM_4BIT_FUSED_MAX_M = 64`: M ≤ 64 uses the fused kernel, M > 64 goes back to oneDNN dense.
+⚠️ The threshold **used to be 16**, so M=17–64 was misrouted to default and was up to **3.4× slower than necessary**.
+(Losing at large M is **structural**: the fused inner loop is `m0 += 4`, re-reading the whole weight block
+every 4 rows ⇒ weight traffic O(M/4).)
+
+**★ Polarity note (the easiest thing to read backwards)**: the first condition of `can_fuse` is
+`gemm_4bit_forward_kernel is None` —
+when AVX512-BF16 **is** present and the `kernels` package is installed it is non-None ⇒ `can_fuse=False`
+⇒ the HuggingFace external kernel is used; on an **AVX2** machine it **is** None ⇒ which is what makes
+`can_fuse` able to be True and lets this fork's own fused kernel run.
+⇒ On AVX2, `= None` is the **precondition for using the fused kernel**, **not** "being forced onto a slow path".
+
+**Relation to upstream**: upstream `main`'s `backends/cpu/ops.py` still has **no** `gemm_4bit` CPU registration,
+no `cgemv_4bit_inference_cpu_*`, and no `_GEMM_4BIT_FUSED_MAX_M` (upstream 489 lines / this fork 679 lines).
+
+### 3.5.2 Fused elementwise kernel family (new in this fork, 12 exports)
+
+> **Full usage, argument contract, all measured numbers and boundaries: [`FUSED_KERNELS_EN.md`](FUSED_KERNELS_EN.md).**
+> This section only covers the technical points and where it sits in a training step.
+
+**Why it exists** (measured, `probe_step_breakdown.py`, R5-4500U pure CPU, ~30M model):
+```
+one step = 2.819 s = GEMM 63.6% / elementwise 20.8% / attention 7.6% / other ~8%
+GEMM is already at 92% of a same-shape pure-GEMM baseline => elementwise 20.8% is the only block left
+```
+In eager mode `RMSNorm` expands into **6 aten operators** (`pow/mean/add/rsqrt/mul/mul`), each
+reading and writing the whole activation => **pure bandwidth waste** (the activation itself is
+only `B x T x D x 4` bytes).
+
+**The 12 exports** (`cfused_*` wrappers in `csrc/pythonInterface.cpp`):
+
+| C symbol | Semantics |
+|---|---|
+| `fused_rmsnorm_fwd_cpu` / `_bwd_cpu` | `(x+res)*rsqrt(mean((x+res)^2)+eps)*w`, fwd/bwd |
+| `fused_swiglu_fwd_cpu` / `_bwd_cpu` | `silu(gate)*up`, fwd/bwd |
+| `fused_add_scale_cpu` / `_inplace_cpu` | `x + scale*y` (in-place version saves another pass) |
+| `fused_add_scale_rmsnorm_cpu` | `RMSNorm(x + scale*y)` in one pass |
+| `fused_swiglu_strided_fwd_cpu` / `_bwd_cpu` | same, but row/col strides may differ => consumes chunk views, zero copies |
+| `gemv_fp16w_inference_cpu_{fp32,bf16,fp16}` | fp16-weight GEMV/GEMM (**exported, not wired to Python** — see `FUSED_KERNELS_EN.md` section 5) |
+
+**Two ways to use it from Python**:
+```python
+import fused_cpu                       # explicit calls; all four carry autograd
+h = fused_cpu.fused_add_scale_rmsnorm(x, attn_out, self.ls1, self.ln1_w, eps=1e-6)
+
+import enable_fused                    # one-liner monkey-patch onto model class methods
+enable_fused.enable()                  # RMSNorm only: measured +5.0~8.0%
+enable_fused.enable(block=True)        # plus residual+LayerScale: +5.5~7.1%
+```
+* The gain is **bandwidth**: ~0 on loads whose arithmetic intensity is far above the crossover
+  (convolution-dominated UNets).
+* `enable_fused` must run **before** model construction (it patches class methods).
+* Numerics: `max|delta| ~1e-7` against eager, `state_dict` keys unchanged => checkpoints interload.
+
+**NT store (non-temporal)**: every large pure write in this family uses `_mm256_stream_ps`
+behind a runtime threshold — it removes the write-allocate RFO read. Measured `copy`
+13.40 -> **25.40 GB/s (1.90x)**. The threshold derives from the **runtime L3 size**, it is not
+hard-coded: outputs >= 4.2 MB win (2.0~3.1x), <= 1.0 MB lose 0.69~0.73x.
+Note: the optimizer's `p` write must **not** use NT (read-modify-write; measured 21% regression).
+
 ### 3.6 GDN integration into Transformers (gdn_cpu.py)
 
 - In Transformers 5.15 the Qwen3-Next/3.5 GDN slow-path symbols are
@@ -415,3 +493,4 @@ python stress_opt.py             # 210 combos, 0 failures (LLM-side regression)
    `python tools/verify_train_release.py --model <local-model-dir>` (offline, tokenizer-free).
    Note: `llamafactory 0.9.5` conflicts with transformers>5.6.0; evaluate it separately if you
    also use llamafactory.
+9. **AVX512 / AVX512-BF16 guards: all 5 sites are legitimate, 0 landmines — but one is very easy to read backwards.** Judged by reading the source itself, not the comments: ① `ops.py:20` `_has_avx512` is just a flag; ② `ops.py:29` registers `int8_linear_matmul` only under `if torch.__version__>=(2,6) and _has_avx512:` — this **avoids** falling into `torch._int_mm`'s **scalar fallback without AVX-512** (its own comment: much slower than fp32 matmul), so the guard points the right way; ③ `ops.py:153` `avx512_fallback = _has_avx512 and blocksize>=2048` is the **AVX512 implementation's own** precision fallback at large blocksizes ⇒ short-circuits on AVX2 and does not affect us; ④ `ops.py:253` `if has_avx512bf16():` now wraps **only the dynamic load of the HuggingFace `kernels-community` external kernel**, while `@register_kernel("bitsandbytes::gemv_4bit","cpu")` sits at `:268` at the **same indent as `:253` ⇒ registered unconditionally**; ⑤ `nn/modules.py:573`'s `support_avx512bf16_for_cpu` only decides whether `forward` performs `_convert_weight_packed_for_cpu` (an AVX512-BF16-specific packing), and **additionally requires `not self.training` and `x.requires_grad == False`** ⇒ **never triggers on the training path**. **★ The easiest one to invert**: in `backends/cpu/ops.py`, `gemm_4bit_forward_kernel = None` is the **first condition of `can_fuse`** (`gemm_4bit_forward_kernel is None`) ⇒ on an **AVX2 machine it IS None, which is what makes `can_fuse` able to be True and lets this fork's own fused kernel run** (see §3.5.1); with AVX512-BF16 plus the `kernels` package it is non-None and the external kernel is used instead. **⇒ that `= None` is the precondition for using the fused kernel, not "being forced onto a slow path".** **Also: two accidents that really happened but are NOT the same thing — do not conflate them**: ① §3.5's **fallback calling the wrong C symbols** (`gemv_4bit_inference_cpu_fp4/nf4_bf16` exist only in AVX512+BF16 builds ⇒ AttributeError on AVX2; and nf4 passing `data_type=0` ⇒ the kernel's early return ⇒ **all-zero output with no error**); ② `@register_kernel("bitsandbytes::gemv_4bit","cpu")` having been **wrapped entirely inside `if has_avx512bf16():`** ⇒ on AVX2 there was **no CPU registration at all**, silently falling through to the default backend's "dequantize + dense linear", measured at **12.3 ms vs 1.16 ms (10.6×)**. ② was fixed on **2026-09-22** (registration moved out of the guard, now unconditional); the pre-fix snapshot is kept at `backends/cpu/ops.py.bak_gemvfix`.

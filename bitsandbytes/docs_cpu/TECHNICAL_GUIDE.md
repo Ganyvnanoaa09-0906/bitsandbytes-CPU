@@ -145,6 +145,78 @@ void cgemm_8bit_inference_cpu_fp32(A, B_uint8, absmax, out, M,N,K, lda,ldb,ldc, 
 - `data_type` 按内核常量：**FP4=1 / NF4=2**；
 - 修复后 nf4/fp4 与参考实现逐位一致（误差 0）。
 
+### 3.5.1 `gemm_4bit`：**训练/批量前向**路径的 4-bit CPU 注册
+
+> §3.5 修的是**推理**的 `gemv_4bit`（M=1 逐 token）；本节是**另一条路径**。
+
+**上游问题**：`autograd/_functions.py:324/334/462/472` 调的是 `gemm_4bit`，而 CPU 后端**没有注册它**
+⇒ 退到 default 后端「整块反量化 + 稠密线性」⇒ **每一次批量 4-bit 线性前向都在走慢路径**。
+
+**改法：按 M 分档**（不是二选一）。实测 K=N=4096、OMP=6：
+
+| M | 融合内核 ms | default ms | 谁赢 |
+|---|---|---|---|
+| 1 | **1.20** | ~14.5 | 融合 **12×** |
+| 32 | **16.20** | 28.41 | 融合 1.75× |
+| 64 | **28.79** | 31.37 | 融合 1.09× |
+| 96 | 43.45 | **37.01** | default 反超 |
+| 256 | 166.11 | **64.94** | default **2.56×** |
+
+⇒ `_GEMM_4BIT_FUSED_MAX_M = 64`：M ≤ 64 走融合内核，M > 64 交回 oneDNN 稠密。
+⚠️ 该阈值**原先写 16**，于是 M=17~64 被误分给 default、**白慢最多 3.4×**。
+（大 M 融合会输是**结构性**的：融合内核内层 `m0 += 4`，每 4 行重读整块权重 ⇒ 权重流量 O(M/4)。）
+
+**★ 极性澄清（最容易被读反的一处）**：`can_fuse` 的首个条件是
+`gemm_4bit_forward_kernel is None` ——
+**有** AVX512-BF16 且装了 `kernels` 包时它非 None ⇒ `can_fuse=False` ⇒ 走 HuggingFace 外部 kernel；
+**AVX2 机器上它是 None ⇒ 才能用我们自己的融合内核**。
+⇒ 在 AVX2 机器上，`= None` 是「能够走融合内核」的**前提**，**不是**「被迫走慢路」。
+
+**与上游的关系**：上游 `main` 的 `backends/cpu/ops.py` 至今**没有** `gemm_4bit` 的 CPU 注册、
+没有 `cgemv_4bit_inference_cpu_*`、也没有 `_GEMM_4BIT_FUSED_MAX_M`（上游该文件 489 行 / 本 fork 679 行）。
+
+### 3.5.2 融合 elementwise 内核族（本 fork 新增，12 个导出）
+
+> **完整用法、参数约定、实测数字与边界见 [`FUSED_KERNELS.md`](FUSED_KERNELS.md)。**
+> 本节只讲技术要点与它在整步里的位置。
+
+**为什么加这一族**（实测，`probe_step_breakdown.py`，R5-4500U 纯 CPU、30M 级模型）：
+```
+训练步 2.819 s = GEMM 63.6% / elementwise 20.8% / attention 7.6% / 其它 ~8%
+GEMM 已达同形状纯 GEMM 基准的 92% ⇒ 唯一还有空间的是 elementwise 20.8%
+```
+`RMSNorm` 在 eager 下展开成 **6 个 aten 算子**（`pow/mean/add/rsqrt/mul/mul`），
+每个都要完整读写一遍激活 ⇒ **纯带宽浪费**（激活本身只有 `B×T×D×4` 字节）。
+
+**12 个导出**（`csrc/pythonInterface.cpp` 的 `cfused_*` 包装）：
+
+| C 符号 | 语义 |
+|---|---|
+| `fused_rmsnorm_fwd_cpu` / `_bwd_cpu` | `(x+res)·rsqrt(mean((x+res)²)+eps)·w` 前/反向 |
+| `fused_swiglu_fwd_cpu` / `_bwd_cpu` | `silu(gate)·up` 前/反向 |
+| `fused_add_scale_cpu` / `_inplace_cpu` | `x + scale·y`（inplace 版再省一趟） |
+| `fused_add_scale_rmsnorm_cpu` | `RMSNorm(x + scale·y)` 一步出 |
+| `fused_swiglu_strided_fwd_cpu` / `_bwd_cpu` | 同上，但行/列跨步可不同 ⇒ 直接吃 chunk 视图，零拷贝 |
+| `gemv_fp16w_inference_cpu_{fp32,bf16,fp16}` | fp16 权重 GEMV/GEMM（**已导出，未接 Python**，见 `FUSED_KERNELS.md` §5） |
+
+**Python 侧两条接法**：
+```python
+import fused_cpu                       # 显式调用，四个都有 autograd
+h = fused_cpu.fused_add_scale_rmsnorm(x, attn_out, self.ls1, self.ln1_w, eps=1e-6)
+
+import enable_fused                    # 一键 monkey-patch 到模型类方法
+enable_fused.enable()                  # 只融合 RMSNorm：实测 +5.0~8.0%
+enable_fused.enable(block=True)        # 再加残差+LayerScale：+5.5~7.1%
+```
+★ 收益来自**带宽**：对算术强度远高于拐点的负载（卷积为主的 UNet）≈ 0。
+★ `enable_fused` 必须在**建模型之前**调用（patch 的是类方法）。
+★ 数值：与 eager 对拍 `max|Δ| ~1e-7`，`state_dict` 键名不变 ⇒ checkpoint 可互载。
+
+**NT store（非临时存储）**：这族里凡"大数组纯写"的地方都按运行时阈值自动走
+`_mm256_stream_ps` —— 省掉 write-allocate 的 RFO 读。实测 `copy` 13.40→**25.40 GB/s（1.90×）**。
+判据是**运行时 L3 大小**，不是硬编码：输出 ≥4.2 MB 才赢（2.0~3.1×），≤1.0 MB 反而亏 0.69~0.73×。
+⚠️ 优化器的 `p` 写入**不能**用 NT（读-改-写，实测倒退 21%）。
+
 ### 3.6 GDN 接入 Transformers（gdn_cpu.py）
 
 - Transformers 5.15 中 Qwen3-Next/3.5 的 GDN 慢路径符号为
@@ -333,3 +405,4 @@ python stress_opt.py             # 210 组合 0 失败（LLM 侧回归）
 6. **非 AVX2 CPU（实验性）**：所有 AVX2 内核都有运行时 `has_avx2_cpu()`（CPUID）保护 + `BNB_CPU_NO_AVX2=1` 环境变量强制关。非 AVX2 机器运行时走 scalar fallback——**能跑（慢），但不保证性能**。`build_linux.sh` 会自动检测（无 AVX2 则编译 `-march=x86-64` 不定义 `__AVX2__`）。**实验性：无 AVX2 设备实测，理论可跑，遇崩设 `BNB_CPU_NO_AVX2=1` 或 `build_linux.sh --no-avx2`。**
 7. **disk_balancer 在 WSL 里对宿主 NTFS 做 9P 卸载 = 严重风险（会扰 MFT，务必排除）**：在 **WSL** 上跑 disk_balancer（`--flash`）时，它的 **Linux 分支（`detect_disks`）会把宿主 Windows 的 NTFS 挂载（`/mnt/c`、`/mnt/d`，经**微软 9P 协议**）当成普通磁盘**，去对它们做冷参数卸载（SSD/HDD 读写）。**9P（网络文件系统语义）在高负载/逼近内存极限下对 NTFS 做高频读写/删除 → NTFS MFT 元数据经 9P 未正确落盘 → 文件系统异常 / 数据丢失**（实测案例：i5 WSL 生图高负载跑 `--flash -a` 后，宿主 D 盘疑似 MFT 紊乱、文件丢失、C 盘受影响）。**根因已定位：disk_balancer 的 Linux 分支未排除 WSL 的 9P/NTFS 挂载点。** **修复：`detect_disks`/`_get_disk_io` 必须排除 `9p`/`fuse`/宿主 NTFS 挂载**（fstype 非 `vfat`/`ntfs`/`9p`/`fuse`，mountpoint 非 `/mnt/[a-z]`），**绝不对宿主 NTFS（`/mnt/c`、`/mnt/d`）做冷参数卸载**；WSL 里遇到 9P/fuse 挂载应跳过/降级（不卸载冷参数，宁可不做也要安全）。**若已出现文件丢失**：① 立即停止 D 盘写入；② **先只读 `chkdsk <盘>:`（不带 /f）**；③ **不要 `chkdsk /f` / 格式化**（会把可恢复数据标记丢失）；④ 优先备份能读出的数据，数据恢复工具（TestDisk/Recuva）装 C 盘/另一盘运行、别写 D 盘。
 8. **Qwen3/Qwen3.5 训练需 `transformers>=5.15.0`（否则 CPU backward 段错误）**：实测 **`transformers 5.6.0` + torch 2.13+cpu 在 R5 (AVX2) 上对 `Qwen3ForCausalLM` 做 `loss.backward()` 会触发 `Windows fatal exception: access violation`**（前向正常，纯 torch(不经过 bnb) 也一样崩——是 transformers 5.6.0 的 Qwen3 CPU backward bug，**与 bnb DLL 无关**）。**换 `transformers==5.15.0` 后 backward 恢复正常**。→ **环境要求：`pip install "transformers>=5.15.0"`**。验证脚本：`python tools/verify_train_release.py --model <本地模型目录>`（免联网、免 tokenizer）。注意：`llamafactory 0.9.5` 与 transformers>5.6.0 存在依赖冲突，若同时用 llamafactory 需单独评估版本。
+9. **AVX512 / AVX512-BF16 守卫：5 处全部合法、0 雷 —— 但其中一处极易读反**。逐处判定（读源码原文，不看注释结论）：① `ops.py:20` 的 `_has_avx512` 只是标志位；② `ops.py:29` `if torch.__version__>=(2,6) and _has_avx512:` 才注册 `int8_linear_matmul`——这是**避免**掉进 `torch._int_mm` 在无 AVX-512 时的 **scalar 回退（源码注释：比 fp32 matmul 慢得多）**，守卫方向是对的；③ `ops.py:153` `avx512_fallback = _has_avx512 and blocksize>=2048` 是 **AVX512 实现自身**在大 blocksize 时的精度回退，AVX2 机器上短路、不受影响；④ `ops.py:253` `if has_avx512bf16():` 现在**只包住 HuggingFace `kernels-community` 外部 kernel 的动态加载**，而 `@register_kernel("bitsandbytes::gemv_4bit","cpu")` 在 `:268`、**缩进与 `:253` 同级 ⇒ 无条件注册**；⑤ `nn/modules.py:573` 的 `support_avx512bf16_for_cpu` 只在 `forward` 里决定是否做 `_convert_weight_packed_for_cpu`（AVX512-BF16 专用打包），且**额外要求 `not self.training` 且 `x.requires_grad == False`** ⇒ **训练路径永不触发**。**★ 最易读反的一处**：`backends/cpu/ops.py` 的 `gemm_4bit_forward_kernel = None` 是 `can_fuse` 的**首个条件**（`gemm_4bit_forward_kernel is None`）⇒ 在 **AVX2 机器上它正是 None，才使 `can_fuse` 可能为 True、才用上本 fork 自己的融合内核**（见 §3.5.1）；而有 AVX512-BF16 且装了 `kernels` 包时它非 None，反而去走外部 kernel。**⇒ 那个 `= None` 是"能够走融合内核"的前提，不是"被迫走慢路"。** **另有两条真实存在、但互不相同的事故，别再混为一谈**：① §3.5 的**回退调错 C 符号**（`gemv_4bit_inference_cpu_fp4/nf4_bf16` 只在 AVX512+BF16 构建下存在 ⇒ AVX2 上 AttributeError；且 nf4 传 `data_type=0` ⇒ 内核早退、**输出全 0 且无报错**）；② `@register_kernel("bitsandbytes::gemv_4bit","cpu")` 曾被 `if has_avx512bf16():` **整块包住** ⇒ AVX2 上**根本没有 CPU 注册**、静默退到 default 后端「整块反量化 + 稠密线性」，实测 **12.3 ms vs 1.16 ms（10.6×）**。②已于 **2026-09-22** 修复（注册移出守卫、改为无条件），修复前快照留在 `backends/cpu/ops.py.bak_gemvfix`。

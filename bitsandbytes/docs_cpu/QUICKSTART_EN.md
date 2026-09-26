@@ -294,6 +294,66 @@ The low-level `big_gemm / big_linear / big_conv2d / patch_igpu` remain available
 single-operator experiments, but **per-operator scheduling is a net negative for
 training and is not recommended**.
 
+### 4.9 Fused elementwise kernels (RMSNorm / SwiGLU / residual+LayerScale)
+
+> Full reference, argument contract and all measured numbers: [`FUSED_KERNELS_EN.md`](FUSED_KERNELS_EN.md).
+
+**What it solves**: measured, **elementwise is 20.8%** of a training step (GEMM is already at 92%
+of its baseline, no room left). In eager mode `RMSNorm` is 6 aten operators, so the activation is
+fully read and written 6 times => pure bandwidth waste.
+
+**Option A: one-liner wiring (recommended, no model-code changes)**
+```python
+import enable_fused
+enable_fused.enable()             # RMSNorm only
+enable_fused.enable(block=True)   # also residual + LayerScale
+```
+Measured (6 alternating rounds, paired-ratio median): RMSNorm **+5.0 ~ 8.0%**;
+adding residual gives **+5.5 ~ 7.1%** (the two are close, so RMSNorm-only is the default).
+NOTE: must be called **before** model instances are created (it patches class methods).
+
+**Option B: explicit calls (all four are `torch.autograd.Function` with backward)**
+```python
+import fused_cpu
+assert fused_cpu.available()          # the DLL must export cfused_*, otherwise rebuild
+
+# residual + LayerScale + RMSNorm in one pass (was two)
+h  = fused_cpu.fused_add_scale_rmsnorm(x, attn_out, self.ls1, self.ln1_w, eps=1e-6)
+# SwiGLU
+h2 = self.w2(fused_cpu.fused_swiglu(self.w1(h), self.w3(h)))
+# residual (scale=None degenerates to x + y)
+x  = fused_cpu.fused_add_scale(h, h2, self.ls2)
+```
+
+**Verify and reproduce**:
+```bat
+py -3.11 test_fused_kernels.py     :: all four kernels vs eager (fwd+bwd) + timing
+py -3.11 bench_fused_final.py      :: end to end
+```
+Numerics: `max|delta| ~1e-7` vs eager (fp32 accumulation order); `state_dict` keys unchanged,
+so checkpoints interload.
+
+**Boundary**: bandwidth only, not FLOPs => ~0 gain on convolution-dominated workloads whose
+arithmetic intensity is far above the crossover (e.g. UNet).
+
+### 4.10 `fused_dequant_linear_8bit`: arbitrary leading dims + K validation
+
+The 8-bit fused dequant linear forward (`functional.fused_dequant_linear_8bit`) **changed behaviour**:
+
+```python
+import bitsandbytes.functional as F
+# A now accepts arbitrary leading dims: A.shape == (..., K) -> output A.shape[:-1] + (N,)
+out = F.fused_dequant_linear_8bit(A5d, wq, absmax, blocksize=64)
+```
+
+- **Video latent usage**: permute channels to last (`[B,T,H,W,K]`), or flatten `(B,T,H,W)` to 2D.
+  Do **not** pass `[B,C,T,H,W]` directly (the last dim is not K).
+- **New explicit validation**: raises `ValueError` when `K % blocksize != 0`. The fused kernel uses
+  a per-row block layout and **silently returns wrong values** when K is not divisible; upstream has
+  no such check.
+- Precondition for the speedup: weights stay uint8 end to end, no fp32 weight temporary
+  (DRAM traffic = 1/4 of fp32).
+
 ---
 
 ## 5. Disk load balancer (disk_balancer, SSD protection)

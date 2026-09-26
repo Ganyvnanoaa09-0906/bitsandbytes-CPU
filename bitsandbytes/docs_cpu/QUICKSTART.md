@@ -262,6 +262,61 @@ print(ex.prepare(tokens=batch_size * seq_len))  # "OK" = 已启用，模型常�
 低阶接口 `big_gemm / big_linear / big_conv2d / patch_igpu` 仍保留（单算子实验用途），
 但**逐算子调度在训练中为负收益，官方不推荐**。
 
+### 4.9 融合 elementwise 内核（RMSNorm / SwiGLU / 残差+LayerScale）
+
+> 完整说明、参数约定与全部实测数字见 [`FUSED_KERNELS.md`](FUSED_KERNELS.md)。
+
+**它解决什么**：实测训练步里 **elementwise 占 20.8%**（GEMM 已到基准的 92%，没空间了）。
+`RMSNorm` 在 eager 下是 6 个 aten 算子、激活要被完整读写 6 遍 ⇒ 纯带宽浪费。
+
+**方式 A：一键接线（推荐，不改模型代码）**
+```python
+import enable_fused
+enable_fused.enable()             # 只融合 RMSNorm
+enable_fused.enable(block=True)   # 再加残差 + LayerScale
+```
+实测收益（交替 6 轮、配对比值中位）：RMSNorm **+5.0 ~ 8.0%**；
+加残差后 **+5.5 ~ 7.1%**（两者接近 ⇒ 默认只开 RMSNorm）。
+⚠️ 必须在**创建模型实例之前**调用（它 patch 的是类方法）。
+
+**方式 B：显式调用（四个核都是 `torch.autograd.Function`，带反向）**
+```python
+import fused_cpu
+assert fused_cpu.available()          # DLL 里必须有 cfused_* 导出，否则要重新编译
+
+# 残差 + LayerScale + RMSNorm 一步出（原来是两趟）
+h  = fused_cpu.fused_add_scale_rmsnorm(x, attn_out, self.ls1, self.ln1_w, eps=1e-6)
+# SwiGLU
+h2 = self.w2(fused_cpu.fused_swiglu(self.w1(h), self.w3(h)))
+# 残差（scale=None 时退化为 x + y）
+x  = fused_cpu.fused_add_scale(h, h2, self.ls2)
+```
+
+**核对与复跑**：
+```bat
+py -3.11 test_fused_kernels.py     :: 四个核 vs eager 对拍（前向+反向）+ 计时
+py -3.11 bench_fused_final.py      :: 端到端
+```
+数值：与 eager `max|Δ| ~1e-7`（fp32 累加顺序），`state_dict` 键名不变 ⇒ checkpoint 可互载。
+
+**边界**：只省**带宽**不省算力 ⇒ 对卷积为主、算术强度远高于拐点的负载（如 UNet）收益 ≈ 0。
+
+### 4.10 `fused_dequant_linear_8bit`：支持任意前导维 + K 校验
+
+8-bit 融合反量化线性层前向（`functional.fused_dequant_linear_8bit`）**行为有变化**：
+
+```python
+import bitsandbytes.functional as F
+# 现在 A 支持任意前导维：A.shape == (..., K)，输出 A.shape[:-1] + (N,)
+out = F.fused_dequant_linear_8bit(A5d, wq, absmax, blocksize=64)
+```
+
+- **视频 latent 用法**：先把通道 permute 到最后（`[B,T,H,W,K]`），或把 `(B,T,H,W)` 展平成 2D；
+  **不要**直接传 `[B,C,T,H,W]`（最后一维不是 K）
+- **新增显式校验**：`K % blocksize != 0` 时**抛 `ValueError`** —— 原因是这个融合内核按
+  行块布局，K 不整除时**会静默返回错值**；上游没有这个检查
+- 收益前提：权重全程保持 uint8，不产生 fp32 权重临时张量（DRAM 流量 = fp32 的 1/4）
+
 ---
 
 ## 5. 硬盘均衡负载（disk_balancer，SSD 保护）

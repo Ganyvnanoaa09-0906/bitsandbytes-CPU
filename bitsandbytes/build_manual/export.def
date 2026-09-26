@@ -23,5 +23,17 @@ EXPORTS
     cgemv_4bit_inference_cpu_fp32
     cgemv_4bit_inference_cpu_bf16
     cgemv_4bit_inference_cpu_fp16
+    cgemv_fp16w_inference_cpu_fp32
+    cgemv_fp16w_inference_cpu_bf16
+    cgemv_fp16w_inference_cpu_fp16
     cgemm_8bit_inference_cpu_fp32
     coptimizer_update_8bit_blockwise_cpu
+    cfused_rmsnorm_fwd_cpu
+    cfused_rmsnorm_bwd_cpu
+    cfused_swiglu_fwd_cpu
+    cfused_swiglu_bwd_cpu
+    cfused_add_scale_cpu
+    cfused_swiglu_strided_fwd_cpu
+    cfused_swiglu_strided_bwd_cpu
+    cfused_add_scale_inplace_cpu
+    cfused_add_scale_rmsnorm_cpu

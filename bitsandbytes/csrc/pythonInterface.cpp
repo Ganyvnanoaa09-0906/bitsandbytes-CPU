@@ -1,3 +1,4 @@
+#include "cpu_ops.h"
 // Copyright (c) Facebook, Inc. and its affiliates.
 //
 // This source code is licensed under the MIT license found in the
@@ -878,6 +879,31 @@ void cgemv_4bit_inference_cpu_fp16(
     gemv_4bit_inference_cpu_fp16(A, B, absmax, out, M, N, K, lda, ldb, ldc, blocksize, data_type);
 }
 
+// fused FP16-WEIGHT inference GEMV/GEMM (AVX2 + F16C). W is plain row-major fp16,
+// N rows of ldb elements (pass ldb = K); no absmax/blocksize because fp16 is the
+// storage format itself. On AVX2-only CPUs this beats the NF4 path at every M
+// measured -- see membw/FP16_WEIGHT_VERDICT.md.
+void cgemv_fp16w_inference_cpu_fp32(
+    float* A, unsigned short* W, float* out, long long M, long long N, long long K,
+    long long lda, long long ldb, long long ldc
+) {
+    gemv_fp16w_inference_cpu_fp32(A, W, out, M, N, K, lda, ldb, ldc);
+}
+
+void cgemv_fp16w_inference_cpu_bf16(
+    bf16_t* A, unsigned short* W, bf16_t* out, long long M, long long N, long long K,
+    long long lda, long long ldb, long long ldc
+) {
+    gemv_fp16w_inference_cpu_bf16(A, W, out, M, N, K, lda, ldb, ldc);
+}
+
+void cgemv_fp16w_inference_cpu_fp16(
+    fp16_t* A, unsigned short* W, fp16_t* out, long long M, long long N, long long K,
+    long long lda, long long ldb, long long ldc
+) {
+    gemv_fp16w_inference_cpu_fp16(A, W, out, M, N, K, lda, ldb, ldc);
+}
+
 // fused 8-bit blockwise-dequant GEMM: out = A @ dequant8(B)（不落地 fp32 权重）
 void cgemm_8bit_inference_cpu_fp32(
     const float* A, const unsigned char* B, const float* absmax, float* out, long long M, long long N,
@@ -920,4 +946,71 @@ bool has_avx512f_cpu() { return has_avx512f(); }
 bool has_avx512bf16_cpu() { return has_avx512bf16(); }
 #endif
 #endif
+
+// ---- fused elementwise kernels (2026-09-18) ----
+long long cfused_rmsnorm_fwd_cpu(
+    const float* x, const float* res, const float* weight, float* out, float* xs,
+    long long M, long long D, float eps
+) {
+    return fused_rmsnorm_fwd_cpu(x, res, weight, out, xs, M, D, eps);
+}
+
+long long cfused_rmsnorm_bwd_cpu(
+    const float* x, const float* weight, const float* dout, const float* xs,
+    float* dx, float* dw, long long M, long long D
+) {
+    return fused_rmsnorm_bwd_cpu(x, weight, dout, xs, dx, dw, M, D);
+}
+
+long long cfused_swiglu_fwd_cpu(const float* gate, const float* up, float* out, long long n) {
+    return fused_swiglu_fwd_cpu(gate, up, out, n);
+}
+
+long long cfused_swiglu_bwd_cpu(
+    const float* gate, const float* up, const float* dout, float* dgate, float* dup, long long n
+) {
+    return fused_swiglu_bwd_cpu(gate, up, dout, dgate, dup, n);
+}
+
+long long cfused_add_scale_cpu(
+    const float* x, const float* y, const float* scale, float* out, long long M, long long D
+) {
+    return fused_add_scale_cpu(x, y, scale, out, M, D);
+}
+
+
+// ---- fused v2 (2026-09-18) ----
+long long cfused_swiglu_strided_fwd_cpu(
+    const float* gate, long long gs0, long long gs1,
+    const float* up, long long us0, long long us1,
+    float* out, long long os0, long long M, long long D
+) {
+    return fused_swiglu_strided_fwd_cpu(gate, gs0, gs1, up, us0, us1, out, os0, M, D);
+}
+
+long long cfused_swiglu_strided_bwd_cpu(
+    const float* gate, long long gs0, long long gs1,
+    const float* up, long long us0, long long us1,
+    const float* dout, long long ds0, long long ds1,
+    float* dgate, long long dg0, long long dg1,
+    float* dup, long long du0, long long du1,
+    long long M, long long D
+) {
+    return fused_swiglu_strided_bwd_cpu(gate, gs0, gs1, up, us0, us1, dout, ds0, ds1,
+                                        dgate, dg0, dg1, dup, du0, du1, M, D);
+}
+
+long long cfused_add_scale_inplace_cpu(
+    float* x, const float* y, const float* scale, long long M, long long D
+) {
+    return fused_add_scale_inplace_cpu(x, y, scale, M, D);
+}
+
+long long cfused_add_scale_rmsnorm_cpu(
+    float* x, const float* y, const float* scale,
+    const float* weight, float* out, float* xs, long long M, long long D, float eps
+) {
+    return fused_add_scale_rmsnorm_cpu(x, y, scale, weight, out, xs, M, D, eps);
+}
+
 }
