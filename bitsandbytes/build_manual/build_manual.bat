@@ -36,24 +36,63 @@ echo [1/2] compiling cpu_ops.cpp / cpu_gdn.cpp / pythonInterface.cpp ...
 REM /GL /LTCG: whole-program optimization + LTCG link (measured +18% train speed)
 REM /favor: pick by CPU vendor (AMD64 scheduling for AMD, INTEL64 for Intel)
 REM /Qpar: auto-parallelization
+REM
+REM WHY THIS USES goto LABELS INSTEAD OF if/else BLOCKS:
+REM   cmd expands %VAR% at PARSE time for a whole parenthesised block, so a value
+REM   set inside `if ( ... )` cannot be read back inside that same block without
+REM   delayed expansion. Measured here: an if/else-if/else version took the
+REM   auto-detect branch for EVERY argument, i.e. `build_manual.bat intel` and
+REM   `build_manual.bat amd` were both ignored. Labels have no such block, so
+REM   each `set` is visible on the next line. This avoids turning on
+REM   enabledelayedexpansion, which would change parsing for the entire script
+REM   and would also eat any `!` in a user's build path.
 set FAVOR=/favor:INTEL64
-if /i "%~1"=="amd" (
-    set FAVOR=/favor:AMD64
-) else if /i "%~1"=="intel" (
-    set FAVOR=/favor:INTEL64
-) else (
-    REM detect CPU vendor via wmic (local machine only). GitHub CI's
-    REM windows-latest often has no wmic: when absent keep the default
-    REM /favor:INTEL64 instead of failing.
-    where wmic >nul 2>&1
-    if not errorlevel 1 (
-        for /f "tokens=1* delims==" %%a in ('wmic cpu get Manufacturer /value 2^>nul') do (
-            echo %%b | find /i "AMD" >nul && set FAVOR=/favor:AMD64
-        )
-    ) else (
-        echo [build] wmic unavailable, keeping default /favor:INTEL64
-    )
+set VENDOR=
+if /i "%~1"=="amd" goto :favor_amd
+if /i "%~1"=="intel" goto :favor_intel
+goto :favor_autodetect
+
+:favor_amd
+set FAVOR=/favor:AMD64
+set VENDOR=AMD (forced by argument)
+goto :favor_done
+
+:favor_intel
+set FAVOR=/favor:INTEL64
+set VENDOR=Intel (forced by argument)
+goto :favor_done
+
+:favor_autodetect
+REM PowerShell CIM leads; wmic is only a fallback for old systems.
+REM Reason (measured 2026-09-27): wmic has been REMOVED from current Windows --
+REM on a Windows 11 26200 box both `wmic` and System32\wbem\WMIC.exe are absent.
+REM The previous version therefore took its "wmic unavailable" branch on an AMD
+REM machine and silently kept /favor:INTEL64, i.e. it compiled AMD code with
+REM Intel scheduling and reported nothing wrong.
+for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "(Get-CimInstance Win32_Processor | Select-Object -First 1).Manufacturer" 2^>nul`) do set VENDOR=%%v
+if defined VENDOR goto :favor_classify
+where wmic >nul 2>&1
+if errorlevel 1 goto :favor_unknown
+for /f "tokens=1* delims==" %%a in ('wmic cpu get Manufacturer /value 2^>nul') do (
+    if not "%%b"=="" set VENDOR=%%b
 )
+if defined VENDOR goto :favor_classify
+
+:favor_unknown
+REM Never guess silently: Intel scheduling on an AMD box is a real (if modest)
+REM pessimisation, so the fallback is stated out loud.
+echo [build] WARNING: could not determine CPU vendor ^(no PowerShell and no wmic^).
+echo [build]          Falling back to /favor:INTEL64. Pass "amd" or "intel"
+echo [build]          explicitly to override, e.g.: build_manual.bat amd
+goto :favor_done
+
+:favor_classify
+if /i "%VENDOR%"=="AuthenticAMD" set FAVOR=/favor:AMD64
+if /i "%VENDOR%"=="AMD" set FAVOR=/favor:AMD64
+goto :favor_done
+
+:favor_done
+echo [build] CPU vendor: %VENDOR%
 echo [build] CPU vendor favor: %FAVOR%
 cl /nologo /O2 /Ob2 /arch:AVX2 /fp:fast /openmp:experimental /GL /Qpar %FAVOR% ^
    /std:c++17 /EHsc /utf-8 ^
