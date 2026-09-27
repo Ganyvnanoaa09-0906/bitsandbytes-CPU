@@ -439,6 +439,15 @@ bash build_linux.sh --selftest
 # covers: quant roundtrip / gemm_8bit / 4-bit GEMV / 8-bit optimizer
 ```
 
+Windows equivalent (MSVC has no `clang++ a.c` form -- see the script header):
+```
+build_manual\selftest_win.bat        REM run inside a VS x64 terminal; measured 4/4 PASS, exit code 0
+```
+It passes `/TP` (compile the `.c` as C++, matching what handing the file to `g++` does on
+Linux) and `/we4556`, which promotes "intrinsic immediate out of range" from a warning to an
+error -- exactly what GCC/Clang do by default. A clean build here is therefore real evidence
+that the kernels port to gcc/clang, not a false pass.
+
 **Full self-test** (requires torch):
 ```
 python -m bitsandbytes.gdn_cpu    # should print "selftest PASSED"

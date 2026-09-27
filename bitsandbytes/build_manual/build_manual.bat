@@ -42,15 +42,16 @@ if /i "%~1"=="amd" (
 ) else if /i "%~1"=="intel" (
     set FAVOR=/favor:INTEL64
 ) else (
-    REM 用 wmic 检测 CPU 厂商（仅本机）。GitHub CI 的 windows-latest 常无 wmic：
-    REM wmic 缺失时保持默认 /favor:INTEL64，不报错。
+    REM detect CPU vendor via wmic (local machine only). GitHub CI's
+    REM windows-latest often has no wmic: when absent keep the default
+    REM /favor:INTEL64 instead of failing.
     where wmic >nul 2>&1
     if not errorlevel 1 (
         for /f "tokens=1* delims==" %%a in ('wmic cpu get Manufacturer /value 2^>nul') do (
             echo %%b | find /i "AMD" >nul && set FAVOR=/favor:AMD64
         )
     ) else (
-        echo [build] wmic 不可用，采用默认 /favor:INTEL64（跨机器通用）
+        echo [build] wmic unavailable, keeping default /favor:INTEL64
     )
 )
 echo [build] CPU vendor favor: %FAVOR%
@@ -92,7 +93,7 @@ if exist "tools\sector_mirror.c" (
        tools\sector_mirror.c ^
        /Fe:tools\sector_mirror.exe /link advapi32.lib
     if errorlevel 1 (
-        echo [WARN] sector_mirror.exe build failed (non-fatal; recovery tool optional)
+        echo [WARN] sector_mirror.exe build failed ^(non-fatal; recovery tool optional^)
     ) else (
         echo [OK] tools\sector_mirror.exe
     )
@@ -112,7 +113,7 @@ if exist "tools\sector_mirror_gui.c" (
        tools\sector_mirror_gui.c ^
        /Fe:tools\sector_mirror_gui.exe
     if errorlevel 1 (
-        echo [WARN] sector_mirror_gui.exe build failed (non-fatal; recovery tool optional)
+        echo [WARN] sector_mirror_gui.exe build failed ^(non-fatal; recovery tool optional^)
     ) else (
         echo [OK] tools\sector_mirror_gui.exe
     )
@@ -127,12 +128,12 @@ REM  MFT (PNG/JPEG/GIF/ZIP/PDF/MP4/docx/xlsx/pptx). GUI double-clicks, no cmd ne
 REM  both /MT static, only depend on system DLLs.
 REM ============================================================
 if exist "tools\sector_carve.c" (
-    echo [3/3] building sector_carve.exe (signature carve, CLI) ...
+    echo [3/3] building sector_carve.exe ^(signature carve, CLI^) ...
     cl /nologo /O2 /W3 /utf-8 /DNOMINMAX /DNDEBUG %FAVOR% ^
        tools\sector_carve.c ^
        /Fe:tools\sector_carve.exe /link advapi32.lib
     if errorlevel 1 (
-        echo [WARN] sector_carve.exe build failed (non-fatal; recovery tool optional)
+        echo [WARN] sector_carve.exe build failed ^(non-fatal; recovery tool optional^)
     ) else (
         echo [OK] tools\sector_carve.exe
     )
@@ -140,12 +141,12 @@ if exist "tools\sector_carve.c" (
     echo [WARN] tools\sector_carve.c not found, skipping sector_carve.exe
 )
 if exist "tools\sector_carve_gui.c" (
-    echo [3/3] building sector_carve_gui.exe (signature carve, GUI) ...
+    echo [3/3] building sector_carve_gui.exe ^(signature carve, GUI^) ...
     cl /nologo /O2 /utf-8 /DNOMINMAX /DNDEBUG %FAVOR% ^
        tools\sector_carve_gui.c ^
        /Fe:tools\sector_carve_gui.exe
     if errorlevel 1 (
-        echo [WARN] sector_carve_gui.exe build failed (non-fatal; recovery tool optional)
+        echo [WARN] sector_carve_gui.exe build failed ^(non-fatal; recovery tool optional^)
     ) else (
         echo [OK] tools\sector_carve_gui.exe
     )

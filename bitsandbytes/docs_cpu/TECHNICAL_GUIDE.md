@@ -387,6 +387,14 @@ bash build_linux.sh --selftest
 # 覆盖: quantize 往返 / gemm_8bit / 4bit GEMV / 8bit 优化器
 ```
 
+Windows 侧等价入口（MSVC 没有 `clang++ a.c` 这种形式，见脚本头注释）：
+```
+build_manual\selftest_win.bat        REM 在 VS x64 终端里运行；实测 4/4 PASS，退出码 0
+```
+该脚本带 `/TP`（把 `.c` 当 C++ 编译，与 Linux 行交给 `g++` 的效果一致），
+并带 `/we4556`：把「intrinsic 立即数越界」从警告升级为错误——**这正是 GCC/Clang 的默认行为**，
+所以在 MSVC 上干净通过，才是「内核可移植到 gcc/clang」的真证据，而不是假通过。
+
 **完整自检**（需 torch）：
 ```
 python -m bitsandbytes.gdn_cpu    # 应输出 selftest PASSED

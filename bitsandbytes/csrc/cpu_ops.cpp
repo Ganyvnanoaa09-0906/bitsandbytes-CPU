@@ -387,8 +387,14 @@ template <typename T> static inline __m256 avx2_load8(const T* p) {
 
 static inline void avx2_store8_f32(float* p, __m256 v) { _mm256_storeu_ps(p, v); }
 static inline void avx2_store8_fp16(fp16_t* p, __m256 v) {
+    // PORTABILITY: the VEX-encoded F16C form of cvtps2ph takes a 3-bit immediate
+    // (0 = round to nearest even, 4 = use MXCSR) and has NO SAE bit -- unlike the
+    // EVEX-encoded _mm512_cvtps_ph used above, where `| _MM_FROUND_NO_EXC` is legal.
+    // OR-ing _MM_FROUND_NO_EXC (0x08) here yields 8, which MSVC only warns about
+    // (C4556) but GCC/Clang reject outright as an out-of-range immediate. The
+    // hardware masks it to the low 3 bits, so the emitted code is identical.
     _mm_storeu_si128(
-        (__m128i*)p, _mm256_cvtps_ph(v, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC)
+        (__m128i*)p, _mm256_cvtps_ph(v, _MM_FROUND_TO_NEAREST_INT)
     );
 }
 static inline void avx2_store8_bf16(bf16_t* p, __m256 v) {

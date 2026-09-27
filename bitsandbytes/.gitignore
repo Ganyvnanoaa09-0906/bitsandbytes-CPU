@@ -175,6 +175,19 @@ build_linux/
 # 灾难恢复工具二进制产物（源码保留，exe 不提交）
 tools/*.exe
 
+# build_manual 编译产物（build-*/ 只匹配连字符，build_manual/ 需单独写）
+build_manual/*.exe
+build_manual/*.obj
+build_manual/*.log
+
+# 链接器中间产物：cl /LD 会在包目录里留下 .exp/.lib，勿提交
+bitsandbytes/*.exp
+bitsandbytes/*.lib
+bitsandbytes/*.bak_nt
+
+# csrc 下临时编译的测试程序二进制（源码保留）
+csrc/*.exe
+
 # Windows 预编译发布产物（由 build_release_windows.ps1 生成，不提交）
 dist_windows/
 

@@ -457,8 +457,9 @@ offload to truly non-forward params.
 **torch-free C self-test** (`selftest_cpu.c`, shared by Linux/x86_64+aarch64 and Windows,
 links kernel source directly):
 quantize_blockwise 8-bit roundtrip / gemm_8bit forward / 4-bit GEMV (nf4) /
-single AdamW8bit step — **4/4 PASS** (verified with MSVC on Windows; Linux differs
-only by toolchain).
+single AdamW8bit step — **4/4 PASS** (Windows side: `build_manual\selftest_win.bat`,
+MSVC `/TP /we4556`, measured 4/4 PASS with exit code 0; Linux side:
+`bash build_linux.sh --selftest`, differing only by toolchain).
 
 ---
 

@@ -240,8 +240,11 @@ static float bf16_to_float(uint16_t bf16) {
 static inline fp16_t float_to_fp16(float x) {
 #if defined(__AVX2__)
     // F16C is guaranteed on all AVX2 CPUs; matches CUDA round-to-nearest-even behavior
+    // PORTABILITY: _mm_cvtps_ph here is the VEX-encoded F16C form, whose immediate is
+    // 3-bit (0 = nearest-even, 4 = MXCSR) and has no SAE bit. Adding _MM_FROUND_NO_EXC
+    // would make it 8 -- out of range: MSVC warns (C4556), GCC/Clang error. Identical code.
     return fp16_t{
-        (uint16_t)_mm_extract_epi16(_mm_cvtps_ph(_mm_set_ss(x), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC), 0)
+        (uint16_t)_mm_extract_epi16(_mm_cvtps_ph(_mm_set_ss(x), _MM_FROUND_TO_NEAREST_INT), 0)
     };
 #else
     uint32_t bits;

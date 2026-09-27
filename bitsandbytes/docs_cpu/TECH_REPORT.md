@@ -417,7 +417,8 @@ transformer Linear 层导致崩溃，此时应**不启用 -flash**（量化基�
 
 **torch-free C 自检**（`selftest_cpu.c`，Linux/x86_64+aarch64 与 Windows 通用，直接链接内核源码）：
 quantize_blockwise 8bit 往返 / gemm_8bit 前向 / 4bit GEMV(nf4) / AdamW8bit 单步 —— **4/4 PASS**
-（已在 Windows 用 MSVC 等价验证；Linux 仅差编译链差异）。
+（Windows 侧用 `build_manual\selftest_win.bat`，MSVC `/TP /we4556`，已实测 4/4 PASS、退出码 0；
+Linux 侧 `bash build_linux.sh --selftest`，仅差编译链差异）。
 
 ---
 
