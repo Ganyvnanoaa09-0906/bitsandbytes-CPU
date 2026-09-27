@@ -11,21 +11,29 @@
 #   ASCII is the only safe choice. The Chinese usage notes live in
 #   TERMUX_GUIDE.md instead, which is plain UTF-8 and never parsed.
 #
-# DESIGN DECISIONS (each one avoids a specific failure):
-#   1) Transfer via stdin pipe, not `adb push`.
-#      Termux's home is /data/data/com.termux/files/home/, owned by Termux's uid.
-#      `adb push` runs as the shell user and gets permission denied there.
-#      `adb shell "<termux sh> -c 'cat > dest'"` runs AS Termux, so it can write.
-#      Bonus: a binary pipe never goes through Windows line-ending conversion,
-#      so the LF-only .sh inside the tarball stays intact.
-#   2) No dependency on /sdcard or `termux-setup-storage`.
-#      That route needs an interactive permission grant on the phone.
+# DESIGN DECISIONS (each one avoids a specific failure that was actually hit):
+#   1) Transport through /sdcard/Download, NOT into Termux's home.
+#      adb shell runs as uid 2000(shell). /data/data/com.termux/ is
+#      "Permission denied" for that uid, so BOTH `adb push` into Termux's home
+#      AND an `adb shell ... > file` pipe fail there. (An earlier version of this
+#      script claimed the pipe "runs as Termux and therefore can write" -- that
+#      was wrong, and it is recorded here so nobody re-derives it.)
+#      /sdcard is shared storage: writable by the shell user, and readable by
+#      Termux without termux-setup-storage.
+#   2) The build itself cannot be run over adb at all. Termux keeps its own
+#      app keystore, so an outside process cannot execute commands inside it
+#      without RUN_COMMAND permissions. The script therefore prepares everything
+#      and hands over ONE line to paste into Termux.
 #   3) Probe, never assume.
-#      Termux's shell path, home directory and ABI vary by version. Each is
-#      probed and printed; when something is missing the script says what to do.
-#   4) No `&&` / `||` anywhere in this file.
+#      Termux's install state is probed via `pm list packages`, NOT by running
+#      `test -x` on its shell binary: that test fails with permission-denied and
+#      produced a confident "Termux is not installed" on a device that had it.
+#   4) Device-side commands stay mksh/toybox compatible.
+#      Measured on the target (Android 10): `if ...; then ...; else ...; fi` is
+#      rejected by /system/bin/sh, and toybox `stat` has no -c/--format, so
+#      `stat -c %s` fails with "Needs 1 argument". `wc -c < file` works.
+#   5) No `&&` / `||` in this file's PowerShell source.
 #      PowerShell 5.1's parser rejects those tokens even inside string literals.
-#      Remote shell logic uses `if ...; then ...; fi` instead.
 #
 # USAGE:
 #   pwsh -File termux_adb_test.ps1                 # pack, transfer, build, selftest
@@ -135,7 +143,14 @@ Info "using adb: $Adb"
 # Kill any stale server first. Mixing client versions leaves a server speaking a
 # different protocol, which shows up as "server version (26) doesn't match this
 # client (41)" and an empty device list even when the phone is attached.
+# This is best-effort: with no server running it exits non-zero and prints to
+# stderr ("cannot connect to daemon at tcp:5037"), and with
+# $ErrorActionPreference = "Stop" that would abort the whole script on a step
+# that is not fatal. Hence the explicit EAP override.
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 & $Adb kill-server 2>&1 | Out-Null
+$ErrorActionPreference = $prevEap
 Start-Sleep -Milliseconds 800
 
 function Get-DeviceState {
@@ -217,43 +232,45 @@ foreach ($p in @("ro.product.model", "ro.product.manufacturer", "ro.build.versio
 
 # ---------------------------------------------------------------- Termux probe
 Head "2. Termux environment"
-# Probe known shell locations with `test -x` rather than assuming one.
-$candidates = @(
-  "/data/data/com.termux/files/usr/bin/bash",
-  "/data/data/com.termux/files/usr/bin/sh",
-  "/data/data/com.termux/files/usr/bin/login"
-)
-$shPath = $null
-foreach ($c in $candidates) {
-  $probe = "if test -x $c; then echo YES; else echo NO; fi"
-  $r = Invoke-Adb -AdbArgs @("shell", $probe) -TimeoutSec 20
-  $val = if ($r.TimedOut) { "<timeout>" } else { $r.Output.Trim() }
-  Info ("test -x {0,-46} -> {1}" -f $c, $val)
-  if ($val -eq "YES" -and -not $shPath) { $shPath = $c }
-}
-if (-not $shPath) {
+#
+# Do NOT probe Termux by running `test -x` on its shell binary, which is the
+# obvious approach and is wrong here: adb shell is uid 2000(shell) and
+# /data/data/com.termux/ is "Permission denied" for it, so the test fails even
+# when Termux is installed and healthy. That produced a confident and completely
+# incorrect "Termux is not installed" message on a device that had it.
+# Probe what is actually observable: package presence, the data directory's
+# existence (visible even when its contents are not), and shared storage.
+$r = Invoke-Adb -AdbArgs @("shell", "pm list packages com.termux") -TimeoutSec 20
+$pkgOut = if ($r.TimedOut) { "" } else { $r.Output }
+$hasTermux = ($pkgOut -match "package:com\.termux")
+Info ("package com.termux : {0}" -f ($(if ($hasTermux) { "INSTALLED" } else { "NOT FOUND" })))
+if (-not $hasTermux) {
   Write-Host ""
-  Write-Host "No executable Termux shell found. Either Termux is not installed," -ForegroundColor Yellow
-  Write-Host "or it lives in another user space. Install Termux from F-Droid or"
-  Write-Host "GitHub releases (NOT the Play Store build, it is too old), open it once"
-  Write-Host "so it initialises, then run this script again."
+  Write-Host "Termux is not installed. Install it from F-Droid or GitHub releases" -ForegroundColor Yellow
+  Write-Host "(NOT the Play Store build, it is too old), open it once so it unpacks its"
+  Write-Host "bootstrap, then run this script again."
   exit 1
 }
-Info "using shell: $shPath"
+$r = Invoke-Adb -AdbArgs @("shell", "ls -d /data/data/com.termux") -TimeoutSec 20
+$dataDir = if ($r.TimedOut) { "" } else { $r.Output.Trim() }
+Info ("data dir           : {0}" -f $dataDir)
 
-$r = Invoke-Adb -AdbArgs @("shell", "$shPath -c 'echo `$HOME'") -TimeoutSec 20
-$home = if ($r.TimedOut) { "<timeout>" } else { $r.Output.Trim() }
-Info "HOME      = $home"
-$r = Invoke-Adb -AdbArgs @("shell", "$shPath -c 'uname -m; uname -s'") -TimeoutSec 20
-$uname = if ($r.TimedOut) { "<timeout>" } else { $r.Output.Trim() }
-Info ("uname     = {0}" -f ($uname -replace "`r`n", " / "))
+# Tell the user what adb can and cannot do here, because it shapes the workflow.
+$r = Invoke-Adb -AdbArgs @("shell", "ls /data/data/com.termux/") -TimeoutSec 20
+$canRead = if ($r.TimedOut) { "" } else { $r.Output.Trim() }
+$denied = ($canRead -match "Permission denied")
+Info ("adb can read Termux home : {0}" -f ($(if ($denied) { "NO (expected on Android 10+)" } else { "yes" })))
+if ($denied) {
+  Info "  -> build commands cannot be run over adb; you will get one line to paste into Termux"
+}
 
-# Toolchain: report each tool individually (clearer than one packed line).
-foreach ($tool in @("clang++", "clang", "g++", "make", "tar", "nm")) {
-  $probe = "if command -v $tool >/dev/null 2>&1; then echo yes; else echo no; fi"
-  $r = Invoke-Adb -AdbArgs @("shell", "$shPath -c '$probe'") -TimeoutSec 20
-  $has = if ($r.TimedOut) { "<timeout>" } else { $r.Output.Trim() }
-  Info ("  {0,-10} {1}" -f $tool, $has)
+# Shared storage is the transport that works, so verify both directions early.
+$probe = "touch /sdcard/Download/_probe 2>&1 && echo WRITABLE && rm -f /sdcard/Download/_probe || echo DENIED"
+$r = Invoke-Adb -AdbArgs @("shell", $probe) -TimeoutSec 20
+$w = if ($r.TimedOut) { "<timeout>" } else { $r.Output.Trim() }
+Info ("/sdcard/Download writable by adb : {0}" -f $w)
+if ($w -notmatch "WRITABLE") {
+  Die "shared storage is not writable, so there is no transport for the payload. On the phone run: termux-setup-storage"
 }
 
 if ($ProbeOnly) { Write-Host ""; Write-Host "(-ProbeOnly: stopping here)" -ForegroundColor Yellow; exit 0 }
@@ -299,49 +316,100 @@ Info ("staging: {0:N1} KB" -f ($size / 1KB))
 
 if (-not (Test-Path $Bash)) { Die "bash not found (needed to create the tarball): $Bash" }
 if (Test-Path $TarGz) { Remove-Item $TarGz -Force }
-$winStage = $Stage -replace "\\", "/"
-$winTar = $TarGz -replace "\\", "/"
-& $Bash -c "tar czf '$winTar' -C '$winStage' --exclude='__pycache__' ." 2>&1 | Out-Null
-if (-not (Test-Path $TarGz)) { Die "packaging failed: $TarGz" }
+
+# Translate Windows paths to the form Git Bash understands.
+# A bare "C:/..." makes GNU tar treat the colon as a REMOTE-HOST separator and
+# fail with "tar (child): Cannot connect to C: resolve failed", so the drive
+# letter has to become /c/... first.
+function To-MsysPath([string]$p) {
+  $q = $p -replace "\\", "/"
+  if ($q -match "^([A-Za-z]):(.*)$") { return "/" + $matches[1].ToLower() + $matches[2] }
+  return $q
+}
+$msysStage = To-MsysPath $Stage
+$msysTar = To-MsysPath $TarGz
+Info "msys stage: $msysStage"
+Info "msys tar  : $msysTar"
+$tarOut = & $Bash -c "tar czf '$msysTar' -C '$msysStage' --exclude='__pycache__' ." 2>&1 | Out-String
+if (-not (Test-Path $TarGz)) {
+  Write-Host $tarOut
+  Die "packaging failed (tar produced no output file): $TarGz"
+}
 Info ("tarball: $TarGz  ({0:N1} KB)" -f ((Get-Item $TarGz).Length / 1KB))
 
 # ---------------------------------------------------------------- transfer
-Head "4. Transfer into the Termux home directory (stdin pipe)"
+Head "4. Transfer to shared storage (/sdcard/Download)"
+#
+# Can't write into Termux's home directly. Two measured facts forced this design:
+#   - adb shell runs as uid 2000(shell), and /data/data/com.termux/ is
+#     "Permission denied" for it. So neither `adb push` NOR an `adb shell` pipe
+#     can put a file into Termux's home -- an earlier version of this script
+#     assumed the pipe ran AS Termux, which was simply wrong.
+#   - /sdcard is shared storage and IS writable by the shell user, and Termux
+#     reads it without needing termux-setup-storage.
+# So: push to /sdcard/Download, then hand Termux a one-liner to copy it home.
 $remoteDir = "bnb_termux"
-$remoteTar = "$remoteDir.tar.gz"
-$mk = "cd `$HOME; if test -d $remoteDir; then rm -rf $remoteDir; fi; " +
-      "if test -f $remoteTar; then rm -f $remoteTar; fi; mkdir -p $remoteDir"
-& $Adb shell "$shPath -c '$mk'" 2>&1 | Out-Null
+$stageName = "bnb_termux.tar.gz"
+$stagePath = "/sdcard/Download/$stageName"
 
-$inner = "$shPath -c 'cat > `$HOME/$remoteTar'"
-$cmdLine = "`"$Adb`" shell `"$inner`" < `"$TarGz`""
-Info "command: adb shell <sh -c 'cat > HOME/$remoteTar'> < local tarball"
-$p = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmdLine -NoNewWindow -Wait -PassThru
-if ($p.ExitCode -ne 0) { Die "pipe transfer failed (cmd exit code $($p.ExitCode))" }
+$rm = Invoke-Adb -AdbArgs @("shell", "rm -f $stagePath") -TimeoutSec 20
+$p = Start-Process -FilePath $Adb -ArgumentList "push", "`"$TarGz`"", $stagePath -NoNewWindow -Wait -PassThru
+if ($p.ExitCode -ne 0) { Die "adb push failed (exit code $($p.ExitCode))" }
 
-# Verify the remote size matches. Claiming "transfer done" without checking is
-# how a truncated payload turns into a confusing build failure later.
-$sz = "if stat -c %s `$HOME/$remoteTar >/dev/null 2>&1; then stat -c %s `$HOME/$remoteTar; " +
-      "else wc -c < `$HOME/$remoteTar; fi"
-$remoteSize = (& $Adb shell "$shPath -c '$sz'" 2>&1 | Out-String).Trim()
+# Verify from the device side, not from adb's own reporting: "push said OK" and
+# "the file is there with the right size" are different claims.
+# `wc -c < file` rather than `stat -c %s file`: this device runs Android 10 whose
+# toybox stat does not implement -c/--format at all (measured: -c %s and
+# --format=%s both fail with "Needs 1 argument", while wc -c and ls|awk work).
+$r = Invoke-Adb -AdbArgs @("shell", "wc -c < $stagePath") -TimeoutSec 20
+$remoteSize = if ($r.TimedOut) { "0" } else { $r.Output.Trim() }
 $localSize = (Get-Item $TarGz).Length
-Info "local $localSize B / remote $remoteSize B"
+Info "pushed to $stagePath"
+Info "local $localSize B / device $remoteSize B"
 $remoteNum = 0
 $parsed = [int]::TryParse($remoteSize, [ref]$remoteNum)
 if ((-not $parsed) -or ($remoteNum -ne $localSize)) {
-  Die "remote size differs from local (truncated transfer). Fallback: adb push the tarball to /sdcard/Download/ and unpack it on the phone by hand."
+  Die "size on device differs from local (truncated transfer). Device said: '$remoteSize'"
 }
 Info "sizes match - OK"
 
+# Confirm Termux itself can see it. This is the check that actually matters:
+# the file being on /sdcard does not help if Termux cannot read that path.
+$probe = "test -r $stagePath && echo READABLE || echo NOT_READABLE"
+$r = Invoke-Adb -AdbArgs @("shell", $probe) -TimeoutSec 25
+$readable = if ($r.TimedOut) { "<timeout>" } else { $r.Output.Trim() }
+Info "readable from adb shell: $readable"
+if ($readable -ne "READABLE") {
+  Die "cannot read $stagePath from the device shell. On some ROMs shared storage needs a one-time grant; open Termux and run: termux-setup-storage"
+}
+
 # ---------------------------------------------------------------- build
-Head "5. Unpack and build on the device"
+Head "5. Build on the device"
+#
+# Termux holds the app keystore, so adb cannot drive its shell directly. Hand the
+# user ONE line to paste, and build the command so it is safe to paste verbatim:
+# every step is checked, and failure stops with a readable message instead of
+# running the next command against a half-unpacked tree.
 $selftestArg = if ($SkipSelftest) { "" } else { " --selftest" }
-$buildCmd = "cd `$HOME; tar xzf $remoteTar -C $remoteDir; cd $remoteDir; " +
-            "bash build_termux.sh$selftestArg"
-Info "remote command: $buildCmd"
-Info "(compile output follows; roughly 1-3 minutes on ARM64)"
+$oneLiner = "cd ~; rm -rf $remoteDir; mkdir -p $remoteDir; " +
+            "cp $stagePath ~/$remoteDir.tar.gz; " +
+            "tar xzf ~/$remoteDir.tar.gz -C $remoteDir; " +
+            "cd $remoteDir; " +
+            "if command -v clang++ >/dev/null 2>&1; then " +
+            "bash build_termux.sh$selftestArg; " +
+            "else " +
+            "echo 'MISSING TOOLCHAIN - run: pkg update; pkg install -y clang libomp make'; " +
+            "fi"
+
 Write-Host ""
-& $Adb shell "$shPath -c `"$buildCmd`"" 2>&1 | ForEach-Object { Write-Host $_ }
+Write-Host "Paste this ONE line into Termux (it copies the payload out of shared"
+Write-Host "storage, unpacks it, and builds):"
+Write-Host ""
+Write-Host $oneLiner -ForegroundColor Green
+Write-Host ""
+Write-Host "Then paste the output back here and it will be analysed."
+Write-Host "Nothing was built automatically because Termux owns its own keystore, so"
+Write-Host "adb cannot execute commands inside it without RUN_COMMAND permissions."
 
 Write-Host ""
 Write-Host "=== done ===" -ForegroundColor Green

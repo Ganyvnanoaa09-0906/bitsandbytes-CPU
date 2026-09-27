@@ -65,11 +65,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -File D:\work\termux_adb_test.ps1
    MuMu 自带的是 `1.0.41 / 36.0.0`，正确工作）
 2. 探测手机状态，并**区分** `device` / `offline` / `unauthorized`（三者的修法完全不同）
 3. 只打包构建真正需要的约 300 KB（整仓 10 MB 里大部分是文档与 CUDA 头）
-4. 用 **stdin 管道**把 tar.gz 送进 Termux 家目录
-   （`adb push` 到 `/data/data/com.termux/files/home/` 会 permission denied，
-   因为那目录属主是 Termux 自己的 uid；管道是以 Termux 身份写的）
-5. 校验远端文件大小与本地一致后才继续（只说"传完了"不够）
-6. 解包、构建、跑自检
+4. 通过 **`/sdcard/Download`（共享存储）** 中转，然后交给 Termux 一行命令取用
+5. 校验设备侧文件大小与本地一致后才继续（只说"传完了"不够）
+6. 给出**一行**可在 Termux 里直接粘贴的命令（解包 + 构建 + 自检）
+
+**为什么必须走 `/sdcard` 而不是直接写进 Termux 家目录**（实测，含一次被证伪的推断）：
+
+- `adb shell` 的身份是 `uid=2000(shell)`，而 `/data/data/com.termux/`
+  对它返回 **`Permission denied`**（Android 10 的沙箱）。
+- 因此 **`adb push` 写进 Termux 家目录会失败**，**`adb shell ... > 文件` 的管道同样会失败**
+  —— 我最初以为"管道是以 Termux 身份运行的所以能写"，这是**错的**，两个都不行。
+- `/sdcard` 是共享存储：`shell` 用户可写，Termux 也能读，而且**不需要**
+  `termux-setup-storage`。
+- 构建本身**无法**通过 adb 在 Termux 内执行：Termux 有自己的 keystore，
+  外部进程无法在里面跑命令（除非开放 RUN_COMMAND 权限）。所以最后一步必然是
+  用户在 Termux 里粘贴一行。
+
+**设备侧命令的兼容性约束**（Android 10 实测）：
+`/system/bin/sh` 不支持 `if ...; then ...; else ...; fi`（mksh 报 `unexpected 'else'`）；
+toybox 的 `stat` 没有 `-c`/`--format`（`stat -c %s` 报 `Needs 1 argument`）。
+取文件大小用 `wc -c < file` 可用。
 
 ### 方式 B：手动（不依赖 ADB）
 
