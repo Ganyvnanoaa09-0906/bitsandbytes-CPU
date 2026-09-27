@@ -92,7 +92,9 @@ def main():
 
     def run(frames, res):
         x = torch.randn(1, 4, frames, res, res)
-        ctx = torch.randn(1, 77, 768)          # SD1.5 cross-attn dim
+        # encoder_hidden_states 必须按帧展开成 (B*F, 77, D) —— 见 video_models.py 的说明。
+        # 只给 (B,77,D) 会报 "size of tensor a (8192) must match b (1024)"，比值 = 帧数。
+        ctx = torch.randn(1, 77, 768).repeat(frames, 1, 1)
         t = torch.tensor([500], dtype=torch.long)
         with torch.no_grad():
             _ = m(x, t, encoder_hidden_states=ctx)
@@ -119,7 +121,7 @@ def main():
     # CPU 上按模块计时用 torch.profiler 最可靠，且能给出 self/总 两个口径。
     print('\n[2] torch.profiler 模块级聚合（5D，frames=%d）' % FRAMES, flush=True)
     x = torch.randn(1, 4, FRAMES, RES, RES)
-    ctx = torch.randn(1, 77, 768)
+    ctx = torch.randn(1, 77, 768).repeat(FRAMES, 1, 1)
     t = torch.tensor([500], dtype=torch.long)
     try:
         from torch.profiler import ProfilerActivity, profile
