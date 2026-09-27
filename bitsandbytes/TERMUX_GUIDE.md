@@ -107,10 +107,40 @@ bash build_termux.sh --selftest
    —— 逐个断言而不是数总数：总数对得上也可能缺关键项
 3. 自检打印 **`[PASSED]`**
 
-> **关于自检项数（更正旧文档）**：早期文档写"5 项（含 `gdn_fwd`）"，
-> 但 `selftest_cpu.c` 里实际只有 **4 项**：
-> ①quantize 往返 ②gemm_8bit ③gemv_4bit ④AdamW8bit。
-> 脚本与本文档以**代码为准**。
+### 自检现在共 5 项
+
+| # | 检查 | 说明 |
+|---|---|---|
+| 1 | quantize_blockwise 8bit 往返 | 误差 < 0.6% |
+| 2 | gemm_8bit 前向 | 与参考近似 |
+| 3 | gemv_4bit(nf4) | 输出有限且非全零 |
+| 4 | AdamW8bit 单步更新 | 参数变化合理 |
+| 5 | **向量分派 × 标量叉验证** | 同一入口、逐元素等价的输入，只改 `blocksize`，使一个走向量分派、一个走标量回退，要求输出**逐位相同** |
+
+> **第 5 项为什么必须有**：前 4 项**不能**证明向量路径正确。实测第 3 项用的是
+> `bs=2`，而 NEON 分派的条件是 `n % blocksize == 0 && blocksize % 16 == 0`
+> （`cpu_ops.cpp:1265`）⇒ 第 1/2/3 项在 ARM64 上**全部跳过 NEON**；
+> `neon_absmax` 与 bf16/fp16 转换路径更是从未被覆盖。
+> 只看"4/4 通过"就宣称 ARM64 支持，是在主张并不存在的覆盖。
+> 第 5 项与架构无关，因此在 x86 与 ARM64 上跑的是**同一条判据**。
+
+**实测结果（两个工具链都跑过）**：
+
+| 工具链 | 第 5 项 | 含义 |
+|---|---|---|
+| MSVC / AVX2 | **PASS** | AVX2 分派 == 标量，逐位一致 |
+| clang / NEON | **PASS** | NEON 分派 == 标量，逐位一致 |
+
+> ⚠️ 第 5 项的**第一版判据是错的**，被 MSVC 当场抓住（128/128 不一致、最大差 1.46）：
+> 那一版只让**缩放值的集合**重复出现，却让一个布局每行 3 个 scale、另一个每行 6 个，
+> 于是**逐 k 的 scale 序列不同** ⇒ 两次调用本是不同的算式。
+> 修正为让细粒度布局的第 `b` 块取 `seq[b/2]`，使每个元素上的缩放完全一致。
+> 教训与本文档其余部分一致：**判据要落在逐元素上，不能只看形式对齐**。
+
+> **关于自检项数的历史更正**：早期文档写"5 项（含 `gdn_fwd`）"，
+> 而 `selftest_cpu.c` 里当时**只有 4 项且没有 GDN**（曾把第 3、4 项顺序标反）。
+> 现在确实是 5 项，但第 5 项是上面的叉验证，仍然**不是** GDN。
+> 以代码为准 —— 这类"文档说有一项、代码里没有"的差异在本项目出现过多次。
 
 ---
 
@@ -118,18 +148,35 @@ bash build_termux.sh --selftest
 
 - Termux **通常装不上 torch**，所以验证到 **C 层自检**为止 ——
   验证的是**内核数值正确性**，不是训练能力。
-- 自检只覆盖 4 个内核。NEON 路径与标量路径的**性能**差异未测
-  （判据只保证数值正确）。
+- 自检覆盖 5 项，其中第 5 项覆盖了 4-bit GEMV 的**向量分派**（NEON/AVX2 与标量逐位一致）。
+  **仍未覆盖**：`neon_absmax`、`neon_f32_to_bf16x4/fp16x4` 等被 `__aarch64__` 守卫的
+  辅助函数**从未在任何一项里被走到** —— 它们目前只有"能编译过"这一层证据。
+  若要宣称完整，需要再加针对这些路径的用例。
+- NEON 与标量路径的**性能**差异未测（第 5 项只保证数值正确）。
 - 手机型号/SoC 不同，`-mcpu=native` 的探测结果会不同；脚本会自动降级。
 - `termux_adb_test.ps1` 是**纯 ASCII** 的（含所有提示信息），这是刻意的：
   Windows PowerShell 5.1 按系统 ANSI 代码页读 `.ps1`，UTF-8 无 BOM 的中文会被
   误解码，**不只是显示乱码，而是直接破坏语法解析**（实测：一个在 UTF-8 下
   完全合法的文件报了 6 个语法错误）。中文说明放在本文件里，它不参与解析。
 
-## 六、相关文件
+## 六、曾经踩过的坑（都已修，记下来避免重犯）
+
+| 坑 | 表现 | 真因 |
+|---|---|---|
+| `adb push` 进 Termux 家目录 | permission denied | `adb shell` 是 `uid=2000(shell)`，`/data/data/com.termux/` 对它不可读 |
+| 用管道写 `/data/data/com.termux/...` | 同样失败 | 管道也以 shell 身份运行 —— 我曾错误推断"管道以 Termux 身份运行" |
+| 用 `test -x` 探测 Termux 是否安装 | 明明装了却报"未安装" | 该测试因权限失败；应查 `pm list packages` |
+| 共享存储 `/sdcard` 给 Termux 用 | Termux 读不到 | 需要 `termux-setup-storage` 授权；改用 `/data/local/tmp`（免授权） |
+| 设备侧 `if ... else ... fi` | `unexpected 'else'` | Android 的 `/system/bin/sh` 是 mksh |
+| 设备侧 `stat -c %s` | `Needs 1 argument` | Android 10 的 toybox `stat` 不支持 `-c/--format`；用 `wc -c` |
+| AVX2 代码在 ARM64 上被编译 | `unknown type name '__m128i'` | 两整组 AVX2 函数**完全没有守卫**（`cpu_ops.cpp`） |
+| 标量助手报 undeclared | `use of undeclared identifier` | `scalar_absmax` / `scalar_gemv_4bit_inference` 被关在 AVX2 守卫内，却被无守卫的回退路径调用 |
+| clang 警告"treating 'c' input as 'c++'" | 编译警告 | `selftest_cpu.c` 必须按 C++ 编译（内部有 `extern "C"`），已显式加 `-x c++`，对应 MSVC 的 `/TP` |
+
+## 七、相关文件
 
 - `build_termux.sh` —— Termux 构建入口（新写）
-- `selftest_cpu.c` —— 无 torch 的 C 层自检（4 项）
+- `selftest_cpu.c` —— 无 torch 的 C 层自检（5 项）
 - `build_linux.sh` —— 普通 Linux 构建入口（x86_64 AVX2 / aarch64 NEON）
 - `D:\work\termux_adb_test.ps1` —— ADB 自动化验证台
 - 报告 `CPU_FORGE_TECHNICAL_REPORT.md` 相关章节
