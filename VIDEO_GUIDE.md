@@ -188,7 +188,86 @@ pred = model(noisy, ts, encoder_hidden_states=e).sample
 
 ---
 
-## 4. 一条反复出现的纪律
+## 4. 从 HF 拉视频模型（本机的网络实况）
+
+**`huggingface.co` 在本机超时（被墙）；`hf-mirror.com` 可用。**
+任何 HF 下载都要先设：
+
+```powershell
+$env:HF_ENDPOINT = 'https://hf-mirror.com'
+```
+
+本机 `HF_ENDPOINT` 环境变量**原本是空的**，所以默认走 huggingface.co ⇒ 必然超时。
+验证过的可用路径（列仓库文件、下单个文件都通）：
+
+```
+GET https://hf-mirror.com/api/models/<repo>                     # 列文件
+GET https://hf-mirror.com/<repo>/resolve/main/<path>            # 下文件
+```
+
+用法示例：`python hf_pull_video.py`（拉 Wan2.1 的 config + tokenizer，并校验完整性）。
+
+### 4.1 Wan2.1-T2V-1.3B 的实况（**不是坏包**）
+
+| | |
+|---|---|
+| `diffusion_pytorch_model.safetensors` | 5,676,070,424 B，**825 张量，1419.0M 参数，全 F32** |
+| `Wan2.1_VAE.pth` | 507,609,880 B，zip 魔术正确 ✓ |
+| `models_t5_umt5-xxl-enc-bf16.pth` | 11,361,920,418 B |
+| `configuration_wan.py` / `modeling_wan.py` / `tokenizer_config.json` | **15 B，内容是 `Entry not found`** |
+
+**那 3 个 15 B 文件是 ModelScope 的占位符，而 HF 仓库里根本没有这些文件**
+（HF 侧是 `config.json` + `google/umt5-xxl/tokenizer*`）。两个平台**仓库结构不同**，
+**权重从来没有损坏**。safetensors 完整性已逐字节校验：
+
+```
+825 张量, header 83216 B, 需要 5676070424 B / 实际 5676070424 B   ← 一个字节不差
+```
+
+架构（从 hf-mirror 拉到 `config.json` 后确认，与权重头完全吻合）：
+`dim=1536, ffn_dim=8960, num_heads=12, num_layers=30, in_dim=out_dim=16, text_len=512`。
+
+### 4.2 拷打量化库的结果（`quant_stress_wan.py`，真实 Wan2.1 权重）
+
+```
+[1] 306/306 个 2D 权重张量量化成功，失败 0 例
+[2] NF4: RMS 相对误差 0.09237 (SNR 20.7 dB)
+    FP4: RMS 相对误差 0.12287 (SNR 18.2 dB)     ⇒ NF4 好 24.8%
+[3] 4bit fused GEMV (M=1) vs fp32 稠密:
+    (1,1536)x(1536,1536)   0.453 → 0.041 ms   11.05×   rmsrel 0.0920
+    (1,8960)x(1536,8960)   2.419 → 0.270 ms    8.95×   rmsrel 0.0930
+    (1,1536)x(8960,1536)   2.421 → 0.386 ms    6.27×   rmsrel 0.0934
+```
+
+注意 `[3]` 的 `rmsrel ≈ 0.092` **正好等于 `[2]` 的 NF4 量化误差** ⇒ 端到端偏离
+就是量化误差本身，核路径没有额外损失。
+
+### 4.3 内存账：**量化 transformer 不够，关键是卸载文本编码器**
+
+（`wan_footprint.py`）
+
+| 组件 | 大小 |
+|---|---|
+| transformer (1.3B) | 5.68 GB |
+| VAE | 0.51 GB |
+| **text encoder (umt5-xxl, bf16)** | **11.36 GB** |
+| 合计 | **17.55 GB** |
+
+| 精度 | 合计 | 其中 transformer | 能装下(15.4 GB)? |
+|---|---|---|---|
+| fp32 | 17.55 GB | 5.68 GB | **否** |
+| 8bit | 13.29 GB | 1.42 GB | 是（紧） |
+| **4bit** | **12.58 GB** | **0.71 GB** | 是 |
+
+**要害**：4bit 只把总量从 17.55 降到 12.58 GB，因为**文本编码器占 11.36 GB 且已是
+bf16（2 字节/参数），再量化收益有限**。而把它**离线预计算 embedding 后卸载**，
+一次就省 11.36 GB ⇒ 4bit 主干 + VAE 只剩约 **1.2 GB**，才留得出激活的空间。
+
+**⇒ 这台机器上跑 Wan 的动作顺序：① 主干 4bit；② 把文本编码器挪出常驻集（更重要）。**
+
+---
+
+## 5. 一条反复出现的纪律
 
 本轮出现过 **9 次同类错误**，全部是「把测量工具的伪影 / 一次观察，
 当成被测量对象的性质」，例如：
