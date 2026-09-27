@@ -87,9 +87,15 @@ fi
 echo "[4/4] selftest ..."
 if [ "$RUN_SELFTEST" = "1" ]; then
   echo "  编译并运行无 torch 的 C 层自检 ..."
+  # -x c++ 是必需的：selftest_cpu.c 里有 `#ifdef __cplusplus / extern "C" {`，
+  # 只有按 C++ 编译才会走到那个分支；按 C 编译会跳过它，符号被 C++ 修饰，
+  # 于是每个内核符号都链接失败。MSVC 侧用 /TP 表达同一件事
+  # （见 build_manual/selftest_win.bat 的注释）。显式写出 -x c++ 而不是靠
+  # clang++ "见到 .c 也当 C++" 的隐式行为，是为了消掉那条 deprecated 警告。
   $COMPILER -O2 -std=c++17 -fopenmp $ARCH_FLAGS \
     -DNOMINMAX -DNDEBUG -DBUILD_CUDA=0 -DBUILD_HIP=0 -DBUILD_XPU=0 \
-    -I csrc selftest_cpu.c csrc/cpu_ops.cpp csrc/cpu_gdn.cpp csrc/pythonInterface.cpp \
+    -I csrc -x c++ selftest_cpu.c -x none \
+    csrc/cpu_ops.cpp csrc/cpu_gdn.cpp csrc/pythonInterface.cpp \
     -o build_linux/selftest_cpu
   echo "  --- 运行结果 ---"
   ./build_linux/selftest_cpu

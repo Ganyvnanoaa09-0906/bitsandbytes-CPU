@@ -5,16 +5,26 @@
 // 不需要 PyTorch —— 直接链接 cpu_ops.cpp + cpu_gdn.cpp + pythonInterface.cpp。
 //
 // 用法：
-//   clang -O2 -fopenmp -march=armv8-a+fp16 -DBUILD_CUDA=0 -DBUILD_HIP=0 -DBUILD_XPU=0 \
-//         -I csrc selftest_cpu.c csrc/cpu_ops.cpp csrc/cpu_gdn.cpp csrc/pythonInterface.cpp \
+//   clang++ -O2 -fopenmp -march=armv8-a+fp16 -DBUILD_CUDA=0 -DBUILD_HIP=0 -DBUILD_XPU=0 \
+//         -I csrc -x c++ selftest_cpu.c -x none \
+//         csrc/cpu_ops.cpp csrc/cpu_gdn.cpp csrc/pythonInterface.cpp \
 //         -o selftest_cpu && ./selftest_cpu
 //
-// 覆盖：
+// 覆盖（**实际 4 项**）：
 //   1) quantize_blockwise(8bit) 往返：量化→反量化 误差 < 0.6%
 //   2) gemm_8bit 线性前向：A @ dequant8(B) 与 A @ B 近似
-//   3) optimizer_update_8bit_blockwise(Adam)：一步更新后参数变化合理
-//   4) gemv_4bit(nf4) 推理：A @ dequant4(B)
-//   5) GDN fwd 前向：形状正确（GPU 无，CPU 上验证不崩）
+//   3) gemv_4bit(nf4) 推理：A @ dequant4(B) 输出有限且非全零
+//   4) optimizer_update_8bit_blockwise(Adam)：一步更新后参数变化合理
+//
+//   ⚠️ 本段原先写的是“5 项”，其中第 4 项标成了 optimizer、第 5 项写了
+//      “GDN fwd 前向”。实测 main() 里只有 4 个 CHECK —— **没有** GDN fwd 那一项，
+//      且顺序是 quantize / gemm8 / gemv4 / AdamW8bit。以代码为准，此处已更正。
+//      （旧版 Termux 验证文档同样写着“5 项含 gdn_fwd”，同一处错误。）
+//
+// ⚠️ 本文件扩展名是 .c，但**必须按 C++ 编译**：下面的入口声明包在
+//    `#ifdef __cplusplus / extern "C" {` 里。若按 C 编译，__cplusplus 未定义 ⇒
+//    该块被跳过 ⇒ 这些符号按 C++ 修饰 ⇒ **每一个内核符号都链接失败**。
+//    构建脚本因此显式传 `-x c++`（MSVC 侧是 /TP，见 build_manual/selftest_win.bat）。
 //
 // 输出：每项 PASS/FAIL，最后汇总。
 

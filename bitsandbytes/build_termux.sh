@@ -170,10 +170,23 @@ fi
 echo "[5/5] C 层自检 ..."
 if [ "$RUN_SELFTEST" = "1" ]; then
   echo "  编译无 torch 自检 ..."
+  # -x c++ 是必需的，不是装饰：
+  #   文件名叫 selftest_cpu.c，但它内部有
+  #       #ifdef __cplusplus
+  #       extern "C" {
+  #       #endif
+  #   把内核入口声明成 C 链接。**只有按 C++ 编译**才定义 __cplusplus、才会走那个分支；
+  #   若按 C 编译，块被跳过 ⇒ 符号按 C++ 修饰 ⇒ 每一个内核符号都链接失败。
+  #   （build_manual/selftest_win.bat 里的 /TP 就是同一件事的 MSVC 写法，其注释已写明。）
+  # 显式写出 -x c++ 而不是依赖"clang++ 见到 .c 也当 C++"，是为了消掉
+  #   warning: treating 'c' input as 'c++' when in C++ mode, this behavior is deprecated
+  # 那条警告 —— 它是靠扩展名猜语言，将来会变成硬错误。MSVC 侧靠 /TP 显式指定，
+  # 这里就靠 -x c++ 显式指定，两边对齐。
   # shellcheck disable=SC2086
   $COMPILER -O2 -std=c++17 $OMP_FLAG $ARCH_FLAGS \
     -DNOMINMAX -DNDEBUG -DBUILD_CUDA=0 -DBUILD_HIP=0 -DBUILD_XPU=0 \
-    -I csrc selftest_cpu.c csrc/cpu_ops.cpp csrc/cpu_gdn.cpp csrc/pythonInterface.cpp \
+    -I csrc -x c++ selftest_cpu.c -x none \
+    csrc/cpu_ops.cpp csrc/cpu_gdn.cpp csrc/pythonInterface.cpp \
     -o build_termux/selftest_cpu
   echo "  --- 运行结果 ---"
   ./build_termux/selftest_cpu

@@ -356,6 +356,36 @@ static inline bool has_avx2_cpu() {
 #endif
 }
 
+// ---------------------------------------------------------------------------
+// scalar absmax over a range, with optional outlier rejection
+// (kInt8VectorQuant semantics).
+//
+// 🔴 2026-09-27 【ARM64 构建修复】本函数原在下面的 AVX2 守卫块**内部**（原 445 行），
+//    但它的调用者是**无守卫的标量回退路径**（quantize_4bit_cpu_impl:2021、
+//    int8_vector_quant_cpu_impl:2390）。x86 上守卫恒真所以从不报错；ARM64 上守卫为假
+//    ⇒ clang 报 `use of undeclared identifier 'scalar_absmax'`。
+//    它是**纯标量**实现（只用 bf16_to_float / fp16_to_float，两者都在守卫外），
+//    因此正确位置就是守卫外 —— 与 NEON 助手放在 __aarch64__ 守卫内是对称的做法。
+// ---------------------------------------------------------------------------
+template <typename T> static inline float scalar_absmax(const T* p, long long n, float threshold) {
+    float am = 0.0f;
+    const bool sparse = threshold > 0.0f;
+    for (long long i = 0; i < n; ++i) {
+        float val;
+        if constexpr (std::is_same<T, float>::value)
+            val = p[i];
+        else if constexpr (std::is_same<T, bf16_t>::value)
+            val = bf16_to_float(p[i].v);
+        else
+            val = fp16_to_float(p[i].v);
+        float a = std::fabs(val);
+        if (sparse && !(a < threshold))
+            continue; // |val| >= threshold: excluded from row absmax
+        am = std::max(am, a);
+    }
+    return am;
+}
+
 #if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
 #if defined(__GNUC__)
 #pragma GCC push_options
@@ -439,26 +469,6 @@ static inline float avx2_hsum(__m256 v) {
     m = _mm_add_ps(m, _mm_movehl_ps(m, m));
     m = _mm_add_ss(m, _mm_movehdup_ps(m));
     return _mm_cvtss_f32(m);
-}
-
-// scalar absmax over a range, with optional outlier rejection (kInt8VectorQuant semantics)
-template <typename T> static inline float scalar_absmax(const T* p, long long n, float threshold) {
-    float am = 0.0f;
-    const bool sparse = threshold > 0.0f;
-    for (long long i = 0; i < n; ++i) {
-        float val;
-        if constexpr (std::is_same<T, float>::value)
-            val = p[i];
-        else if constexpr (std::is_same<T, bf16_t>::value)
-            val = bf16_to_float(p[i].v);
-        else
-            val = fp16_to_float(p[i].v);
-        float a = std::fabs(val);
-        if (sparse && !(a < threshold))
-            continue; // |val| >= threshold: excluded from row absmax
-        am = std::max(am, a);
-    }
-    return am;
 }
 
 // ---- 4-bit dequantization: 4 packed bytes -> 8 floats per iteration ----
@@ -1107,40 +1117,7 @@ static void avx2_gemv_fp16w_inference(
 // 实测（K=N=4096，融合/行复用）：M=17 7.79/11.83、M=32 16.20/19.75、
 //                               M=64 28.79/35.73、M=192 85.78/123.36 ms
 
-// scalar reference for the fused GEMV (also the fallback for odd shapes)
-template <typename T, int DATA_TYPE>
-static void scalar_gemv_4bit_inference(
-    const T* A, const unsigned char* B, const float* absmax, T* out, long long M, long long N, long long K,
-    long long lda, long long ldb, long long ldc, long long blocksize
-) {
-    const float* lut = DATA_TYPE == 1 ? fp4_lut : nf4_lut;
-    auto to_float = [](const T& v) -> float {
-        if constexpr (std::is_same<T, float>::value)
-            return v;
-        else if constexpr (std::is_same<T, bf16_t>::value)
-            return bf16_to_float(v.v);
-        else
-            return fp16_to_float(v.v);
-    };
-    for (long long n = 0; n < N; ++n) {
-        const unsigned char* wrow = B + n * ldb;
-        const float* srow = absmax + n * ((K + blocksize - 1) / blocksize);
-        for (long long m = 0; m < M; ++m) {
-            float total = 0.0f;
-            for (long long k = 0; k < K; ++k) {
-                const unsigned char byte = wrow[k >> 1];
-                const float nibf = (k & 1) ? lut[byte & 0x0F] : lut[byte >> 4];
-                total += nibf * srow[k / blocksize] * to_float(A[m * lda + k]);
-            }
-            if constexpr (std::is_same<T, float>::value)
-                out[m * ldc + n] = total;
-            else if constexpr (std::is_same<T, bf16_t>::value)
-                out[m * ldc + n] = float_to_bf16(total);
-            else
-                out[m * ldc + n] = float_to_fp16(total);
-        }
-    }
-}
+// scalar reference for the fused GEMV moved OUT of the AVX2 guard -- see below.
 // q = round(127 * x / row_absmax), RNE; sparse mode zeroes |x| >= threshold
 // and excludes outliers from the row absmax.
 template <typename T>
@@ -1222,6 +1199,49 @@ static void avx2_int8_vector_quant(
 #pragma GCC pop_options
 #endif
 #endif // AVX2 available
+
+// scalar reference for the fused GEMV (also the fallback for odd shapes).
+//
+// 🔴 2026-09-27 【ARM64 构建修复】本函数原在**上面的 AVX2 守卫块内部**（原 1112 行，
+//    紧跟在 avx2_gemv_fp16w_inference 之后），但它的调用者是**无守卫的标量回退路径**
+//    （gemv_4bit_inference_cpu_impl:2265/2267）。x86 上守卫恒真 ⇒ 从不报错；
+//    ARM64 上守卫为假 ⇒ clang 报 `use of undeclared identifier`。
+//    它只用 fp4_lut / nf4_lut / bf16_to_float / float_to_bf16（均在守卫外），
+//    是**纯标量**实现 ⇒ 正确位置是守卫外。
+//    注意：搬出后它同时供守卫内的 AVX2 路径回退使用，两边都可见。
+template <typename T, int DATA_TYPE>
+static void scalar_gemv_4bit_inference(
+    const T* A, const unsigned char* B, const float* absmax, T* out, long long M, long long N, long long K,
+    long long lda, long long ldb, long long ldc, long long blocksize
+) {
+    const float* lut = DATA_TYPE == 1 ? fp4_lut : nf4_lut;
+    auto to_float = [](const T& v) -> float {
+        if constexpr (std::is_same<T, float>::value)
+            return v;
+        else if constexpr (std::is_same<T, bf16_t>::value)
+            return bf16_to_float(v.v);
+        else
+            return fp16_to_float(v.v);
+    };
+    for (long long n = 0; n < N; ++n) {
+        const unsigned char* wrow = B + n * ldb;
+        const float* srow = absmax + n * ((K + blocksize - 1) / blocksize);
+        for (long long m = 0; m < M; ++m) {
+            float total = 0.0f;
+            for (long long k = 0; k < K; ++k) {
+                const unsigned char byte = wrow[k >> 1];
+                const float nibf = (k & 1) ? lut[byte & 0x0F] : lut[byte >> 4];
+                total += nibf * srow[k / blocksize] * to_float(A[m * lda + k]);
+            }
+            if constexpr (std::is_same<T, float>::value)
+                out[m * ldc + n] = total;
+            else if constexpr (std::is_same<T, bf16_t>::value)
+                out[m * ldc + n] = float_to_bf16(total);
+            else
+                out[m * ldc + n] = float_to_fp16(total);
+        }
+    }
+}
 
 // 4-bit (FP4 / NF4) dequantization helper extracted from the original else branch.
 // DATA_TYPE: 1 = FP4, 2 = NF4
@@ -2090,6 +2110,19 @@ void quantize_4bit_cpu_impl(
 // decode across M rows was measured as a net loss above M=8 -- see the comment
 // in gemv_4bit_inference_cpu_impl -- and this round independently reproduced
 // that crossover.)
+//
+// 🔴 2026-09-27 【ARM64 构建修复】本段原先**没有任何守卫**，整组 AVX2 函数
+//    （g_perm64 / ensure_perm64 / avx2_gemv_4bit_inference_v3_f32）在 ARM64 上
+//    也会被无条件编译，于是 clang 报 `unknown type name '__m128i'` —— 在 Termux
+//    上实测 20 个错误后停止。它唯一的使用点在 gemv_4bit_inference_cpu_impl 里，
+//    而那个调用点**本来就在同款守卫内**（原 2205 行），所以这一段是单纯漏了守卫，
+//    不是有意跨架构。补上后与文件里其余 AVX2 段（如 2784、3176）写法一致。
+#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC target("avx2,fma,f16c")
+#endif
+
 static int g_perm64[64];
 static bool g_perm64_ready = false;
 
@@ -2192,6 +2225,11 @@ static void avx2_gemv_4bit_inference_v3_f32(
     }
     std::free(ap);
 }
+
+#if defined(__GNUC__)
+#pragma GCC pop_options
+#endif
+#endif // AVX2 available (v3 M==1 GEMV group)
 
 template <typename T>
 void gemv_4bit_inference_cpu_impl(
@@ -3222,6 +3260,16 @@ void optimizer_update_8bit_blockwise_cpu(
 //    修法：把码表作为参数传进来（256 float = 1 KB，常驻 L1），不再硬编码。
 //    这是 AVX2 机器上 8bit 冻结线性层「不落地 fp32 权重」的基元。
 // =====================================================================
+//
+// 🔴 2026-09-27 【ARM64 构建修复】与上面的 v3 GEMV 组同一个缺陷：这一段
+//    （avx2_u8_to_f32_8 / avx2_u8_code_8 / avx2_gemm8_block_n /
+//    avx2_gemm8_inference_f32）也没有守卫，ARM64 上会被无条件编译。
+//    它唯一的使用点在 gemm_8bit_inference_cpu_fp32 的守卫块内，所以同样是漏了。
+#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC target("avx2,fma,f16c")
+#endif
 static inline __m256 avx2_u8_to_f32_8(const unsigned char* p) {
     const __m128i b = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(p));   // 8 x u8
     const __m256i w = _mm256_cvtepu8_epi32(b);                               // 8 x i32
@@ -3306,6 +3354,11 @@ static void avx2_gemm8_inference_f32(
             avx2_gemm8_block_n(A, B, absmax, out, K, lda, ldb, ldc, blocksize, 0, M, n);
     }
 }
+
+#if defined(__GNUC__)
+#pragma GCC pop_options
+#endif
+#endif // AVX2 available (fused 8-bit dequant GEMM group)
 
 static void scalar_gemm8_inference_f32(
     const float* A, const unsigned char* B, const float* absmax, float* out,

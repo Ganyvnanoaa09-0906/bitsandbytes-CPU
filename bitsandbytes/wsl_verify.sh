@@ -34,8 +34,10 @@ fi
 echo ""
 echo "=== Step 2/5: C 层自检（无 torch，验证内核数值） ==="
 # 直接编译 selftest_cpu（复用 build_linux.sh 的编译器逻辑）
+# -x c++ 必需：selftest_cpu.c 内的 extern "C" 块只在 C++ 下生效（详见 build_linux.sh 注释）
 g++ -O2 -std=c++17 -fopenmp -march=native -DNOMINMAX -DNDEBUG -DBUILD_CUDA=0 -DBUILD_HIP=0 -DBUILD_XPU=0 \
-  -I csrc selftest_cpu.c csrc/cpu_ops.cpp csrc/cpu_gdn.cpp csrc/pythonInterface.cpp \
+  -I csrc -x c++ selftest_cpu.c -x none \
+  csrc/cpu_ops.cpp csrc/cpu_gdn.cpp csrc/pythonInterface.cpp \
   -o build_linux/selftest_cpu
 ./build_linux/selftest_cpu
 echo "  [WSL] C 层自检完成"
