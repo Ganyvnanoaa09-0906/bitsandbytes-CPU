@@ -10,15 +10,18 @@
 //         csrc/cpu_ops.cpp csrc/cpu_gdn.cpp csrc/pythonInterface.cpp \
 //         -o selftest_cpu && ./selftest_cpu
 //
-// 覆盖（**实际 4 项**）：
+// 覆盖（**实际 5 项**）：
 //   1) quantize_blockwise(8bit) 往返：量化→反量化 误差 < 0.6%
 //   2) gemm_8bit 线性前向：A @ dequant8(B) 与 A @ B 近似
 //   3) gemv_4bit(nf4) 推理：A @ dequant4(B) 输出有限且非全零
 //   4) optimizer_update_8bit_blockwise(Adam)：一步更新后参数变化合理
+//   5) **向量分派与标量路径的叉验证**：同一份权重只改 blocksize，
+//      使其分别命中 NEON/AVX 分派与标量回退，输出必须逐位相同。
+//      —— 这一项是为了补上"只有入口数值正确、向量路径从未被验证"的缺口。
 //
-//   ⚠️ 本段原先写的是“5 项”，其中第 4 项标成了 optimizer、第 5 项写了
-//      “GDN fwd 前向”。实测 main() 里只有 4 个 CHECK —— **没有** GDN fwd 那一项，
-//      且顺序是 quantize / gemm8 / gemv4 / AdamW8bit。以代码为准，此处已更正。
+//   ⚠️ 本段原先写的是“5 项”，但其中第 4 项标成 optimizer、第 5 项写成
+//      “GDN fwd 前向”。实测 main() 里当时只有 4 个 CHECK —— **没有** GDN fwd。
+//      现在真的是 5 项了，但第 5 项是上面这个叉验证，不是 GDN。
 //      （旧版 Termux 验证文档同样写着“5 项含 gdn_fwd”，同一处错误。）
 //
 // ⚠️ 本文件扩展名是 .c，但**必须按 C++ 编译**：下面的入口声明包在
@@ -190,7 +193,72 @@ int main(void) {
         free(g); free(p); free(s1); free(s2); free(a1); free(a2);
     }
 
-    printf("\n=== 汇总: %d 失败 / 4 项 ===\n", failures);
+    // ---- 5) NEON/AVX 分派路径与标量路径的【叉验证】 ----
+    //
+    // 为什么需要这一项：
+    //   前 4 项只覆盖"入口能算对"。而 cpu_ops.cpp 里 4-bit GEMV 在 ARM64 上有一条
+    //   **NEON 分派**，条件是 `n % blocksize == 0 && blocksize % 16 == 0`
+    //   （cpu_ops.cpp:1265）。第 3 项用的 bs=64 会命中它，但**没有任何一项**去证明
+    //   "命中向量路径后结果仍然正确"。实测中还发现：本自检在 ARM64 上
+    //   neon_absmax 与 bf16/fp16 转换路径**从未被覆盖**。
+    //
+    // 判据设计（可在任意架构上跑，不依赖 __aarch64__）：
+    //   同一份打包权重、同一个入口，只改 blocksize，使两条路径处理**逐元素等价**的输入：
+    //     bs = 64 -> 64 % 16 == 0  => 走向量分派（每行 3 个 scale，跨度 64）
+    //     bs = 32 -> 32 % 16 != 0  => 走标量回退（每行 6 个 scale，跨度 32）
+    //   关键：让**逐 k 的 scale 序列完全相同** —— 给 32 宽的布局每个 64-宽块复制同一值
+    //   （即 scale = [s0,s1,s2,s3,s4,s5] 与 [s0,s0,s1,s1,s2,s2]）。
+    //   这样 "scale[k / 64]" 与 "scale[k / 32]" 对每个 k 都给出同一个数，
+    //   两次调用**在数学上算的完全是同一件事** ⇒ 输出必须**逐位相同**。
+    //
+    //   ⚠️ 本项第一版就是错的，被 MSVC 当场抓住（128/128 不一致、最大差 1.46）：
+    //      那一版只让**缩放值的集合**重复出现，却让每行 3 个 scale 对 6 个 scale，
+    //      逐 k 的 scale 序列并不相同 ⇒ 两次调用本是不同的算式。
+    //      "看起来对齐了"不等于"逐元素等价" —— 判据必须落在逐元素上。
+    {
+        const long long Tm = 2, Tn = 64, Tk = 192;   // 每行 192 个 4-bit 权重
+        const long long bsA = 64;                    // 3 块/行 -> 触发向量分派
+        const long long bsB = 32;                    // 6 块/行 -> 标量回退
+        const long long kbA = Tk / bsA;              // 3
+        const long long kbB = Tk / bsB;              // 6
+
+        unsigned char* W = (unsigned char*)malloc(Tn * (Tk / 2));
+        float* amA = (float*)malloc(Tn * kbA * sizeof(float));
+        float* amB = (float*)malloc(Tn * kbB * sizeof(float));
+        float* A2 = (float*)malloc(Tm * Tk * sizeof(float));
+        float* outA = (float*)malloc(Tm * Tn * sizeof(float));
+        float* outB = (float*)malloc(Tm * Tn * sizeof(float));
+        const float seq[3] = {0.5f, 0.75f, 1.0f};
+
+        for (long long i = 0; i < Tn * (Tk / 2); i++)
+            W[i] = (unsigned char)((i * 37 + 11) & 0xFF);
+        for (long long nrow = 0; nrow < Tn; nrow++) {
+            for (long long b = 0; b < kbA; b++) amA[nrow * kbA + b] = seq[b];
+            // 逐 k 等价：32 宽布局里，第 b' 块的 scale == 其所属 64 宽块的 scale
+            for (long long b = 0; b < kbB; b++) amB[nrow * kbB + b] = seq[b / 2];
+        }
+        for (long long i = 0; i < Tm * Tk; i++)
+            A2[i] = (float)((i % 23) - 11) / 8.0f;
+
+        cgemv_4bit_inference_cpu_fp32(A2, W, amA, outA, Tm, Tn, Tk,
+                                      Tk, Tk / 2, Tn, bsA, 2 /*NF4*/);
+        cgemv_4bit_inference_cpu_fp32(A2, W, amB, outB, Tm, Tn, Tk,
+                                      Tk, Tk / 2, Tn, bsB, 2 /*NF4*/);
+
+        long long mismatch = 0;
+        double worst = 0.0;
+        for (long long i = 0; i < Tm * Tn; i++) {
+            if (outA[i] != outB[i]) mismatch++;
+            double d = fabs((double)outA[i] - (double)outB[i]);
+            if (d > worst) worst = d;
+        }
+        CHECK("向量分派(bs=64)与标量(bs=32)结果逐位一致", mismatch == 0,
+              "不一致 %lld / %lld，最大差 %.3e", mismatch, Tm * Tn, worst);
+
+        free(W); free(amA); free(amB); free(A2); free(outA); free(outB);
+    }
+
+    printf("\n=== 汇总: %d 失败 / 5 项 ===\n", failures);
     if (failures == 0) {
         printf("[PASSED] bitsandbytes CPU 内核自检全部通过（可安全在 Linux/ARM 使用）\n");
         return 0;
