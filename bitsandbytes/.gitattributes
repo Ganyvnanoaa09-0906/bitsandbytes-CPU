@@ -9,3 +9,7 @@
 
 # 构建脚本 LF（bash 需要 LF，CRLF 会报 bad interpreter）
 *.sh text eol=lf
+
+# Markdown 也强制 LF：本仓库的文档是 UTF-8 中文，CRLF 混进来会让
+# diff 膨胀、并在 Linux 侧工具里产生尾随 \r。
+*.md text eol=lf
