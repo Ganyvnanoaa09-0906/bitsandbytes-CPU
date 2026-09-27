@@ -341,20 +341,34 @@ def _apply_ip_adapter(unet, image_encoder=None, *, num_tokens: int = 4,
 
 def _apply_video(video_family: str, transformer, *, lora: bool,
                  rank: int, alpha: int, dropout: float,
-                 target_modules: Optional[List[str]]) -> DiffusionSetup:
+                 target_modules: Optional[List[str]],
+                 lora_scope: Optional[str] = None) -> DiffusionSetup:
     """视频 LoRA / 全参（Wan / CogVideoX / SVD / AnimateDiff 共用注入逻辑）。
 
     transformer 为视频降噪骨干（Wan/CogVideoX=transformer，SVD/AnimateDiff=unet(3D)）。
     """
     method = video_family  # "wan_lora" / "cogvideo_lora" / "svd_lora" / "animatediff_lora" / "video_full"
     extra = {"lora": lora, "family": video_family,
-             "status": "video 结构就绪；需模型权重（本地暂无 Wan/CogVideoX/SVD/AnimateDiff）"}
+             "status": "video 结构就绪"}   # 注：原文写"本地暂无 Wan/CogVideoX/SVD/AnimateDiff"
+                                              # 权重，实测 AnimateDiff 权重在本地且训练可跑（report §10.156），已更正。
     if lora:
         from peft import LoraConfig, get_peft_model
         freeze_module(transformer)
         transformer = get_peft_model(transformer, LoraConfig(
             r=rank, lora_alpha=alpha, lora_dropout=dropout, bias="none",
             target_modules=target_modules or _DEFAULT_TARGETS))
+        # 可选：只训时序层（保留 SD1.5 空间先验）。见 report §10.157。
+        # PEFT 的 target_modules 按**叶子名**匹配，时序(motion_modules)与空间(attentions)
+        # 的叶子名相同 ⇒ 默认两者都被注入；这里按需把 scope 外的换回 base_layer。
+        scope = lora_scope or os.environ.get("BNB_LORA_SCOPE") or "all"
+        if video_family == "animatediff_lora" and scope in ("temporal", "spatial"):
+            try:
+                from temporal_only_lora import restrict_to_temporal
+                transformer, st = restrict_to_temporal(transformer, scope=scope, verbose=True)
+                extra["lora_scope"] = scope
+                extra["lora_scope_stats"] = st
+            except Exception as e:
+                extra["lora_scope_error"] = "%s: %s" % (type(e).__name__, e)
         trainable = [transformer]
         extra["transformer"] = transformer
     else:
@@ -427,8 +441,11 @@ def apply_method(method: str, *,
     # 视频类
     _need(video_transformer, "video_transformer")
     lora = m != "video_full"
+    # 注意：这里必须显式转发 lora_scope —— 原先 **extra 被整个丢掉，导致
+    # apply_method(..., lora_scope='temporal') 静默无效（trainable 数量不变）。
     return _apply_video(m, video_transformer, lora=lora, rank=rank,
-                        alpha=alpha, dropout=dropout, target_modules=target_modules)
+                        alpha=alpha, dropout=dropout, target_modules=target_modules,
+                        lora_scope=extra.pop("lora_scope", None))
 
 
 def _need(obj, name: str):

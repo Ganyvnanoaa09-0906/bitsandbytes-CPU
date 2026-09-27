@@ -181,6 +181,9 @@ P.add_argument("--video_model", default="", help="视频 transformer/unet 路径
 P.add_argument("--video_selftest", action="store_true", help="AnimateDiff 5D 训练最小验证（随机 latent，5-10 步）")
 P.add_argument("--video_frames", type=int, default=2, help="视频帧数 T（selftest）")
 P.add_argument("--video_size", type=int, default=32, help="视频像素尺寸（selftest；latent = size//8）")
+P.add_argument("--lora_scope", default="all", choices=["all", "temporal", "spatial"],
+               help="animatediff_lora only: temporal = train temporal layers only "
+                    "(keeps the SD1.5 spatial prior); all = both (default). See report 10.157")
 P.add_argument("--video_real_smoke", action="store_true", help="真实 (image,pose) 对 -> VAE latent -> 10 步 LoRA")
 P.add_argument("--vae_model", default="", help="VAE 路径（real_smoke 用；空则随机 latent）")
 args = P.parse_args()
@@ -450,9 +453,15 @@ elif args.method == "ip_adapter":
     setup = apply_method("ip_adapter", unet=unet, image_encoder=img_enc,
                          num_tokens=args.num_tokens, ip_scale=args.ip_scale)
 elif args.method in ("wan_lora", "cogvideo_lora", "svd_lora", "animatediff_lora", "video_full"):
-    # 视频：本地暂无权重，仅打印结构提示后退出
+    # 视频族。注：原注释写"本地暂无权重"，实测 AnimateDiff 权重在本地且 5D 训练可跑
+    # （report §10.156）。lora_scope 只在 animatediff_lora 上生效：temporal=只训时序层、
+    # 保留 SD1.5 空间先验（report §10.157）。
     setup = apply_method(args.method, video_transformer=None
-                         if not args.video_model else _load_video_transformer(args.video_model))
+                         if not args.video_model else _load_video_transformer(args.video_model),
+                         lora=(args.method != "video_full"),
+                         rank=args.rank, alpha=args.alpha, dropout=args.lora_dropout,
+                         target_modules=[x.strip() for x in args.targets.split(",") if x.strip()],
+                         lora_scope=getattr(args, "lora_scope", "all"))
 elif args.method == "ti":
     setup = apply_method("ti", text_encoder=text_encoder, tokenizer=tokenizer,
                          placeholder_token=args.placeholder_token,
