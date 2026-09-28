@@ -164,7 +164,7 @@ compiled with MSVC, so you can **extract and use it directly** -- no local C++ t
 ## Contents
 - `bitsandbytes/`   -- full Python package (incl. compiled `libbitsandbytes_cpu.dll` + `vcomp140.dll`)
 - `examples/cpu/`  -- CPU training example
-- `docs_cpu/`      -- technical guide / quickstart / tech report / disaster recovery (bilingual)
+- `docs_cpu/`      -- technical guide / quickstart / tech report, each in a zh file and a separate _EN file
 - `tools/`         -- disaster tools: `sector_mirror.exe` (mirror, CLI), `sector_mirror_gui.exe`
                      (mirror, GUI no-cmd), `sector_carve.exe` (signature carve/extract, CLI),
                      `sector_carve_gui.exe` (carve, GUI no-cmd)

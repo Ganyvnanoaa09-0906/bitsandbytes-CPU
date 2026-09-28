@@ -33,7 +33,9 @@ LLMs and diffusion models.
 > - [`TECHNICAL_GUIDE.md`](docs_cpu/TECHNICAL_GUIDE.md) — what was modified + per-kernel architecture (engineer-facing)
 > - [`QUICKSTART.md`](docs_cpu/QUICKSTART.md) — beginner manual: commands, parameters, copy-and-runnable
 > - [`TECH_REPORT.md`](docs_cpu/TECH_REPORT.md) — methodology, measured data, conclusions (incl. negative findings)
-> - The docs are merged Chinese-primary files; each contains an **English Reference appendix** (Chinese is authoritative). Disaster recovery is merged into `QUICKSTART.md` §9.
+> - **English** is a set of **separate files**, not an appendix: [`QUICKSTART_EN.md`](docs_cpu/QUICKSTART_EN.md),
+>   [`TECHNICAL_GUIDE_EN.md`](docs_cpu/TECHNICAL_GUIDE_EN.md), [`TECH_REPORT_EN.md`](docs_cpu/TECH_REPORT_EN.md)
+>   (they correspond to the Chinese versions; Chinese is authoritative). Disaster recovery is in `QUICKSTART_EN.md` §9.
 
 > **About disk_balancer**: it can help keep training running when memory is tight, but it
 > **does not replace Windows virtual memory**. During training we still **recommend keeping

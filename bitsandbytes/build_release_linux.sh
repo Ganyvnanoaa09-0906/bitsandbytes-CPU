@@ -94,7 +94,7 @@ and use, no local toolchain needed (except OpenMP/runtime for the .so).
 ## Contents
 - bitsandbytes/  full Python package + libbitsandbytes_cpu.so
 - examples/cpu/  CPU training example
-- docs_cpu/      technical guide / quickstart / tech report / disaster recovery (bilingual)
+- docs_cpu/      technical guide / quickstart / tech report, each in a zh file and a separate _EN file
 - tools/         disaster tools (source) + selftest_cpu (no-torch C self-check)
 
 ## Use
