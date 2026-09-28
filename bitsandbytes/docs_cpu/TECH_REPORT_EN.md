@@ -1,7 +1,5 @@
 # Technical Report: bitsandbytes Modification & Training Acceleration on Pure CPU
 
-**Author**: deepsleep team
-**Date**: 2026-09
 **Scope**: engineering acceleration of LLM fine-tuning and image-generation
 training on machines **without an NVIDIA GPU** (CPU only, AVX2 / ARM64 NEON,
 12–16 GB RAM).
@@ -145,7 +143,7 @@ it holds only for **M ≳ 96**; for **M ≤ 64 this fork's fused kernel is faste
 exactly that range). The two do not contradict — it is a **dispatch by M**. Implementation and one easily
 inverted polarity note: `TECHNICAL_GUIDE_EN.md §3.5.1` and `§6 item 9`.
 
-### 3.4 Threads & precision (empirical)
+### 3.4 Threads & precision
 
 | Task | 6 threads | 8 threads | 12 threads |
 |---|---|---|---|
@@ -229,7 +227,7 @@ The threshold derives from the **runtime L3 size**: outputs >= 4.2 MB win (2.0~3
 <= 1.0 MB lose (0.69~0.73x). Note the optimizer's `p` write must **not** use NT
 (read-modify-write: the line is already resident, so NT forces an eviction; measured 21% regression).
 
-**Boundary (important)**: this family saves **bandwidth, not FLOPs**.
+**Boundary**: this family saves **bandwidth, not FLOPs**.
 On the same machine, **convolution-dominated** UNet training has elementwise at only 9.4% with
 an arithmetic intensity of 394 FLOP/byte (far above the crossover of 9) => fusing elementwise
 gains ~0 there; different work is needed (see `TECHNICAL_GUIDE_EN.md` section 3.5.2).
@@ -270,7 +268,7 @@ and `lora=True` automatically falls back to row-wise unfreeze (tensor experts ha
 **Question**: on a machine with no discrete GPU (R5-4500U, AMD Radeon(TM) Graphics,
 sharing DDR4-2667 with the CPU), can the iGPU speed up training?
 
-**Phase 1: per-operator scheduling = negative (conclusion retained)**
+**Phase 1: per-operator scheduling = negative**
 
 The first `gpu_scheduler.py` dispatched large operators by the compute/transfer ratio
 `M*N/(M+N)`. Same-machine 8-step measurement (8-layer BigLinear(2048²) LoRA-style):
@@ -286,7 +284,7 @@ The first `gpu_scheduler.py` dispatched large operators by the compute/transfer 
 multi-process memcpy reaches only ~21-22 GB/s (about half the 42.7 GB/s theoretical)
 — the platform's bandwidth ceiling, with nothing to schedule.
 
-**Phase 2: block-level resident executor (measured viable on this machine)**
+**Phase 2: block-level resident executor**
 
 Form: all weights resident on the iGPU (moved once) + forward/backward of the whole
 step on the iGPU + one sync per step; trainable parameters (LoRA adapters) make small
@@ -307,7 +305,7 @@ the specialized kernel to fix it. Consistent with §3.5: "memory bandwidth is th
 ceiling" still holds; the iGPU only pays off in the **few-syncs, few-bytes-moved**
 form.
 
-**Phase 3: CPU/iGPU asynchronous-concurrency squeeze (R9, closed)**
+**Phase 3: CPU/iGPU asynchronous concurrency**
 
 Question: while the resident executor runs, the CPU sits idle — can asynchrony put it
 to work too?
@@ -436,7 +434,7 @@ cold); mmap zero-copy read-back.
 returns immediately); it offloads on demand (one param/step, bounded) near the
 threshold and does not slow training.
 
-**Crash found on a real LLM (fixed)**: §5's stress test used "self-supplied dummy cold
+**Crash found on a real LLM**: §5's stress test used "self-supplied dummy cold
 params" (`4×200MB dummy`), not a real model. On **Qwen3-1.7B LoRA training** (fp32 base
 ~7GB, memory near threshold triggering offload), `update_step()` iterates `named_parameters()`
 and treats the `requires_grad=False` **`embed_tokens.embedding.weight` (1.24GB) as a cold
@@ -603,7 +601,7 @@ boundary.
 
 ---
 
-## 7.2 Brute-force review: issues found & fixed
+## 7.2 Review: issues found & fixed
 
 > A workflow stress-tested all fork-added components in 4 parallel groups (normal / edge /
 > invalid-input / extreme values), finding 20+ issues, all fixed.

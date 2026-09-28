@@ -523,7 +523,7 @@ balancer.start()
 
 ---
 
-## 9. 灾难恢复（Data Recovery）
+## 9. 灾难恢复（Disaster Recovery）
 
 > **适用范围**：当 `disk_balancer`（`--flash`）在**非受支持环境**（尤指 WSL）下使用，可能
 > 导致宿主 Windows 文件系统（NTFS / 主文件表 MFT）损坏与数据丢失。
@@ -567,7 +567,7 @@ chkdsk <盘符>:          （不带 /f —— 只读报告，不修改数据）
 > 在完成镜像或确认恢复方案前，**不要向受损盘写入任何数据**——哪怕一个字节都可能
 > 覆盖 MFT 中待恢复的记录，造成不可逆损失。
 
-### 9.2 第一梯队：自带的 `sector_mirror`
+### 9.2 第一梯队：本仓库自带的 `sector_mirror`（绕过文件系统）
 
 > **适用**：本仓库仍可用（含已编译的 `sector_mirror.exe` / `sector_mirror_gui.exe`）。
 > 该工具使用 Win32 内核 API（`CreateFile` + `ReadFile`）**绕过文件系统**，直接读取磁盘
@@ -658,7 +658,7 @@ sector_carve.exe E: D:\carved_mom
 > 恢复 **3200+ 个文件**（照片/压缩包/PDF/MP4/Word/Excel/PPT）；PNG 99.6% 可打开、
 > docx 10/10 有效、MP4 完整；GUI 直扫物理盘恢复 **~95% 可用**。
 
-### 9.3 第二梯队：连本仓库/工具都不可用时 → Windows File Recovery
+### 9.3 第二梯队：本仓库 / 工具均不可用时 → Windows File Recovery
 
 > **适用**：**MFT 损坏过于严重，连本仓库 / Python / exe 都无法运行**。退回微软商店的
 > Windows File Recovery。
@@ -674,7 +674,7 @@ winfr D: E:\recovered /extensive /n *
 ### 9.4 防二次损伤要点（务必遵守）
 
 1. **恢复完成前，禁止向受损盘写入任何数据**；
-2. **优先镜像（第一梯队）再操作**——在完好副本上恢复最安全；
+2. **优先镜像（第一梯队 Tier 1）再操作**——在完好副本上恢复最安全；
 3. 数据恢复工具（TestDisk / PhotoRec / winfr）**应从另一块盘运行，输出写另一块盘**；
 4. 若不确定 / 涉及重要数据，**先只读 `chkdsk` 诊断，并咨询专业人员**。
 

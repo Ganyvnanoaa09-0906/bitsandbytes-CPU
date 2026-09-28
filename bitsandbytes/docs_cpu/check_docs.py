@@ -23,6 +23,19 @@ ZH = ["QUICKSTART.md", "TECHNICAL_GUIDE.md", "TECH_REPORT.md"]
 EN = ["QUICKSTART_EN.md", "TECHNICAL_GUIDE_EN.md", "TECH_REPORT_EN.md"]
 REMOVED = ["FUSED_KERNELS.md", "FUSED_KERNELS_EN.md"]
 
+# A heading number is a dotted section id, or a bare integer followed by a
+# separator. `#### 12 个 C 侧导出` is NOT section 12: the number is a count
+# followed by a measure word. Without that exclusion the zh/en heading comparison
+# reports a phantom section that exists in only one language -- and measure words
+# are Chinese, so only the Chinese side is affected.
+_NUM = r"([0-9]+(?:\.[0-9]+)*)"
+_MEASURE = r"(?!\s*(?:个|项|条|次|张|组|轮|步|种|款|层|类))"
+HEAD_RE = re.compile(r"^#{2,4}\s*" + _NUM + _MEASURE + r"(?=[\s.])", re.M)
+
+
+def section_ids(path):
+    return HEAD_RE.findall(io.open(path, encoding="utf-8").read())
+
 
 def main():
     d = sys.argv[1] if len(sys.argv) > 1 else "."
@@ -32,10 +45,11 @@ def main():
     print(f"files   : {len(names)}")
     fails = []
 
+    # A heading number is a dotted section id, or a bare integer followed by a
+    # separator; see HEAD_RE at module level for why measure words are excluded.
     secs = {}
     for n in names:
-        t = io.open(n, encoding="utf-8").read()
-        secs[n] = set(re.findall(r"^#{2,4}\s*([0-9]+(?:\.[0-9]+)*)", t, re.M))
+        secs[n] = set(section_ids(n))
 
     print()
     print("=" * 66)
@@ -108,6 +122,25 @@ def main():
         print(f"  {n:24s} {blocks:3d} table(s), {orphans} without a separator row")
         if orphans:
             fails.append(f"{n}: {orphans} malformed table(s)")
+
+    print()
+    print("=" * 66)
+    print("zh/en section symmetry")
+    print("=" * 66)
+    for zh, en in zip(ZH, EN):
+        if zh not in names or en not in names:
+            continue
+        a, b = section_ids(zh), section_ids(en)
+        ok = a == b
+        print(f"  {zh:22s} {len(a):2d} vs {en:26s} {len(b):2d}  {'match' if ok else 'MISMATCH'}")
+        if not ok:
+            fails.append(f"{zh} / {en}: section numbering differs")
+            only_a = [x for x in a if x not in b]
+            only_b = [x for x in b if x not in a]
+            if only_a:
+                print(f"      only in zh: {only_a[:8]}")
+            if only_b:
+                print(f"      only in en: {only_b[:8]}")
 
     print()
     if fails:

@@ -1,9 +1,5 @@
 # Technical Guide: the Modified bitsandbytes CPU Backend
 
-> Audience: engineers (developers comfortable reading C++ / PyTorch kernels).
-> Purpose: explain what this fork **changed relative to bitsandbytes v0.45.1,
-> why, and how to use it**.
-
 ---
 
 ## 1. Background & Motivation
@@ -304,7 +300,7 @@ output >= 4.2 MB : NT wins 2.0~3.1x
 threshold derived from the RUNTIME L3 size (L3 varies between 8/12/32+ MB)
 ```
 
-**Counter-example measured the same day**: the optimizer's `p` write must **not** use NT.
+**Counter-example**: the optimizer's `p` write must **not** use NT.
 That is a read-modify-write; the cache line was already read, so a normal store only marks
 it dirty, while NT forces an eviction => **21% regression**.
 
@@ -406,7 +402,7 @@ theoretical), there is no bandwidth slack to "schedule". The only viable form is
 (zero weight transfer per step), forward and backward run on the iGPU for the whole
 step, and the device is synchronized once per step.
 
-**Key measured results (they shape the architecture)**:
+**Conclusion**:
 
 | Form | Result |
 |---|---|
@@ -557,7 +553,7 @@ python stress_opt.py             # 210 combos, 0 failures (LLM-side regression)
 
 ---
 
-## 6. Known Constraints & Pitfalls
+## 6. Known Constraints & Issues
 
 1. **bf16 disabled on AVX2**: bf16 GEMM is software-emulated by oneDNN; a single matmul
    >90 s (effectively hangs) — always use fp32 for training.
