@@ -29,6 +29,21 @@ LLMs and diffusion models.
 | **Disk load balancer** | `disk_balancer.py` (`DiskLoadBalancer`, `--flash`) | On memory pressure, offload frozen-layer ("cold") weights to disk via mmap to avoid SSD thrash from Windows virtual memory |
 | **iGPU (DirectML) scheduler** | `gpu_scheduler.py` (`IgpuExecutor`, `train.py --igpu`) | Experimental: frozen weights resident on the DirectML iGPU, forward/backward on-device, **one sync per step**; **off by default** — measured **+30~35%** for GEMM-dense seq≤256 training, **negative** at long sequences (driver limits) |
 
+> **Install (Windows, no compiler needed)**:
+>
+> The wheel bundles the prebuilt CPU kernel and its OpenMP runtime, so nothing has
+> to be built after installing:
+>
+> ```bash
+> pip install https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/releases/download/v0.50.2.dev0-cpu/bitsandbytes_cpu_fork-0.50.2.dev0-py3-none-win_amd64.whl
+> ```
+>
+> One wheel covers every Python 3 version on 64-bit Windows; `pip` pulls `torch` and
+> `numpy` itself. The import name is unchanged (`import bitsandbytes as bnb`), so
+> existing code and the Transformers / PEFT / Diffusers integrations keep working.
+> Building from source instead is covered in
+> [`docs_cpu/QUICKSTART_EN.md`](docs_cpu/QUICKSTART_EN.md) sections 2 and 2A.
+
 > **Docs** (`docs_cpu/`):
 > - [`TECHNICAL_GUIDE.md`](docs_cpu/TECHNICAL_GUIDE.md) — what was modified + per-kernel architecture (engineer-facing)
 > - [`QUICKSTART.md`](docs_cpu/QUICKSTART.md) — beginner manual: commands, parameters, copy-and-runnable

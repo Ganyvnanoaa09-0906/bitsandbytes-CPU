@@ -204,6 +204,27 @@ machines **without NVIDIA GPUs** (AVX2 only / ARM64 NEON, e.g. consumer laptops,
 Mini-PCs). The upstream CPU backend is inference-oriented; these
 extensions make pure-CPU LoRA / quantization / diffusion training practical.
 
+### Install (Windows, no compiler needed)
+
+The wheel bundles the prebuilt CPU kernel and its OpenMP runtime, so nothing has to
+be built after installing:
+
+```bash
+pip install https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/releases/download/v0.50.2.dev0-cpu/bitsandbytes_cpu_fork-0.50.2.dev0-py3-none-win_amd64.whl
+```
+
+One wheel covers every Python 3 version on 64-bit Windows. `pip` pulls `torch` and
+`numpy` itself. The import name is unchanged, so existing code and the
+Transformers / PEFT / Diffusers integrations keep working as-is:
+
+```python
+import bitsandbytes as bnb          # the fork, not upstream
+print(bnb.__version__)              # 0.50.2.dev0
+```
+
+Building from source instead (any platform) is described in
+[`docs_cpu/QUICKSTART.md`](docs_cpu/QUICKSTART.md) §2 and §2A.
+
 > 📚 **Docs** (`docs_cpu/`):
 > - `TECHNICAL_GUIDE.md` — **技术文档**：改了什么、每个内核的架构与细节（面向技术人员）
 > - `QUICKSTART.md` — **快速入门手册**：命令、用途与参数（面向首次使用者）
