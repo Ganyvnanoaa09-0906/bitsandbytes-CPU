@@ -23,12 +23,13 @@ ZH = ["QUICKSTART.md", "TECHNICAL_GUIDE.md", "TECH_REPORT.md"]
 EN = ["QUICKSTART_EN.md", "TECHNICAL_GUIDE_EN.md", "TECH_REPORT_EN.md"]
 REMOVED = ["FUSED_KERNELS.md", "FUSED_KERNELS_EN.md"]
 
-# A heading number is a dotted section id, or a bare integer followed by a
-# separator. `#### 12 个 C 侧导出` is NOT section 12: the number is a count
-# followed by a measure word. Without that exclusion the zh/en heading comparison
-# reports a phantom section that exists in only one language -- and measure words
-# are Chinese, so only the Chinese side is affected.
-_NUM = r"([0-9]+(?:\.[0-9]+)*)"
+# A heading number is a dotted section id, optionally with a letter suffix
+# (`2A.1`), or a bare integer followed by a separator. `#### 12 个 C 侧导出` is NOT
+# section 12: the number is a count followed by a measure word. Without that
+# exclusion the zh/en heading comparison reports a phantom section that exists in
+# only one language -- and measure words are Chinese, so only the Chinese side is
+# affected.
+_NUM = r"([0-9]+[A-Z]?(?:\.[0-9]+)*)"
 _MEASURE = r"(?!\s*(?:个|项|条|次|张|组|轮|步|种|款|层|类))"
 HEAD_RE = re.compile(r"^#{2,4}\s*" + _NUM + _MEASURE + r"(?=[\s.])", re.M)
 

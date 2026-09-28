@@ -48,6 +48,49 @@ py -3.11 -m bitsandbytes.gdn_cpu
 
 ---
 
+## 2A. 编译与其他平台
+
+### 2A.1 Linux
+
+```bash
+cd <克隆路径>/bitsandbytes
+bash build_linux.sh --selftest
+```
+
+脚本会自动探测 AVX2（x86_64）或 NEON（aarch64），并探测 OpenMP 是否可用；探测失败时自动降级，而不是让链接阶段报错。产物为 `bitsandbytes/libbitsandbytes_cpu.so`。
+
+**交叉编译**：`build_linux.sh` 接受 `CC` / `CXX` 环境变量，可指定交叉工具链；脚本本身不做目标架构推断，若要让 `-march=native` 之类的探测结果正确，需显式传入 `-D__AVX2__` 等宏或改用 `--arch` 参数（见 `bash build_linux.sh --help`）。
+
+### 2A.2 Android / Termux（ARM64）
+
+```bash
+pkg install -y clang libomp make python
+cd ~/bitsandbytes && bash build_termux.sh --selftest
+```
+
+产物为 `bitsandbytes/libbitsandbytes_cpu.so`。Termux 的 clang 对 `-mcpu=native` 支持不稳定，脚本会先试编译再决定是否启用；OpenMP 需要单独 `pkg install libomp`，没有时自动降级为单线程。
+
+> ## ⚠️ 风险声明：不建议在手机上训练
+>
+> Termux 支持**已经实现并在真机（HUAWEI nova 5i Pro）上通过测试**，但**不推荐在 Termux 上训练或微调模型**。
+>
+> 该操作可能导致您的设备损坏。如执意继续，请先备份数据。若您的设备已 root，**请勿删除温控文件**，并保持在合理数值。
+>
+> 具体风险：
+>
+> | 风险 | 说明 |
+> |---|---|
+> | **闪存寿命** | `disk_balancer` 会在内存紧张时把冷参数写入磁盘。手机闪存（UFS/eMMC）的写入寿命远低于桌面 SSD，该功能**并非为手机设计**，不建议在手机上启用 |
+> | **SoC 虚焊** | 持续训练的高温会反复热胀冷缩，可能导致 SoC 焊点开裂，设备无法开机 |
+> | **电池不可逆衰减** | 长时间满载供电会永久降低续航能力 |
+> | **保修失效** | 上述操作可能使您失去设备保修资格（具体请访问您设备制造商的官网获取保修信息） |
+>
+> **继续使用即视为您已同意上述全部风险。**
+>
+> 相关测试数据见 [技术文档](TECHNICAL_GUIDE.md) 与 [技术报告](TECH_REPORT.md)；Termux 专项说明见仓库根的 `TERMUX_GUIDE.md`。
+
+---
+
 ## 3. 环境配置
 
 每次执行前（或置于脚本开头）：

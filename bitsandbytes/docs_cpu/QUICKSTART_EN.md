@@ -54,6 +54,64 @@ A `selftest PASSED` output indicates a successful build.
 
 ---
 
+## 2A. Building on other platforms
+
+### 2A.1 Linux
+
+```bash
+cd <clone>/bitsandbytes
+bash build_linux.sh --selftest
+```
+
+The script probes for AVX2 (x86_64) or NEON (aarch64) and for OpenMP, degrading
+automatically when a probe fails instead of letting the link stage error out. The
+artefact is `bitsandbytes/libbitsandbytes_cpu.so`.
+
+**Cross-compilation**: `build_linux.sh` honours the `CC` / `CXX` environment
+variables, so a cross toolchain can be supplied. The script does not infer the
+target architecture, so probes such as `-march=native` reflect the host unless the
+relevant macros (e.g. `-D__AVX2__`) are passed explicitly — see
+`bash build_linux.sh --help`.
+
+### 2A.2 Android / Termux (ARM64)
+
+```bash
+pkg install -y clang libomp make python
+cd ~/bitsandbytes && bash build_termux.sh --selftest
+```
+
+The artefact is `bitsandbytes/libbitsandbytes_cpu.so`. Termux's clang handles
+`-mcpu=native` inconsistently, so the script test-compiles before enabling it.
+OpenMP needs a separate `pkg install libomp`; without it the build degrades to
+single-threaded automatically.
+
+> ## WARNING: training on a phone is not advised
+>
+> Termux support **is implemented and has passed testing on a real device (HUAWEI
+> nova 5i Pro)**, but running training or fine-tuning under Termux is **not
+> recommended**.
+>
+> Doing so may damage your device. Back up your data before continuing. If your
+> device is rooted, **do not delete the thermal control files**, and keep their
+> values within a reasonable range.
+>
+> Specific risks:
+>
+> | Risk | Detail |
+> |---|---|
+> | **Flash storage wear** | `disk_balancer` writes cold parameters to disk when memory is tight. Phone storage (UFS/eMMC) has far lower write endurance than a desktop SSD, and the feature **was not designed for phones** — do not enable it there |
+> | **SoC solder failure** | Sustained training heat cycles the board repeatedly and can crack SoC solder joints, leaving the device unable to boot |
+> | **Irreversible battery degradation** | Prolonged full-load power draw permanently reduces battery life |
+> | **Voided warranty** | The above may void your device warranty (check your manufacturer's website for warranty terms) |
+>
+> **Continuing means you accept all of the above.**
+>
+> Measured results are in the [Technical Guide](TECHNICAL_GUIDE_EN.md) and
+> [Tech Report](TECH_REPORT_EN.md); Termux-specific notes are in `TERMUX_GUIDE.md`
+> at the repository root.
+
+---
+
 ## 3. Environment setup
 
 Before each run (or at the top of a script):

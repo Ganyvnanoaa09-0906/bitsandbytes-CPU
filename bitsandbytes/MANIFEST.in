@@ -1,3 +1,24 @@
-include CMakeLists.txt
+# Files for the source distribution (sdist).
+#
+# The inherited manifest referenced the upstream CUDA layout:
+#     include CMakeLists.txt
+#     graft csrc
+#     graft include
+# `include/` does not exist in this fork -- it held upstream's CUDA headers -- so
+# every sdist build printed "no directories found matching 'include'", and
+# CMakeLists.txt is unused now that the wheel ships a prebuilt CPU DLL instead of
+# compiling anything.
+#
+# csrc is kept deliberately: it is what build_manual.bat / build_linux.sh /
+# build_termux.sh compile when someone wants to rebuild the kernel themselves,
+# which is the difference between an sdist that is merely installable and one that
+# is actually useful.
 graft csrc
-graft include
+graft build_manual
+graft docs_cpu
+graft examples
+include build_linux.sh
+include build_termux.sh
+include selftest_cpu.c
+include README.md
+include LICENSE
