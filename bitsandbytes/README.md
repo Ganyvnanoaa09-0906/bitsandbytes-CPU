@@ -206,16 +206,14 @@ extensions make pure-CPU LoRA / quantization / diffusion training practical.
 
 ### Install (Windows, no compiler needed)
 
-The wheel bundles the prebuilt CPU kernel and its OpenMP runtime, so nothing has to
-be built after installing:
-
 ```bash
-pip install https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/releases/download/v0.50.2.dev0-cpu/bitsandbytes_cpu_fork-0.50.2.dev0-py3-none-win_amd64.whl
+pip install bitsandbytes-cpu-fork
 ```
 
-One wheel covers every Python 3 version on 64-bit Windows. `pip` pulls `torch` and
-`numpy` itself. The import name is unchanged, so existing code and the
-Transformers / PEFT / Diffusers integrations keep working as-is:
+The wheel bundles the prebuilt CPU kernel and its OpenMP runtime, so nothing has to
+be built after installing; `pip` pulls `torch` and `numpy` itself. One wheel covers
+every Python 3 version on 64-bit Windows. The import name is unchanged, so existing
+code and the Transformers / PEFT / Diffusers integrations keep working as-is:
 
 ```python
 import bitsandbytes as bnb          # the fork, not upstream

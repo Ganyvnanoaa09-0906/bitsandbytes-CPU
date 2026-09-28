@@ -11,24 +11,23 @@ ARM64 NEON and 12–16 GB RAM).
 
 ## Install (Windows, no compiler required)
 
-The wheel bundles the prebuilt CPU kernel and its OpenMP runtime, so nothing needs to
-be built after installing:
-
 ```bash
-pip install https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/releases/download/v0.50.2.dev0-cpu/bitsandbytes_cpu_fork-0.50.2.dev0-py3-none-win_amd64.whl
+pip install bitsandbytes-cpu-fork
 ```
 
-One wheel covers every Python 3 version on 64-bit Windows, and `pip` resolves
-`torch` / `numpy` itself. The import name is unchanged, so existing code and the
-Transformers / PEFT / Diffusers integrations work as-is:
+The wheel bundles the prebuilt CPU kernel and its OpenMP runtime, so nothing needs to
+be built after installing; `pip` resolves `torch` / `numpy` itself. One wheel covers
+every Python 3 version on 64-bit Windows. The import name is unchanged, so existing
+code and the Transformers / PEFT / Diffusers integrations work as-is:
 
 ```python
 import bitsandbytes as bnb
 print(bnb.__version__)      # 0.50.2.dev0
 ```
 
-Not on PyPI; the release asset URL above is the supported install path. To build the
-kernel from source instead — Linux, or Windows from a checkout — see
+The distribution is named `bitsandbytes-cpu-fork` (upstream `bitsandbytes` is a
+different package and is not replaced by this one). Prebuilt wheels are Windows-only;
+for Linux, or to build the kernel from source on any platform, see
 [`bitsandbytes/docs_cpu/QUICKSTART.md`](bitsandbytes/docs_cpu/QUICKSTART.md) §2 / §2A.
 
 ## What's inside
