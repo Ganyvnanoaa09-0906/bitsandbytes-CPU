@@ -260,13 +260,23 @@ def finish(a, losses=None, gradnorms=None, dt=None, n_all=0, n_quant=0,
         "checks": R, "passed": ok,
     }
     out = a.out or os.path.join(HERE, "termux_train_result.json")
-    for target in (out, "/data/local/tmp/termux_train_result.json"):
+    targets = [out]
+    # /data/local/tmp is used to get the result off the device, but it is NOT
+    # writable by the Termux uid (the adb shell owns what it creates there), so
+    # it is tried second and a failure is expected rather than reported as a
+    # problem. The copy inside the working directory is the real artefact.
+    if "/data/local/tmp" not in out:
+        targets.append("/data/local/tmp/termux_train_result.json")
+    for target in targets:
         try:
             with open(target, "w", encoding="utf-8") as fh:
                 json.dump(payload, fh, indent=2, ensure_ascii=False)
             print(f"  wrote {target}")
         except OSError as e:
-            print(f"  could not write {target}: {e}")
+            # Not fatal: on Android the shared path is usually not writable, and
+            # saying so quietly is better than a scary traceback at the end of a
+            # run that actually passed.
+            print(f"  (skipped {target}: {type(e).__name__})")
 
     return 0 if ok else 1
 
