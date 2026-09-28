@@ -165,8 +165,10 @@ else
 fi
 
 # ---------- [5/5] C 层自检 ----------
-# 自检共 4 项：quantize 往返 / gemm_8bit / gemv_4bit / AdamW8bit。
-# （旧文档曾写“5 项含 gdn_fwd”，实测代码里只有 4 项 —— 以 selftest_cpu.c 为准。）
+# 自检共 5 项：quantize 往返 / gemm_8bit / gemv_4bit / AdamW8bit /
+# 向量分派与标量结果逐位一致（第 5 项是后加的，它以"两种实现必须给出同一
+# 位模式"来交叉验证 NEON 路径，而不是分别测两个误差）。
+# 以 selftest_cpu.c 为准；本注释曾写"4 项"。
 echo "[5/5] C 层自检 ..."
 if [ "$RUN_SELFTEST" = "1" ]; then
   echo "  编译无 torch 自检 ..."
@@ -201,6 +203,13 @@ echo "DONE."
 echo "  .so  : $(pwd)/$OUT"
 echo "  架构 : $ARCH   OpenMP: ${OMP_FLAG:-<关闭>}   额外标志: ${ARCH_FLAGS:-<无>}"
 echo "  自检 : bash build_termux.sh --selftest"
-echo "  说明 : Termux 一般装不上 torch，所以验证到【C 层自检】为止"
-echo "         （验证内核数值正确性，不是训练）。"
+echo "  说明 : 本脚本只验到【C 层自检】（内核数值正确性）。"
+echo "         Python 侧不再需要放弃：Termux 仓库里有社区移植的 python-torch"
+echo "         （实测 2.11.0，下载 35 MB / 安装 266 MB），装得上。"
+echo "         但有一个真实约束：本脚本静态链接 libomp，而 torch 自带另一份，"
+echo "         同一个进程里加载两者会触发 OpenMP 的 Aborted（Error #15）。"
+echo "         所以 Python 侧检查必须【分进程】跑（见 termux_check.py /"
+echo "         torch_part.py，一个只加载 .so，一个只 import torch）。"
+echo "         KMP_DUPLICATE_LIB_OK=TRUE 能压掉这个 abort，但它的文档明确说"
+echo "         可能导致静默的错误结果 —— 数值正确性测试不该跑在那个开关下。"
 echo "============================================================"

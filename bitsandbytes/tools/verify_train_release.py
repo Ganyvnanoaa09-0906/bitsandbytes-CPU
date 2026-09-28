@@ -1,4 +1,4 @@
-"""Offline smoke-train: verify the shipped libbitsandbytes_cpu.dll actually does real
+r"""Offline smoke-train: verify the shipped libbitsandbytes_cpu.dll actually does real
 CPU training with an 8-bit optimizer on a LOCAL model (no internet, no dataset download).
 
 Works even when the model dir has NO tokenizer (we build random input_ids from vocab),
@@ -10,6 +10,11 @@ Run with the release package on PYTHONPATH, e.g.:
 
 If the DLL is broken this fails (import / backward / step errors). If it works you'll see
 the loss descend over a couple of steps and the native lib path that was used.
+
+NOTE: raw docstring, deliberately. The two example paths above contain \w, \b and
+\t, which are not valid escapes and which Python 3.14 warns about and will
+eventually reject. (Found by scan_escapes.py after Android/ARM64 testing surfaced
+the same defect in disk_balancer.py.)
 """
 import argparse
 import time

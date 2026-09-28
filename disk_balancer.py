@@ -1,4 +1,13 @@
-"""disk_balancer - 硬盘均衡负载 / 冷参数卸载（CPU 训练用）。
+r"""disk_balancer - 硬盘均衡负载 / 冷参数卸载（CPU 训练用）。
+
+为什么是 raw docstring: 本 docstring 里有 Windows 路径示例 `C:\cache`。
+非 raw 时 `\c` 不是合法转义，Python 3.14 实测报
+    SyntaxWarning: "\c" is an invalid escape sequence. Such sequences will
+    not work in the future. Did you mean "\\c"? A raw string is also an option.
+它现在只是警告，但按 CPython 的计划**将来会变成硬错误**，届时不只 Termux，
+Windows 上也会直接导入失败。已确认这段 docstring 内除这一处外没有别的反斜杠，
+也没有 `\u`/`\x` 这类加了 r 会改变含义的转义，所以加 r 前缀不改变任何现有语义。
+（是 Android/ARM64 上跑测试时暴露的: 本机 Python 3.11 只给警告，3.14 明确提示。）
 
 目标：
 - 对抗 Windows 虚拟内存在 AI 训练时频繁擦写导致硬盘活动时间 100% 的问题；

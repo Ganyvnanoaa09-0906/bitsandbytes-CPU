@@ -146,18 +146,68 @@ bash build_termux.sh --selftest
 
 ## 五、边界（不夸大）
 
-- Termux **通常装不上 torch**，所以验证到 **C 层自检**为止 ——
-  验证的是**内核数值正确性**，不是训练能力。
+- Termux **可以装 torch**（更正：早期文档写"通常装不上"是错的）。PyPI 上确实每个
+  aarch64 轮子都是 `manylinux_2_28`（glibc），而 Android 用 bionic，**pip 路线走不通**；
+  但 Termux 仓库有社区移植包：
+  ```
+  python-torch 2.11.0-2   下载 35.5 MB   安装 266 MB
+  ```
+  实测在 Android 10 / aarch64 / Python 3.14.6 上装成并可 import。
+  同理 numpy/psutil 也必须走 `pkg install python-numpy python-psutil` ——
+  `pip install numpy` 找不到 Android 轮子，会转去源码构建然后失败。
+- 但装得上 torch **不等于**能在同一进程里同时用 torch 和本项目的 `.so`：
+  `build_termux.sh` 默认 `-fopenmp`，**静态链接 libomp**；torch 自带另一份。
+  一个进程里两份 OpenMP 运行时，LLVM 的 libomp 会**主动 abort**：
+  ```
+  OMP: Error #15: Initializing libomp.a, but found libomp.a already initialized.
+  Aborted (core dumped)     # exit 134 / SIGABRT
+  ```
+  它这么做是对的 —— 宁可不跑也不冒算错的风险。
+  **验收结论：这不是内核缺陷，是构建配置。** 用 `--no-openmp` 重建单线程版即可解除，
+  实测 `torch + bitsandbytes` 同进程可正常跑通（见下）。
+  **不要**用 `KMP_DUPLICATE_LIB_OK=TRUE` 绕过 —— 它的官方文档写明
+  "may cause crashes or **silently produce incorrect results**"。
+  一个专门验数值正确性的套件，绝不能跑在一个允许静默错误结果的开关下；
+  那等于把判据换成"只要不崩就算过"。
+- 因此 Python 侧检查必须**按 OpenMP 域分进程**（实测得出的结构）：
+  | 进程 | 加载什么 | 跑什么 |
+  |---|---|---|
+  | `termux_check.py` | 只加载 `.so`（ctypes） | T1–T5，**从不 import torch** |
+  | `torch_part.py` | 只 import torch | T6/T7（`disk_balancer`、`latent_chunk_store`） |
+  | `torch_part.py --with-bnb` | torch **且** `.so` | T8（`AdamW8bit` 真跑一步） |
+  父进程连"探测 torch 是否存在"都用子进程做 —— 那一步本身就是崩溃点。
+  T8 单独一个进程是刻意设计：它是唯一**预期**会 abort 的一步，
+  结论不能取决于崩溃落在文件里的哪一行。（不用 `fork()`：torch 那时已起线程，
+  fork 会把锁住的互斥量复制给子进程而导致死锁。）
 - 自检覆盖 5 项，其中第 5 项覆盖了 4-bit GEMV 的**向量分派**（NEON/AVX2 与标量逐位一致）。
   **仍未覆盖**：`neon_absmax`、`neon_f32_to_bf16x4/fp16x4` 等被 `__aarch64__` 守卫的
   辅助函数**从未在任何一项里被走到** —— 它们目前只有"能编译过"这一层证据。
   若要宣称完整，需要再加针对这些路径的用例。
 - NEON 与标量路径的**性能**差异未测（第 5 项只保证数值正确）。
 - 手机型号/SoC 不同，`-mcpu=native` 的探测结果会不同；脚本会自动降级。
+- **完整回归套件（`run_all_tests.py`）在 Termux 上跑不了**：它的多数子脚本在模块层
+  `import torch`，同时又加载 `.so`，正是上面那个双 OpenMP 冲突。长训练在 x86 上验
+  （R5 与 i5，各 1000 步）。
 - `termux_adb_test.ps1` 是**纯 ASCII** 的（含所有提示信息），这是刻意的：
   Windows PowerShell 5.1 按系统 ANSI 代码页读 `.ps1`，UTF-8 无 BOM 的中文会被
   误解码，**不只是显示乱码，而是直接破坏语法解析**（实测：一个在 UTF-8 下
   完全合法的文件报了 6 个语法错误）。中文说明放在本文件里，它不参与解析。
+
+### 实测结论（SPN-AL00 / Android 10 / aarch64 / Python 3.14.6 / torch 2.11.0）
+
+| 项 | 结果 |
+|---|---|
+| ARM64 构建（静态 libomp，1.1 MB） | 成功，23 个 CPU 符号，5 个关键符号全在 |
+| C 层自检 5 项 | 0 失败（含 NEON 与标量**逐位一致**） |
+| ctypes 域 T1–T5 | 5/5 通过（`e_machine=0xB7`；8bit 往返 0.392%；`gemm_8bit` 对 float64 独立参考 2.514e-07） |
+| torch 域 T6/T7 | 2/2 通过 |
+| torch + bitsandbytes 同进程 T8（多线程 `.so`） | **SIGABRT**，双 OpenMP —— 记为 SKIP 并给出原因与修法 |
+| torch + bitsandbytes 同进程 T8（`--no-openmp`，128 KB） | **8/8 通过**；`AdamW8bit` 真跑一步：`max|dW| 6.2269e-02`，loss `0.3553 → 0.0296` |
+| 单线程版数值一致性 | 与多线程版**完全相同**（T4 0.392%、T5 2.514e-07） |
+
+`gemm_8bit` 那条参考值值得一提：C 自检把 `gemm_8bit` 与它自己的标量路径对比，
+那是**一致性**检查 —— 两条路径共有的错误也会通过。T5 的参考值是**本脚本用 numpy
+在 float64 下独立算出来的**（权重字节由脚本自己反量化），所以是独立判据。
 
 ## 六、曾经踩过的坑（都已修，记下来避免重犯）
 
@@ -166,17 +216,30 @@ bash build_termux.sh --selftest
 | `adb push` 进 Termux 家目录 | permission denied | `adb shell` 是 `uid=2000(shell)`，`/data/data/com.termux/` 对它不可读 |
 | 用管道写 `/data/data/com.termux/...` | 同样失败 | 管道也以 shell 身份运行 —— 我曾错误推断"管道以 Termux 身份运行" |
 | 用 `test -x` 探测 Termux 是否安装 | 明明装了却报"未安装" | 该测试因权限失败；应查 `pm list packages` |
-| 共享存储 `/sdcard` 给 Termux 用 | Termux 读不到 | 需要 `termux-setup-storage` 授权；改用 `/data/local/tmp`（免授权） |
+| 共享存储 `/sdcard` 给 Termux 用 | Termux 读不到 | **两个独立原因**：① 需 `termux-setup-storage` 授权；② 即使授权了，**adb 在 `/sdcard` 创建的文件是 `root:sdcard_rw` 0660，Termux 的 uid 不在该组**，`cp` 照样 Permission denied —— 且 `/sdcard` 是 FUSE，chmod 无效。结论：**别用 `/sdcard` 传文件给 Termux，用 `/data/local/tmp`**（0777，adb 可写，Termux 可读） |
 | 设备侧 `if ... else ... fi` | `unexpected 'else'` | Android 的 `/system/bin/sh` 是 mksh |
 | 设备侧 `stat -c %s` | `Needs 1 argument` | Android 10 的 toybox `stat` 不支持 `-c/--format`；用 `wc -c` |
+| 让用户 `bash /sdcard/.../x.sh` | `Permission denied` | `/sdcard` 是 FUSE，**所有文件都被挂成不可执行**；`bash 路径` 仍需读权限，而它连读都不让。先 `cp` 到家目录 |
+| 脚本第一行 `exec > "$LOG"` | 用户屏幕上**一片空白**，看不出死活 | 经 `curl ... \| bash` 执行时 `$HOME` 为空，日志路径变成 `/bnb_termux.log`，写根目录被拒 → bash 在打印任何字符前退出。**手工运行的脚本绝不能静默** |
+| `curl \| bash` 卡住无输出 | 一直等 | 我这边的 HTTP 服务随会话后台 job 一起消失了（`adb` daemon 也重启过）。**传输层的失败会被误读成被测代码的问题** —— 改成把整包 base64 内嵌进单个 `.sh`，网络彻底不在链路里 |
+| 生成的脚本 here-doc 起始符与首个 payload 行粘连 | `here-document at line N delimited by end-of-file` | PowerShell here-string `@'...'@` **会吃掉结尾换行**，于是 `<<'__B64_EOF__'` 与第一行 base64 拼成一行。**而且 `bash -n` 只警告、仍退出 0** —— 单看退出码发现不了。改为"stderr 有任何输出即判失败" + 对 payload 做 sha256 硬校验 |
 | AVX2 代码在 ARM64 上被编译 | `unknown type name '__m128i'` | 两整组 AVX2 函数**完全没有守卫**（`cpu_ops.cpp`） |
 | 标量助手报 undeclared | `use of undeclared identifier` | `scalar_absmax` / `scalar_gemv_4bit_inference` 被关在 AVX2 守卫内，却被无守卫的回退路径调用 |
 | clang 警告"treating 'c' input as 'c++'" | 编译警告 | `selftest_cpu.c` 必须按 C++ 编译（内部有 `extern "C"`），已显式加 `-x c++`，对应 MSVC 的 `/TP` |
+| 手工挑文件打发布包 | `fatal error: 'common.h' file not found` | 我按名字挑了 6 个文件，漏了 `common.h` —— 而构建把 `csrc/` 当 include 根整体读。**正确做法：整目录拷贝**，并加脚本穷举所有 `#include "..."` 逐个校验 |
+| `disk_balancer.py` 的 docstring 里写 `C:\cache` | Python 3.14: `SyntaxWarning: "\c" is an invalid escape sequence` | 非 raw docstring 里的 Windows 路径。3.11 只警告所以长期没暴露，3.14 明确说将来会失效（届时**直接导入失败**）。已改 raw docstring；并写 `scan_escapes.py` 全仓扫描，另抓出 `bitsandbytes/tools/verify_train_release.py` 同类问题 |
 
 ## 七、相关文件
 
-- `build_termux.sh` —— Termux 构建入口（新写）
+- `build_termux.sh` —— Termux 构建入口
 - `selftest_cpu.c` —— 无 torch 的 C 层自检（5 项）
 - `build_linux.sh` —— 普通 Linux 构建入口（x86_64 AVX2 / aarch64 NEON）
+- `pythonInterface.cpp` —— ctypes 导出签名（写 ctypes 调用**必须**照它，不能照名字猜）
+- `D:\work\bitsandbytes-CPU\termux_check.py` —— ctypes 域检查 T1–T5（从不 import torch）
+- `D:\work\bitsandbytes-CPU\torch_part.py` —— torch 域检查（`--with-bnb` 时才加载 `.so`）
+- `D:\work\bitsandbytes-CPU\i5build\build_termux_bundle.ps1` —— 打发布包（整目录 + include 校验）
+- `D:\work\bitsandbytes-CPU\i5build\make_selfcontained.ps1` —— 生成 base64 内嵌的自包含脚本
+- `D:\work\bitsandbytes-CPU\i5build\verify_selfcontained.py` —— payload sha256 往返校验
+- `D:\work\bitsandbytes-CPU\i5build\setup_termux_test.sh` —— 设备侧一键验收（经 HTTP/ADB 隧道）
 - `D:\work\termux_adb_test.ps1` —— ADB 自动化验证台
 - 报告 `CPU_FORGE_TECHNICAL_REPORT.md` 相关章节
