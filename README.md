@@ -9,6 +9,28 @@ ARM64 NEON and 12–16 GB RAM).
 > AVX2, no NVIDIA GPU. Pure CPU (fp32) + oneDNN + bnb fused kernels is the fast path;
 > iGPU/GPU offload was tested and is a **negative** on these shared-memory machines.
 
+## Install (Windows, no compiler required)
+
+The wheel bundles the prebuilt CPU kernel and its OpenMP runtime, so nothing needs to
+be built after installing:
+
+```bash
+pip install https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/releases/download/v0.50.2.dev0-cpu/bitsandbytes_cpu_fork-0.50.2.dev0-py3-none-win_amd64.whl
+```
+
+One wheel covers every Python 3 version on 64-bit Windows, and `pip` resolves
+`torch` / `numpy` itself. The import name is unchanged, so existing code and the
+Transformers / PEFT / Diffusers integrations work as-is:
+
+```python
+import bitsandbytes as bnb
+print(bnb.__version__)      # 0.50.2.dev0
+```
+
+Not on PyPI; the release asset URL above is the supported install path. To build the
+kernel from source instead — Linux, or Windows from a checkout — see
+[`bitsandbytes/docs_cpu/QUICKSTART.md`](bitsandbytes/docs_cpu/QUICKSTART.md) §2 / §2A.
+
 ## What's inside
 
 This repo is the whole toolbox (`那很有乐子了~`), which contains:
@@ -34,14 +56,18 @@ This repo is the whole toolbox (`那很有乐子了~`), which contains:
 - **Docs** — `使用指南.md` (usage guide), plus `bitsandbytes/docs_cpu/` bilingual
   (zh+en) technical guide / quickstart / tech report / disaster recovery.
 
-> **Note**: models / datasets / caches are **private** and NOT included. Repo contains
-> only source + docs; compiled artifacts (`.dll` / `.so` / `.exe`) are git-ignored and
-> built locally.
+> **Note**: models / datasets / caches are **private** and NOT included. This
+> repository holds source and docs; compiled artifacts (`.dll` / `.so` / `.exe`) are
+> not tracked. The Windows build is distributed as a wheel attached to the releases
+> page (see Install above) rather than committed here; Linux and Termux builds are
+> produced from a checkout with the scripts under `bitsandbytes/`.
 
 ## Quickstart (Windows / Linux)
 
+Already installed the wheel? Step 1 is done — skip to step 3.
+
 ```bash
-# 1. Build the CPU kernel (see bitsandbytes/docs_cpu/QUICKSTART.md)
+# 1. Build the CPU kernel from a checkout (see bitsandbytes/docs_cpu/QUICKSTART.md)
 #    Windows: cd bitsandbytes && build_manual\build_manual.bat amd   (or intel)
 #    Linux  : cd bitsandbytes && bash build_linux.sh
 
