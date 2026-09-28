@@ -193,9 +193,6 @@ no `cgemv_4bit_inference_cpu_*`, and no `_GEMM_4BIT_FUSED_MAX_M` (upstream 489 l
 
 ### 3.5.2 Fused elementwise kernel family (new in this fork, 12 exports)
 
-> **Full usage, argument contract, all measured numbers and boundaries: [`FUSED_KERNELS_EN.md`](FUSED_KERNELS_EN.md).**
-> This section only covers the technical points and where it sits in a training step.
-
 **Why it exists** (measured, `probe_step_breakdown.py`, R5-4500U pure CPU, ~30M model):
 ```
 one step = 2.819 s = GEMM 63.6% / elementwise 20.8% / attention 7.6% / other ~8%
@@ -203,20 +200,66 @@ GEMM is already at 92% of a same-shape pure-GEMM baseline => elementwise 20.8% i
 ```
 In eager mode `RMSNorm` expands into **6 aten operators** (`pow/mean/add/rsqrt/mul/mul`), each
 reading and writing the whole activation => **pure bandwidth waste** (the activation itself is
-only `B x T x D x 4` bytes).
+only `B x T x D x 4` bytes). Collapsing those 6 passes into 1 is the entire point of the family.
+**Boundary**: it optimises **bandwidth**, not FLOPs, so it gives ~0 on loads whose arithmetic
+intensity is already far above the crossover (e.g. convolution-dominated UNets); those need
+different work (see section 3.5.1 and `TECH_REPORT_EN.md` section 3.5.1).
 
-**The 12 exports** (`cfused_*` wrappers in `csrc/pythonInterface.cpp`):
+#### The 12 C-side exports
+
+Wrappers exported from `csrc/pythonInterface.cpp` (note the `c` prefix on the export symbol):
+
+```c
+long long cfused_rmsnorm_fwd_cpu(const float* x, const float* res, const float* weight,
+                                 float* out, float* xs, long long M, long long D, float eps);
+long long cfused_rmsnorm_bwd_cpu(const float* x, const float* weight, const float* dout,
+                                 const float* xs, float* dx, float* dw,
+                                 long long M, long long D);
+long long cfused_swiglu_fwd_cpu(const float* gate, const float* up, float* out, long long n);
+long long cfused_swiglu_bwd_cpu(const float* gate, const float* up, const float* dout,
+                                float* dgate, float* dup, long long n);
+long long cfused_add_scale_cpu(const float* x, const float* y, const float* scale,
+                               float* out, long long M, long long D);
+long long cfused_add_scale_inplace_cpu(const float* x, const float* y, const float* scale,
+                                       long long M, long long D);   /* in place, saves a pass */
+long long cfused_add_scale_rmsnorm_cpu(const float* x, const float* y, const float* scale,
+                                       const float* weight, float* out, float* xs,
+                                       long long M, long long D, float eps);
+/* strided variant: gate/up/out may have different row and column strides
+   (consumes chunk views with zero copies) */
+long long cfused_swiglu_strided_fwd_cpu(const float* gate, long long gs0, long long gs1,
+                                        const float* up,  long long us0, long long us1,
+                                        float* out, long long os0, long long M, long long D);
+long long cfused_swiglu_strided_bwd_cpu(...);
+/* fp16-weight GEMV/GEMM, three variants by output precision (see below) */
+void gemv_fp16w_inference_cpu_fp32(const void* A, const void* W, void* out,
+                                   long long M, long long N, long long K,
+                                   long long lda, long long ldb, long long ldc);
+```
 
 | C symbol | Semantics |
 |---|---|
-| `fused_rmsnorm_fwd_cpu` / `_bwd_cpu` | `(x+res)*rsqrt(mean((x+res)^2)+eps)*w`, fwd/bwd |
-| `fused_swiglu_fwd_cpu` / `_bwd_cpu` | `silu(gate)*up`, fwd/bwd |
-| `fused_add_scale_cpu` / `_inplace_cpu` | `x + scale*y` (in-place version saves another pass) |
-| `fused_add_scale_rmsnorm_cpu` | `RMSNorm(x + scale*y)` in one pass |
-| `fused_swiglu_strided_fwd_cpu` / `_bwd_cpu` | same, but row/col strides may differ => consumes chunk views, zero copies |
-| `gemv_fp16w_inference_cpu_{fp32,bf16,fp16}` | fp16-weight GEMV/GEMM (**exported, not wired to Python** — see `FUSED_KERNELS_EN.md` section 5) |
+| `cfused_rmsnorm_fwd_cpu` / `_bwd_cpu` | `(x+res)*rsqrt(mean((x+res)^2)+eps)*w`, fwd/bwd |
+| `cfused_swiglu_fwd_cpu` / `_bwd_cpu` | `silu(gate)*up`, fwd/bwd |
+| `cfused_add_scale_cpu` / `_inplace_cpu` | `x + scale*y` (in-place version saves another pass) |
+| `cfused_add_scale_rmsnorm_cpu` | `RMSNorm(x + scale*y)` in one pass |
+| `cfused_swiglu_strided_fwd_cpu` / `_bwd_cpu` | same, but row/col strides may differ => consumes chunk views, zero copies |
+| `gemv_fp16w_inference_cpu_{fp32,bf16,fp16}` | fp16-weight GEMV/GEMM (**exported, not wired to Python** — see below) |
 
-**Two ways to use it from Python**:
+#### Argument contract (two easy traps)
+
+- `M` is the **row count** (`B*T`) and `D` is the **last dimension**; `x` must be
+  row-major with a contiguous `D`.
+- `xs` is a **required** forward output of RMSNorm (`rsqrt(mean(x^2)+eps)`, length `M`)
+  that the backward pass needs. Do not drop it, and do not store it again via
+  `save_for_backward`.
+
+**Why the strided variant exists**: in `F.silu(a) * b`, `a` and `b` are often chunks
+viewed out of one larger tensor (e.g. after a fused QKV projection). The strided variant
+consumes that view directly and copies nothing.
+
+#### Two ways to use it from Python
+
 ```python
 import fused_cpu                       # explicit calls; all four carry autograd
 h = fused_cpu.fused_add_scale_rmsnorm(x, attn_out, self.ls1, self.ln1_w, eps=1e-6)
@@ -227,14 +270,72 @@ enable_fused.enable(block=True)        # plus residual+LayerScale: +5.5~7.1%
 ```
 * The gain is **bandwidth**: ~0 on loads whose arithmetic intensity is far above the crossover
   (convolution-dominated UNets).
-* `enable_fused` must run **before** model construction (it patches class methods).
+* `enable_fused` must run **before** model construction (it patches class methods); if the DLL
+  lacks the `cfused_*` exports it raises `RuntimeError`, so rebuild first per
+  `QUICKSTART_EN.md` section 2.
 * Numerics: `max|delta| ~1e-7` against eager, `state_dict` keys unchanged => checkpoints interload.
 
-**NT store (non-temporal)**: every large pure write in this family uses `_mm256_stream_ps`
-behind a runtime threshold — it removes the write-allocate RFO read. Measured `copy`
-13.40 -> **25.40 GB/s (1.90x)**. The threshold derives from the **runtime L3 size**, it is not
-hard-coded: outputs >= 4.2 MB win (2.0~3.1x), <= 1.0 MB lose 0.69~0.73x.
-Note: the optimizer's `p` write must **not** use NT (read-modify-write; measured 21% regression).
+#### NT store (non-temporal)
+
+Wherever these kernels do a **large pure write** (8-bit dequantisation output,
+`fused_add_scale`, `fused_swiglu`), they use `_mm256_stream_ps` when the conditions hold.
+
+**Why**: a normal store triggers write-allocate (RFO — the target cache line is read in
+before being written back), which adds a gratuitous third of the memory traffic. NT store
+bypasses the cache and writes the line without reading it.
+
+**Measured (`membw3.c`, pure AVX2, 48/192 MB footprint, 6 threads)**:
+
+| kernel | normal store | NT store | ratio |
+|---|---|---|---|
+| copy | 13.40 GB/s | **25.40** | 1.90x |
+| triad | 16.09 | **23.86** | 1.48x |
+
+**The threshold is discovered at runtime — do not hard-code it**:
+
+```c
+use_nt = bnb_is_aligned_for_nt(out)                        /* 32-byte aligned */
+      && (n * sizeof(T) >= bnb_nt_threshold_bytes());      /* output large enough */
+```
+
+```
+output <= 1.0 MB : normal store wins (NT loses 0.69~0.73x) -- it evicts data still in use
+output >= 4.2 MB : NT wins 2.0~3.1x
+threshold derived from the RUNTIME L3 size (L3 varies between 8/12/32+ MB)
+```
+
+**Counter-example measured the same day**: the optimizer's `p` write must **not** use NT.
+That is a read-modify-write; the cache line was already read, so a normal store only marks
+it dirty, while NT forces an eviction => **21% regression**.
+
+#### `gemv_fp16w_inference_cpu_*`: exported, **not yet wired to Python**
+
+Three variants, one per output precision (`_fp32` / `_bf16` / `_fp16`).
+
+**Purpose**: keep weights in fp16 and accumulate in fp32 — halve weight traffic while fp32
+FMA throughput is unchanged. This is the **alternative** to the conclusion that "4-bit
+inference is a net loss on AVX2-only CPUs": 4-bit needs unpack instructions, and with no
+VNNI on AVX2 the unpack itself becomes the bottleneck. fp16 does not.
+
+**Current status, stated plainly**:
+```
+C side      : implemented, exported (pythonInterface.cpp L886-904), compiled into the DLL.
+Python side : NO call site (a repo-wide grep for `gemv_fp16w` hits only the C side)
+=> today it is callable only from C/C++ or via ctypes; there is no `LinearFP16W`
+   nn.Module wrapper yet. The minimal path to Python is a ctypes binding modelled on
+   fused_cpu.py.
+```
+This note exists so nobody assumes it already works: **exported is not the same as wired up**.
+
+#### Reproducing these numbers
+
+```bat
+py -3.11 test_fused_kernels.py        :: all four kernels checked against eager (fwd+bwd) + timing
+py -3.11 bench_fused_final.py         :: end to end (RMSNorm and residual both fused)
+py -3.11 bench_fused_e2e3.py          :: three wiring variants compared
+py -3.11 bench_l3_vs_swiglu.py        :: fused vs unfused, isolated
+py -3.11 bench_r5_threads.py          :: thread count (5 is optimal here; 6 is 5.9% SLOWER)
+```
 
 ### 3.6 GDN integration into Transformers (gdn_cpu.py)
 

@@ -180,7 +180,8 @@ i5 才是主训练机；R5（开发机）已到其硬件天花板。两台机做
     elementwise 20.8%   ★ 唯一还有空间的
     attention    7.6%
 ```
-`RMSNorm` 在 eager 下展开成 6 个 aten 算子，激活被完整读写 6 遍 ⇒ 纯带宽浪费。
+`RMSNorm` 在 eager 下展开成 6 个 aten 算子（`pow → mean → add → rsqrt → mul → mul`），
+激活被完整读写 6 遍 ⇒ 纯带宽浪费。这一族把它们压成 1 遍，即 12 个 `cfused_*` 导出。
 
 **实测收益**（交替测量 6 轮、取配对比值中位；`enable_fused.py`）：
 ```
@@ -191,19 +192,30 @@ RMSNorm + SwiGLU + 残差       +5.5%（保守） ~ +7.1%（中位）
 **数值**：与 eager 对拍 `max|Δ| ~1e-7`（fp32 累加顺序），`state_dict` 键名不变 ⇒ checkpoint 可互载。
 
 **NT store 的实测（同一批内核里的带宽优化）**：
+
+普通存储会触发 write-allocate（RFO：先把目标 cache line 读进来再写回），凭空多出 1/3
+内存流量；NT store（`_mm256_stream_ps`）绕过 cache 直接写。
+
 | kernel | 普通存储 | NT store | 比值 |
 |---|---|---|---|
 | copy | 13.40 GB/s | **25.40** | 1.90× |
 | triad | 16.09 | **23.86** | 1.48× |
+
 阈值按**运行时 L3 大小**推导：输出 ≥4.2 MB 才赢（2.0~3.1×），≤1.0 MB 反而亏（0.69~0.73×）。
-⚠️ 优化器的 `p` 写**不能**用 NT（读-改-写，实测倒退 21%）。
+⚠️ 优化器的 `p` 写**不能**用 NT（读-改-写，cache line 已被读过，NT 反而强制刷出，实测倒退 21%）。
 
 ★ **边界（重要）**：这一族省的是**带宽**不是算力。
 同一台机器上，**卷积为主**的 UNet 训练里 elementwise 只占 9.4%、算术强度 394 FLOP/byte
 （远高于拐点 9）⇒ 融合 elementwise 对它收益 ≈ 0，该用别的办法（见 `TECHNICAL_GUIDE.md` §3.5.2）。
 "elementwise 占 20.8%" 这个数字来自 **Transformer 型**负载，不能外推到卷积型。
 
-完整用法见 [`FUSED_KERNELS.md`](FUSED_KERNELS.md)。
+★ **一项尚未接线的导出**：`gemv_fp16w_inference_cpu_{fp32,bf16,fp16}`（fp16 权重
+GEMV/GEMM，权重流量减半而 fp32 FMA 吞吐不变）在 C 侧已实现、已导出、已编进 DLL，
+但 **Python 侧没有调用点** —— 已导出 ≠ 已接线，详见 `TECHNICAL_GUIDE.md` §3.5.2。
+
+使用方式（`fused_cpu` 显式调用与 `enable_fused` 一键接线）、参数约定与完整边界表见
+[`QUICKSTART.md`](QUICKSTART.md) §4.9；C 侧签名与实现细节见
+[`TECHNICAL_GUIDE.md`](TECHNICAL_GUIDE.md) §3.5.2。
 
 ### 3.6 EFST：MoE 专家专项微调（efst.py）
 

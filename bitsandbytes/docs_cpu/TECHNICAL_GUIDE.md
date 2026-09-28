@@ -177,9 +177,6 @@ void cgemm_8bit_inference_cpu_fp32(A, B_uint8, absmax, out, M,N,K, lda,ldb,ldc, 
 
 ### 3.5.2 融合 elementwise 内核族（本 fork 新增，12 个导出）
 
-> **完整用法、参数约定、实测数字与边界见 [`FUSED_KERNELS.md`](FUSED_KERNELS.md)。**
-> 本节只讲技术要点与它在整步里的位置。
-
 **为什么加这一族**（实测，`probe_step_breakdown.py`，R5-4500U 纯 CPU、30M 级模型）：
 ```
 训练步 2.819 s = GEMM 63.6% / elementwise 20.8% / attention 7.6% / 其它 ~8%
@@ -187,19 +184,61 @@ GEMM 已达同形状纯 GEMM 基准的 92% ⇒ 唯一还有空间的是 elementw
 ```
 `RMSNorm` 在 eager 下展开成 **6 个 aten 算子**（`pow/mean/add/rsqrt/mul/mul`），
 每个都要完整读写一遍激活 ⇒ **纯带宽浪费**（激活本身只有 `B×T×D×4` 字节）。
+把 6 趟压成 1 趟，就是这一族内核的全部意义。
+**边界**：它优化的是**带宽**，不是算力；对算术强度已远高于拐点的负载
+（例如卷积为主的 UNet）没有收益，那类负载要用别的办法（见 §3.5.1 与 `TECH_REPORT.md` §3.5.1）。
 
-**12 个导出**（`csrc/pythonInterface.cpp` 的 `cfused_*` 包装）：
+#### 12 个 C 侧导出
+
+`csrc/pythonInterface.cpp` 的 `cfused_*` 包装（`c` 前缀为导出符号）：
+
+```c
+long long cfused_rmsnorm_fwd_cpu(const float* x, const float* res, const float* weight,
+                                 float* out, float* xs, long long M, long long D, float eps);
+long long cfused_rmsnorm_bwd_cpu(const float* x, const float* weight, const float* dout,
+                                 const float* xs, float* dx, float* dw,
+                                 long long M, long long D);
+long long cfused_swiglu_fwd_cpu(const float* gate, const float* up, float* out, long long n);
+long long cfused_swiglu_bwd_cpu(const float* gate, const float* up, const float* dout,
+                                float* dgate, float* dup, long long n);
+long long cfused_add_scale_cpu(const float* x, const float* y, const float* scale,
+                               float* out, long long M, long long D);
+long long cfused_add_scale_inplace_cpu(const float* x, const float* y, const float* scale,
+                                       long long M, long long D);          /* 原地，省一趟 */
+long long cfused_add_scale_rmsnorm_cpu(const float* x, const float* y, const float* scale,
+                                       const float* weight, float* out, float* xs,
+                                       long long M, long long D, float eps);
+/* strided 版：gate/up/out 的行跨步与列跨步可不同（吃 chunk 视图，零拷贝） */
+long long cfused_swiglu_strided_fwd_cpu(const float* gate, long long gs0, long long gs1,
+                                        const float* up,  long long us0, long long us1,
+                                        float* out, long long os0, long long M, long long D);
+long long cfused_swiglu_strided_bwd_cpu(...);
+/* fp16 权重 GEMV/GEMM，三个变体按输出精度分（见下） */
+void gemv_fp16w_inference_cpu_fp32(const void* A, const void* W, void* out,
+                                   long long M, long long N, long long K,
+                                   long long lda, long long ldb, long long ldc);
+```
 
 | C 符号 | 语义 |
 |---|---|
-| `fused_rmsnorm_fwd_cpu` / `_bwd_cpu` | `(x+res)·rsqrt(mean((x+res)²)+eps)·w` 前/反向 |
-| `fused_swiglu_fwd_cpu` / `_bwd_cpu` | `silu(gate)·up` 前/反向 |
-| `fused_add_scale_cpu` / `_inplace_cpu` | `x + scale·y`（inplace 版再省一趟） |
-| `fused_add_scale_rmsnorm_cpu` | `RMSNorm(x + scale·y)` 一步出 |
-| `fused_swiglu_strided_fwd_cpu` / `_bwd_cpu` | 同上，但行/列跨步可不同 ⇒ 直接吃 chunk 视图，零拷贝 |
-| `gemv_fp16w_inference_cpu_{fp32,bf16,fp16}` | fp16 权重 GEMV/GEMM（**已导出，未接 Python**，见 `FUSED_KERNELS.md` §5） |
+| `cfused_rmsnorm_fwd_cpu` / `_bwd_cpu` | `(x+res)·rsqrt(mean((x+res)²)+eps)·w` 前/反向 |
+| `cfused_swiglu_fwd_cpu` / `_bwd_cpu` | `silu(gate)·up` 前/反向 |
+| `cfused_add_scale_cpu` / `_inplace_cpu` | `x + scale·y`（inplace 版再省一趟） |
+| `cfused_add_scale_rmsnorm_cpu` | `RMSNorm(x + scale·y)` 一步出 |
+| `cfused_swiglu_strided_fwd_cpu` / `_bwd_cpu` | 同上，但行/列跨步可不同 ⇒ 直接吃 chunk 视图，零拷贝 |
+| `gemv_fp16w_inference_cpu_{fp32,bf16,fp16}` | fp16 权重 GEMV/GEMM（**已导出，未接 Python**，见下） |
 
-**Python 侧两条接法**：
+#### 参数约定（容易踩的两个）
+
+- `M` 是**行数**（`B*T`），`D` 是**最后一维**；要求 `x` 行主序、`D` 连续。
+- `xs` 是 RMSNorm 前向**必须**输出的中间量（`rsqrt(mean(x²)+eps)`，长度 `M`），
+  反向要用它 —— 不能省，也不要用 `torch` 的 `save_for_backward` 重复存。
+
+**strided 版的意义**：`F.silu(a) * b` 里的 `a`、`b` 常常是同一个大张量切出来的
+chunk（QKV 融合后的视图）。strided 版直接吃这个视图，**不复制**。
+
+#### Python 侧两条接法
+
 ```python
 import fused_cpu                       # 显式调用，四个都有 autograd
 h = fused_cpu.fused_add_scale_rmsnorm(x, attn_out, self.ls1, self.ln1_w, eps=1e-6)
@@ -209,13 +248,66 @@ enable_fused.enable()                  # 只融合 RMSNorm：实测 +5.0~8.0%
 enable_fused.enable(block=True)        # 再加残差+LayerScale：+5.5~7.1%
 ```
 ★ 收益来自**带宽**：对算术强度远高于拐点的负载（卷积为主的 UNet）≈ 0。
-★ `enable_fused` 必须在**建模型之前**调用（patch 的是类方法）。
+★ `enable_fused` 必须在**建模型之前**调用（patch 的是类方法）；DLL 里没有 `cfused_*`
+导出时会直接抛 `RuntimeError`，需先按 `QUICKSTART.md` §2 重新编译。
 ★ 数值：与 eager 对拍 `max|Δ| ~1e-7`，`state_dict` 键名不变 ⇒ checkpoint 可互载。
 
-**NT store（非临时存储）**：这族里凡"大数组纯写"的地方都按运行时阈值自动走
-`_mm256_stream_ps` —— 省掉 write-allocate 的 RFO 读。实测 `copy` 13.40→**25.40 GB/s（1.90×）**。
-判据是**运行时 L3 大小**，不是硬编码：输出 ≥4.2 MB 才赢（2.0~3.1×），≤1.0 MB 反而亏 0.69~0.73×。
-⚠️ 优化器的 `p` 写入**不能**用 NT（读-改-写，实测倒退 21%）。
+#### NT store（非临时存储）
+
+这族里凡"大数组纯写"的地方（8-bit 反量化写出、`fused_add_scale`、`fused_swiglu`），
+都会在满足条件时走 `_mm256_stream_ps`。
+
+**原理**：普通存储触发 write-allocate（RFO，先把目标 cache line 读进来再写回），
+凭空多出 1/3 的内存流量；NT store 绕过 cache，目标行不读直接写。
+
+**实测（`membw3.c`，纯 AVX2，48/192 MB 足迹，6 线程）**：
+
+| kernel | 普通存储 | NT store | 比值 |
+|---|---|---|---|
+| copy | 13.40 GB/s | **25.40** | 1.90× |
+| triad | 16.09 | **23.86** | 1.48× |
+
+**阈值是运行时发现的，不要硬编码**：
+
+```c
+use_nt = bnb_is_aligned_for_nt(out)                        /* 32 字节对齐 */
+      && (n * sizeof(T) >= bnb_nt_threshold_bytes());      /* 输出够大 */
+```
+```
+· 输出 <= 1.0 MB : 普通存储赢（NT 亏 0.69~0.73×）—— 因为它把还要用的数据踢出 cache
+· 输出 >= 4.2 MB : NT 赢 2.0~3.1×
+· 阈值按【运行时 L3 大小】推导（L3 在 8/12/32+ MB 之间变）
+```
+
+⚠️ **反面教材（同一天实测）**：优化器的 `p` 写入**不能**用 NT —— 那里是读-改-写，
+cache line 已经被读过，普通 store 只是标脏，NT 反而强制刷出 ⇒ **倒退 21%**。
+
+#### `gemv_fp16w_inference_cpu_*`：已导出，**尚未接 Python**
+
+三个变体按输出精度分（`_fp32` / `_bf16` / `_fp16`）。
+
+**用途**：权重存 fp16、算子在 fp32 里累加 —— 权重流量减半，而 fp32 的 FMA 吞吐不变。
+这是「4-bit 推理在 AVX2-only CPU 上净亏」那个结论的**替代解**：4-bit 需要解包指令
+（AVX2 上没有 VNNI，解包反而成为瓶颈），fp16 不需要。
+
+**当前状态必须说清**：
+```
+· C 侧：已实现、已导出（pythonInterface.cpp L886-904）、已编进 DLL
+· Python 侧：没有调用点（全仓 grep `gemv_fp16w` 只命中 C 侧）
+⇒ 目前只能从 C/C++ 或 ctypes 直接调用；还没有 LinearFP16W 之类的 nn.Module 封装。
+   若要在 Python 里用，最小做法是照 fused_cpu.py 的样子写个 ctypes 绑定。
+```
+★ 记录这一条的目的：**不要让读者以为它已经能用** —— 已导出 ≠ 已接线。
+
+#### 复跑这些数字
+
+```bat
+py -3.11 test_fused_kernels.py        :: 四个核的对拍（前向+反向）+ 计时
+py -3.11 bench_fused_final.py         :: 端到端（RMSNorm + 残差都走融合）
+py -3.11 bench_fused_e2e3.py          :: v1/v2/v3 三种接法对比
+py -3.11 bench_l3_vs_swiglu.py        :: 融合 vs 单独算（隔离对照）
+py -3.11 bench_r5_threads.py          :: 线程数（本机 5 线程最优，6 反而慢 5.9%）
+```
 
 ### 3.6 GDN 接入 Transformers（gdn_cpu.py）
 

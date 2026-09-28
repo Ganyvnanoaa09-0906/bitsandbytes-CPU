@@ -296,23 +296,36 @@ training and is not recommended**.
 
 ### 4.9 Fused elementwise kernels (RMSNorm / SwiGLU / residual+LayerScale)
 
-> Full reference, argument contract and all measured numbers: [`FUSED_KERNELS_EN.md`](FUSED_KERNELS_EN.md).
-
 **What it solves**: measured, **elementwise is 20.8%** of a training step (GEMM is already at 92%
-of its baseline, no room left). In eager mode `RMSNorm` is 6 aten operators, so the activation is
-fully read and written 6 times => pure bandwidth waste.
+of its baseline, no room left). In eager mode `RMSNorm` is 6 aten operators
+(`pow -> mean -> add -> rsqrt -> mul -> mul`), so the activation is fully read and written
+6 times => pure bandwidth waste. This family collapses those 6 passes into 1.
+
+**Available functions** (`fused_cpu.py`):
+
+| Function | Semantics | Eager equivalent |
+|---|---|---|
+| `fused_rmsnorm(x, weight=None, res=None, eps=1e-6)` | `(x + res) * rsqrt(mean((x+res)^2) + eps) * weight` | 6 aten ops |
+| `fused_swiglu(gate, up)` | `silu(gate) * up` | `F.silu(gate) * up` |
+| `fused_add_scale(x, y, scale=None)` | `x + scale * y` (`scale=None` degenerates to `x + y`) | `x + scale * y` |
+| `fused_add_scale_rmsnorm(x, y, scale, weight, eps=1e-6)` | `RMSNorm(x + scale*y)` in one pass | residual + norm, two passes |
+
+All four are `torch.autograd.Function` with **both forward and backward** — they drop
+straight into a training graph, no hand-written backward needed.
 
 **Option A: one-liner wiring (recommended, no model-code changes)**
 ```python
 import enable_fused
-enable_fused.enable()             # RMSNorm only
+enable_fused.enable()             # RMSNorm only (smallest, safest change)
 enable_fused.enable(block=True)   # also residual + LayerScale
+# enable_fused.enable(rmsnorm=True, swiglu=True, block=True)   # everything
 ```
 Measured (6 alternating rounds, paired-ratio median): RMSNorm **+5.0 ~ 8.0%**;
 adding residual gives **+5.5 ~ 7.1%** (the two are close, so RMSNorm-only is the default).
-NOTE: must be called **before** model instances are created (it patches class methods).
+NOTE: must be called **before** model instances are created (it patches class methods;
+it also affects already-built instances, but a clear ordering is easier to debug).
 
-**Option B: explicit calls (all four are `torch.autograd.Function` with backward)**
+**Option B: explicit calls**
 ```python
 import fused_cpu
 assert fused_cpu.available()          # the DLL must export cfused_*, otherwise rebuild
@@ -328,13 +341,28 @@ x  = fused_cpu.fused_add_scale(h, h2, self.ls2)
 **Verify and reproduce**:
 ```bat
 py -3.11 test_fused_kernels.py     :: all four kernels vs eager (fwd+bwd) + timing
-py -3.11 bench_fused_final.py      :: end to end
+py -3.11 bench_fused_final.py      :: end to end (RMSNorm and residual both fused)
+py -3.11 bench_fused_e2e3.py       :: three wiring variants compared
+py -3.11 bench_l3_vs_swiglu.py     :: fused vs unfused, isolated
+py -3.11 bench_r5_threads.py       :: thread count (5 is optimal here; 6 is 5.9% SLOWER)
 ```
-Numerics: `max|delta| ~1e-7` vs eager (fp32 accumulation order); `state_dict` keys unchanged,
-so checkpoints interload.
+Numerics: `max|delta| ~1e-7 to 1e-6` vs eager (fp32 accumulation order only);
+`state_dict` keys unchanged, so checkpoints interload safely.
 
-**Boundary**: bandwidth only, not FLOPs => ~0 gain on convolution-dominated workloads whose
-arithmetic intensity is far above the crossover (e.g. UNet).
+**Boundaries and constraints**:
+
+| Boundary | Detail |
+|---|---|
+| Saves **bandwidth only**, not FLOPs | ~0 gain on convolution-dominated workloads whose arithmetic intensity is far above the crossover (e.g. UNet) |
+| Requires a **rebuild** | `fused_cpu.available()` is False when the DLL lacks `cfused_*`; `enable_fused` then raises `RuntimeError('DLL has no fused kernels -- rebuild bnb with cfused_* exports')` — see section 2 of this file |
+| `enable_fused` must run before model construction | it patches class methods |
+| NT store has **threshold and alignment** requirements | outputs <= 1.0 MB regress; the threshold derives from the runtime L3 size and must not be hard-coded (see `TECHNICAL_GUIDE_EN.md` section 3.5.2) |
+| `gemv_fp16w_*` is not wired to Python | implemented and exported on the C side, but there is **no Python call site**; callable only from C/C++ or ctypes (see `TECHNICAL_GUIDE_EN.md` section 3.5.2) |
+| Numerics differ at fp32 rounding level | `max|delta| ~1e-7`; checkpoints interload |
+
+Full implementation details (C-side signatures, argument contract, strided variant, NT store
+threshold mechanics): [`TECHNICAL_GUIDE_EN.md`](TECHNICAL_GUIDE_EN.md) section 3.5.2.
+Step-share figures and the controlled comparison: [`TECH_REPORT_EN.md`](TECH_REPORT_EN.md) section 3.5.1.
 
 ### 4.10 `fused_dequant_linear_8bit`: arbitrary leading dims + K validation
 

@@ -264,22 +264,33 @@ print(ex.prepare(tokens=batch_size * seq_len))  # "OK" = 已启用，模型常�
 
 ### 4.9 融合 elementwise 内核（RMSNorm / SwiGLU / 残差+LayerScale）
 
-> 完整说明、参数约定与全部实测数字见 [`FUSED_KERNELS.md`](FUSED_KERNELS.md)。
-
 **它解决什么**：实测训练步里 **elementwise 占 20.8%**（GEMM 已到基准的 92%，没空间了）。
-`RMSNorm` 在 eager 下是 6 个 aten 算子、激活要被完整读写 6 遍 ⇒ 纯带宽浪费。
+`RMSNorm` 在 eager 下是 6 个 aten 算子（`pow → mean → add → rsqrt → mul → mul`），
+激活要被完整读写 6 遍 ⇒ 纯带宽浪费。这一族把它们压成 1 遍。
+
+**可用函数**（`fused_cpu.py`）：
+
+| 函数 | 语义 | 对应 eager 写法 |
+|---|---|---|
+| `fused_rmsnorm(x, weight=None, res=None, eps=1e-6)` | `(x + res) * rsqrt(mean((x+res)²) + eps) * weight` | 6 个 aten 算子 |
+| `fused_swiglu(gate, up)` | `silu(gate) * up` | `F.silu(gate) * up` |
+| `fused_add_scale(x, y, scale=None)` | `x + scale * y`（`scale=None` 时退化为 `x + y`） | `x + scale * y` |
+| `fused_add_scale_rmsnorm(x, y, scale, weight, eps=1e-6)` | `RMSNorm(x + scale*y)` 一步出 | 残差 + norm 两趟 |
+
+四个都是 `torch.autograd.Function`，**前向反向都有** ⇒ 可直接放进训练图，不需要手写 backward。
 
 **方式 A：一键接线（推荐，不改模型代码）**
 ```python
 import enable_fused
-enable_fused.enable()             # 只融合 RMSNorm
+enable_fused.enable()             # 只融合 RMSNorm（改动面最小，最稳）
 enable_fused.enable(block=True)   # 再加残差 + LayerScale
+# enable_fused.enable(rmsnorm=True, swiglu=True, block=True)   # 全开
 ```
 实测收益（交替 6 轮、配对比值中位）：RMSNorm **+5.0 ~ 8.0%**；
 加残差后 **+5.5 ~ 7.1%**（两者接近 ⇒ 默认只开 RMSNorm）。
-⚠️ 必须在**创建模型实例之前**调用（它 patch 的是类方法）。
+⚠️ 必须在**创建模型实例之前**调用（它 patch 的是类方法，对已建实例也生效，但顺序清晰更好排查）。
 
-**方式 B：显式调用（四个核都是 `torch.autograd.Function`，带反向）**
+**方式 B：显式调用**
 ```python
 import fused_cpu
 assert fused_cpu.available()          # DLL 里必须有 cfused_* 导出，否则要重新编译
@@ -295,11 +306,28 @@ x  = fused_cpu.fused_add_scale(h, h2, self.ls2)
 **核对与复跑**：
 ```bat
 py -3.11 test_fused_kernels.py     :: 四个核 vs eager 对拍（前向+反向）+ 计时
-py -3.11 bench_fused_final.py      :: 端到端
+py -3.11 bench_fused_final.py      :: 端到端（RMSNorm + 残差都走融合）
+py -3.11 bench_fused_e2e3.py       :: v1/v2/v3 三种接法对比
+py -3.11 bench_l3_vs_swiglu.py     :: 融合 vs 单独算（隔离对照）
+py -3.11 bench_r5_threads.py       :: 线程数（本机 5 线程最优，6 反而慢 5.9%）
 ```
-数值：与 eager `max|Δ| ~1e-7`（fp32 累加顺序），`state_dict` 键名不变 ⇒ checkpoint 可互载。
+数值：与 eager `max|Δ| ~1e-7 ~ 1e-6`（fp32 累加顺序不同所致），
+`state_dict` 键名不变 ⇒ checkpoint 可安全互载。
 
-**边界**：只省**带宽**不省算力 ⇒ 对卷积为主、算术强度远高于拐点的负载（如 UNet）收益 ≈ 0。
+**边界与使用约束**：
+
+| 边界 | 说明 |
+|---|---|
+| 只省**带宽**，不省算力 | 对算术强度远高于拐点的负载（卷积为主的 UNet）收益 ≈ 0 |
+| 需要**重新编译** | DLL 里没有 `cfused_*` 时 `fused_cpu.available()` 返回 False；`enable_fused` 会抛 `RuntimeError('DLL 里没有融合核 —— 需要重新编译 bnb（含 cfused_* 导出）')` ⇒ 见本文 §2 |
+| `enable_fused` 要在建模型前调用 | patch 的是类方法 |
+| NT store 有**阈值与对齐**要求 | 输出 ≤1.0 MB 时反而倒退；阈值按运行时 L3 推导，不要硬编码（详见 `TECHNICAL_GUIDE.md` §3.5.2） |
+| `gemv_fp16w_*` 未接 Python | C 侧已实现已导出，但**没有 Python 调用点**，只能从 C/C++ 或 ctypes 调用（详见 `TECHNICAL_GUIDE.md` §3.5.2） |
+| 数值是 fp32 舍入级差异 | `max|Δ| ~1e-7`，checkpoint 可互载 |
+
+完整实现细节（C 侧导出签名、参数约定、strided 版、NT store 阈值机制）见
+[`TECHNICAL_GUIDE.md`](TECHNICAL_GUIDE.md) §3.5.2；整步占比与对照数字见
+[`TECH_REPORT.md`](TECH_REPORT.md) §3.5.1。
 
 ### 4.10 `fused_dequant_linear_8bit`：支持任意前导维 + K 校验
 

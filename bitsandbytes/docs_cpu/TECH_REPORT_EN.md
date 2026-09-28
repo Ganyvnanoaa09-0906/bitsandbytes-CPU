@@ -143,7 +143,7 @@ weight block every 4 rows ⇒ weight traffic is O(M/4).
 **⇒ So §3.3's line "the fastest CPU GEMM remains oneDNN multithreaded fp32" needs a scope qualifier**:
 it holds only for **M ≳ 96**; for **M ≤ 64 this fork's fused kernel is faster** (per-token inference is M=1,
 exactly that range). The two do not contradict — it is a **dispatch by M**. Implementation and one easily
-inverted polarity note: `TECHNICAL_GUIDE.md §3.5.1` and `§6 item 9`.
+inverted polarity note: `TECHNICAL_GUIDE_EN.md §3.5.1` and `§6 item 9`.
 
 ### 3.4 Threads & precision (empirical)
 
@@ -201,8 +201,9 @@ one step = 2.819 s:
     elementwise 20.8%   the only block with room left
     attention    7.6%
 ```
-In eager mode `RMSNorm` expands into 6 aten operators, so the activation is fully read and
-written 6 times => pure bandwidth waste.
+In eager mode `RMSNorm` expands into 6 aten operators (`pow -> mean -> add -> rsqrt -> mul -> mul`),
+so the activation is fully read and written 6 times => pure bandwidth waste. This family collapses
+those 6 passes into 1, i.e. the 12 `cfused_*` exports.
 
 **Measured gain** (6 alternating rounds, paired-ratio median; `enable_fused.py`):
 ```
@@ -214,13 +215,19 @@ RMSNorm + SwiGLU + residual +5.5% (conservative) ~ +7.1% (median)
 unchanged, so checkpoints interload.
 
 **NT store measured (the bandwidth optimisation inside the same kernels)**:
+
+A normal store triggers write-allocate (RFO: the target cache line is read in before being
+written back), adding a gratuitous third of the memory traffic; NT store
+(`_mm256_stream_ps`) bypasses the cache and writes the line without reading it.
+
 | kernel | normal store | NT store | ratio |
 |---|---|---|---|
 | copy | 13.40 GB/s | **25.40** | 1.90x |
 | triad | 16.09 | **23.86** | 1.48x |
+
 The threshold derives from the **runtime L3 size**: outputs >= 4.2 MB win (2.0~3.1x),
 <= 1.0 MB lose (0.69~0.73x). Note the optimizer's `p` write must **not** use NT
-(read-modify-write; measured 21% regression).
+(read-modify-write: the line is already resident, so NT forces an eviction; measured 21% regression).
 
 **Boundary (important)**: this family saves **bandwidth, not FLOPs**.
 On the same machine, **convolution-dominated** UNet training has elementwise at only 9.4% with
@@ -229,7 +236,14 @@ gains ~0 there; different work is needed (see `TECHNICAL_GUIDE_EN.md` section 3.
 The "elementwise 20.8%" figure comes from a **Transformer-shaped** load and must not be
 extrapolated to convolutional ones.
 
-Full usage: [`FUSED_KERNELS_EN.md`](FUSED_KERNELS_EN.md).
+**One export is not yet wired up**: `gemv_fp16w_inference_cpu_{fp32,bf16,fp16}` (fp16-weight
+GEMV/GEMM — halve weight traffic while fp32 FMA throughput is unchanged) is implemented,
+exported and compiled into the DLL, but there is **no Python call site** — exported is not the
+same as wired up; see `TECHNICAL_GUIDE_EN.md` section 3.5.2.
+
+Usage (`fused_cpu` explicit calls and the `enable_fused` one-liner), the argument contract and
+the full boundary table: [`QUICKSTART_EN.md`](QUICKSTART_EN.md) section 4.9. C-side signatures and
+implementation details: [`TECHNICAL_GUIDE_EN.md`](TECHNICAL_GUIDE_EN.md) section 3.5.2.
 
 ### 3.6 EFST: MoE expert-specific fine-tuning (efst.py)
 
