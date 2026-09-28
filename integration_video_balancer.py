@@ -22,14 +22,57 @@ import shutil
 import weakref
 import threading
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+# ---------------------------------------------------------------------------
+# Preconditions, checked before importing anything heavy.
+#
+# This test needs the real SD1.5 UNet (3.2 GB) plus the AnimateDiff motion
+# adapter (1.7 GB). Those are local artefacts, not repo content, so on a machine
+# that lacks them the test cannot run. Three things were wrong with how that was
+# handled, all fixed here:
+#   1. the repo path was hard-coded to D:\work\bitsandbytes-CPU, so the test only
+#      ever worked on one machine;
+#   2. video_models.py itself is a repo file that may simply be absent, which
+#      surfaced as a bare ModuleNotFoundError;
+#   3. a missing fixture was indistinguishable from a defect.
+# So: resolve paths relative to this file, and exit 77 ("skipped") when the
+# artefacts are absent, which run_all_tests.py reports as SKIP rather than FAIL.
+# ---------------------------------------------------------------------------
+SKIP_RC = 77
+
+_MISSING = []
+if not os.path.isfile(os.path.join(HERE, "video_models.py")):
+    _MISSING.append(f"video_models.py (repo file) in {HERE}")
+if not _MISSING:
+    import video_models as _vm_probe  # noqa: E402
+    for label, path in (("SD1.5 UNet", _vm_probe.DEFAULT_UNET),
+                        ("AnimateDiff motion adapter", _vm_probe.DEFAULT_ADAPTER)):
+        if not os.path.isdir(path):
+            _MISSING.append(f"{label}: {path}")
+    del _vm_probe
+if not os.path.isfile(os.path.join(HERE, "disk_balancer.py")):
+    _MISSING.append(f"disk_balancer.py (repo file) in {HERE}")
+
+if _MISSING:
+    print("SKIPPED: required local artefacts are not present on this machine")
+    for item in _MISSING:
+        print(f"  - {item}")
+    print()
+    print("This is the real-video-model integration test for the disk balancer.")
+    print("It needs ~5 GB of local model weights, so it is not runnable on every")
+    print("box. Nothing about the balancer was tested either way; this is NOT a")
+    print("failure. Provide the artefacts and re-run for a real verdict.")
+    sys.exit(SKIP_RC)
+
 import torch
 import psutil
 
-sys.path.insert(0, r"D:\work\bitsandbytes-CPU")
 import disk_balancer as db
 import video_models as vm
 
-ROOT = r"D:\work\_integration_video"
+ROOT = os.path.join(os.environ.get("TEMP", HERE), "_integration_video")
 R = []
 
 
@@ -182,11 +225,26 @@ def main():
     for r in R:
         if not r["pass"]:
             print(f"  FAIL: {r['check']}  {r['detail']}")
-    os.makedirs(r"D:\work\cloud_results", exist_ok=True)
-    with open(r"D:\work\cloud_results\integration_video.json", "w", encoding="utf-8") as f:
+
+    # This dict used to reference a name `freed` that was never defined anywhere,
+    # so the test computed all 8 checks correctly and then died with a NameError
+    # while writing the report -- the verdict existed but could not be read.
+    #
+    # The field it was reaching for was also the wrong quantity. RSS is not a
+    # valid measure of what migration frees: torch's caching allocator keeps the
+    # pages after the storage is released, which is why check I2 above judges
+    # "source storage released" via weakref and explicitly refuses to use RSS for
+    # it (the repo has mis-called that twice already). So report what was
+    # actually measured, each under a name that says what it is:
+    out_dir = os.path.join(HERE, "cloud_results")
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "integration_video.json"), "w", encoding="utf-8") as f:
         json.dump({"results": R, "passed": npass, "total": len(R),
                    "structure": st, "cold_params": len(cold),
-                   "cold_MB": cold_mb, "freed_MB": freed},
+                   "cold_MB": cold_mb,
+                   "cold_bytes": cold_bytes,
+                   "source_storages_released": len(cold) - alive,
+                   "migration_peak_rss_delta_MB": peak_used},
                   f, indent=2, ensure_ascii=False)
     shutil.rmtree(ROOT, ignore_errors=True)
     return 0 if npass == len(R) else 1

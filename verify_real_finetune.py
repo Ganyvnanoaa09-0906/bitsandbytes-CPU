@@ -27,6 +27,39 @@ DATA_PATH = os.path.join(DSH_ROOT, "sujvji", "lomhzhu-xiami_training.json")
 N_STEPS = int(os.environ.get("FT_STEPS", "12"))
 MAX_LEN = int(os.environ.get("FT_MAXLEN", "192"))
 
+# ---------------------------------------------------------------------------
+# Precondition check, added because this test used to fail for the wrong reason.
+#
+# The weights are a multi-GB local artefact that is not part of the repo, so on a
+# machine that does not have them this script aborted deep inside transformers
+# with:
+#     OSError: Repo id must use alphanumeric chars, '-', '_' or '.'. ...
+#             'D:\work\models\qwen3.5-0.8B'
+# which reads like a malformed model id, and says nothing about the real cause
+# (the weights are absent). A missing test fixture is not a broken test, and it
+# must not be reported as one -- so: check up front, say what is actually
+# missing, and exit 77 (the conventional "skipped" code) so run_all_tests.py can
+# list it as SKIPPED instead of counting it as a pass or a failure.
+# ---------------------------------------------------------------------------
+_MISSING = []
+if not os.path.isdir(MODEL_PATH):
+    _MISSING.append(f"model weights: {MODEL_PATH}")
+elif not os.path.isfile(os.path.join(MODEL_PATH, "config.json")):
+    _MISSING.append(f"config.json inside {MODEL_PATH}")
+if not os.path.isfile(DATA_PATH):
+    _MISSING.append(f"training data: {DATA_PATH}")
+
+if _MISSING:
+    print("SKIPPED: required local artefacts are not present on this machine")
+    for item in _MISSING:
+        print(f"  - {item}")
+    print()
+    print("This test exercises the real-weight path (GDN + MoE + EFST + AdamW8bit")
+    print("on Qwen3.5-0.8B). It cannot run without the weights, and it is NOT")
+    print("reported as a failure: nothing about the kernels was tested either way.")
+    print("Provide the artefacts and re-run to get a real verdict.")
+    sys.exit(77)
+
 from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: E402
 
 print(f"loading {MODEL_PATH} (fp32, cpu) ...")

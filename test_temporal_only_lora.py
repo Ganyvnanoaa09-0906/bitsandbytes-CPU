@@ -25,8 +25,10 @@ import re
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
+# _testpath.py fixes sys.path for `import bitsandbytes` and the sibling helper
+# modules, whatever the checkout layout is.
 sys.path.insert(0, _HERE)
-sys.path.insert(0, os.path.join(_HERE, "bitsandbytes"))
+import _testpath  # noqa: E402,F401  (side effect: fixes sys.path)
 
 FAILED = []
 

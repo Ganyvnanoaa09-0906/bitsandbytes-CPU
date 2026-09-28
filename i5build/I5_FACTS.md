@@ -88,6 +88,82 @@ fix: write source files from PowerShell (base64/here-string), never through cmd
 `echo`, and keep every `.ps1` pure ASCII.
 
 
+## Directory layout: the package is a SUBDIRECTORY of the checkout root
+
+Read off a directory listing after three acceptance runs failed while guessing at
+it. Every item below cost at least one full run, so they are written down:
+
+```
+C:\Users\GanYv\bnb_repo\                     <- checkout root (= the R5's
+│                                                 D:\work\bitsandbytes-CPU)
+├── csrc\cpu_ops.cpp, cpu_ops.h, cpu_gdn.cpp
+├── build_manual\build_manual.bat            writes bitsandbytes\libbitsandbytes_cpu.dll
+├── *.obj, bench_*.exe, selftest_cpu.c, selftest_i5.exe
+├── _testpath.py                             sys.path bootstrap shared by the tests
+├── train_1000_steps.py, run_all_tests.py, efst.py
+├── disk_balancer.py, latent_chunk_store.py, temporal_only_lora.py
+├── verify_*.py, stress_opt.py, test_temporal_only_lora.py
+└── bitsandbytes\                            <- THE PACKAGE
+    ├── __init__.py, cextension.py, gdn_cpu.py, fused_cpu.py
+    ├── libbitsandbytes_cpu.dll              <- where the build lands
+    └── autograd\ backends\ diagnostics\ nn\ optim\
+```
+
+The shape matches the R5's -- *a* checkout root containing a `bitsandbytes\`
+package -- but the two roots are different directories, and that is precisely
+what makes a hard-coded path fail:
+
+| | R5 | i5 |
+|---|---|---|
+| checkout root | `D:\work\bitsandbytes-CPU` | `C:\Users\GanYv\bnb_repo` |
+| package | `<root>\bitsandbytes` | `<root>\bitsandbytes` |
+
+Gotchas, each observed on a real run:
+
+1. **`import bitsandbytes` needs the checkout root on `sys.path`, NOT the package
+   directory.** Putting the package directory there yields
+   `ModuleNotFoundError: No module named 'bitsandbytes'`, because the importable
+   name lives *inside* it. This broke `stress_opt.py`, `verify_e2e_train.py` and
+   five of eight checks in `verify_bnb_intact.py` on one run, while the DLL and
+   every kernel were perfectly fine.
+
+2. **The R5 additionally has a `.pth` file** in its site-packages adding
+   `D:\work\bitsandbytes-CPU\bitsandbytes` to `sys.path`, so on the R5 the
+   package directory happens to be importable on its own. Nothing equivalent
+   exists on the i5, so tests must not depend on it. `_testpath.py` sidesteps the
+   question entirely by searching for a parent that works.
+
+3. **`build_manual.bat` writes to `bitsandbytes\libbitsandbytes_cpu.dll`
+   relative to its working directory** (the checkout root), and falls back to
+   that path when the location named in its own comment does not exist. So the
+   DLL lands next to `__init__.py`, which is where the ctypes loader looks. Its
+   comment header claims `bitsandbytes\bitsandbytes\...`: the comment is stale,
+   not the code.
+
+4. `run_all_tests.py` locates child scripts **relative to its own directory**, so
+   the test scripts must sit next to it, in the checkout root.
+
+## Encoding: the failure path was the one path that could not run
+
+On this machine a redirected console is codepage 936 (GBK), and the test scripts
+print U+2705/U+274C check marks. GBK cannot encode those, so:
+
+- `verify_bnb_intact.py` raised `UnicodeEncodeError` **inside `check()`, on the
+  failure branch** -- so a failing check crashed the script instead of being
+  reported;
+- nothing called `sys.exit`, so it exited **0** anyway and the runner recorded
+  `OK 11/12` for a run that had verified almost nothing;
+- `run_all_tests.py` then hit the same thing while printing a child's captured
+  output, 2.2 s into the sweep.
+
+Three fixes, all now in place: `PYTHONIOENCODING=utf-8`/`PYTHONUTF8=1` set by
+`accept_i5.cmd` for the whole chain, `sys.stdout.reconfigure(encoding='utf-8')`
+in the scripts, and a plain-ASCII `[PASS]`/`[FAIL]` fallback if reconfigure is
+unavailable. `run_all_tests.py` also forces the encoding into every child's
+environment. The general lesson: **an exception raised while reporting a failure
+converts a visible failure into an invisible one**, and a script with no exit
+code is not a test.
+
 ## Toolchain
 
 **No Windows SDK is installed.** `WindowsSdkDir` is empty, `malloc.h` does not

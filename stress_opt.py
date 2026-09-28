@@ -1,4 +1,14 @@
 """Stress the fused 8-bit optimizer ctypes path: all optimizers, dtypes, sizes."""
+import os
+import sys
+
+# _testpath.py sits next to this file and fixes sys.path so that
+# `import bitsandbytes` works straight from the source tree, whatever the
+# checkout layout is (the R5 and the i5 disagree about it, and neither installs
+# the package). Put this directory on sys.path first so the import resolves.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _testpath  # noqa: E402,F401  (side effect: fixes sys.path)
+
 import torch
 import bitsandbytes as bnb
 
@@ -78,3 +88,12 @@ print(f"non-contig diff: {d:.2e}")
 assert d < 1e-6
 
 print("ALL STRESS PASSED")
+
+# The first block above COUNTS its failures and never checks the count, and the
+# later blocks use bare asserts. The result was that this script exited 0 even
+# when every one of the 210 optimizer/dtype/size combinations failed -- a runner
+# reading exit codes saw a clean pass. Report the verdict explicitly.
+if fails:
+    print(f"FAILED: {fails} combination(s) failed")
+    sys.exit(1)
+sys.exit(0)

@@ -11,14 +11,18 @@ import os
 import sys
 import json
 import shutil
+import tempfile
 
 import numpy as np
 import torch
 
-sys.path.insert(0, r"D:\work\bitsandbytes-CPU")
+# Resolved relative to this file; the scratch tree goes under the system temp
+# directory. These were hard-coded to D:\work\..., which tied the test to one box.
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 from latent_chunk_store import LatentChunkStore
 
-ROOT = r"D:\work\_verify_latent"
+ROOT = os.path.join(tempfile.gettempdir(), "_verify_latent")
 R = []
 
 
@@ -113,8 +117,9 @@ def main():
     for r in R:
         if not r["pass"]:
             print(f"  FAIL: {r['check']}  {r['detail']}")
-    os.makedirs(r"D:\work\cloud_results", exist_ok=True)
-    with open(r"D:\work\cloud_results\verify_latent.json", "w", encoding="utf-8") as f:
+    out_dir = os.path.join(HERE, "cloud_results")
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "verify_latent.json"), "w", encoding="utf-8") as f:
         json.dump({"results": R, "passed": npass, "total": len(R)}, f,
                   indent=2, ensure_ascii=False)
     shutil.rmtree(ROOT, ignore_errors=True)

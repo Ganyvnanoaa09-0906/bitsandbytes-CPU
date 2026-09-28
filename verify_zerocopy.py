@@ -21,10 +21,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-sys.path.insert(0, r"D:\work\bitsandbytes-CPU")
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
 import disk_balancer as db
 
-ROOT = r"D:\work\_verify_zerocopy"
+# Paths are resolved relative to this file, and the scratch tree goes under the
+# system temp directory. They used to be hard-coded to D:\work\..., which meant
+# this test could only ever run on one machine.
+ROOT = os.path.join(tempfile.gettempdir(), "_verify_zerocopy")
 RESULTS = []
 
 
@@ -223,8 +227,9 @@ def main():
         if not r["pass"]:
             print(f"  FAIL: {r['check']}  {r['detail']}")
 
-    os.makedirs(r"D:\work\cloud_results", exist_ok=True)
-    with open(r"D:\work\cloud_results\verify_zerocopy.json", "w", encoding="utf-8") as f:
+    out_dir = os.path.join(HERE, "cloud_results")
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, "verify_zerocopy.json"), "w", encoding="utf-8") as f:
         json.dump({"results": RESULTS, "passed": npass, "total": len(RESULTS)},
                   f, indent=2, ensure_ascii=False)
 

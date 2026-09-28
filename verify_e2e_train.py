@@ -15,8 +15,13 @@ os.environ.setdefault("OMP_NUM_THREADS", "6")
 import torch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "bitsandbytes"))
+# _testpath.py fixes sys.path so `import bitsandbytes` and the sibling helper
+# modules resolve straight from the source tree on any machine. The previous
+# `sys.path.insert(0, HERE)` was wrong: what sys.path needs is the PARENT of the
+# package, so on the i5 it produced ModuleNotFoundError while the DLL and all the
+# kernels were fine.
 sys.path.insert(0, HERE)
+import _testpath  # noqa: E402,F401  (side effect: fixes sys.path)
 
 from transformers import Qwen3NextConfig, Qwen3NextForCausalLM  # noqa: E402
 
@@ -102,3 +107,7 @@ print(f"loss drop {100*(1-losses[-1]/losses[0]):.1f}% over 60 steps (still decre
 n_state = sum(1 for g in opt.state.values() for k in ("state1", "state2") if k in g)
 print(f"optimizer state entries: {n_state}")
 print("E2E TRAIN SMOKE PASSED")
+
+# The asserts above already make a failure exit non-zero, this just states the
+# success code explicitly instead of relying on falling off the end.
+sys.exit(0)

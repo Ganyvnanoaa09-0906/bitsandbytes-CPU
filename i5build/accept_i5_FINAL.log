@@ -1,0 +1,330 @@
+﻿############################################################################
+# CPU-forge Intel acceptance run
+#   build root  = C:\Users\GanYv\bnb_repo
+#   python root = C:\Users\GanYv\bnb_repo
+#   scripts     = C:\Users\GanYv\i5build
+#   steps       = 1000
+#   dll         = C:\Users\GanYv\bnb_repo\bitsandbytes\libbitsandbytes_cpu.dll
+#   started     = 2026/09/28 ��һ 10:38:11.62
+############################################################################
+
+############################################################################
+# STAGE 0 - environment
+############################################################################
+DESKTOP-2J5D1P7
+Intel(R) Core(TM) i5-10400 CPU @ 2.90GHz
+cores=6 threads=12
+python 3.14.7 AMD64
+torch 2.14.0+cpu
+
+############################################################################
+# STAGE 1 - clean rebuild (vendor auto-detect)
+############################################################################
+  removing old DLL
+[env] VCToolsInstallDir=D:\vs2022bt\VC\Tools\MSVC\14.44.35207\
+[env] WindowsSdkDir=C:\Program Files (x86)\Windows Kits\10\
+
+[run] build_manual\build_manual.bat 
+----------------------------------------
+[1/2] compiling cpu_ops.cpp / cpu_gdn.cpp / pythonInterface.cpp ...
+[build] CPU vendor: GenuineIntel
+[build] CPU vendor favor: /favor:INTEL64
+cpu_ops.cpp
+C:\Users\GanYv\bnb_repo\csrc\cpu_ops.h(42): warning C4067: Ԥ������ָ����������� - Ӧ���뻻�з�
+csrc\cpu_ops.cpp(1597): warning C4849: ��reduction��ָ���к��� OpenMP��simd���Ӿ�
+csrc\cpu_ops.cpp(1597): note: ģ��ʵ����������(�����ʵ����������)Ϊ
+csrc\cpu_ops.cpp(1669): note: �鿴�����ڱ���ĺ��� ģ�� ʵ������void quantize_cpu_impl<float>(float *,const T *,float *,unsigned char *,__int64,__int64)��������
+        with
+        [
+            T=float
+        ]
+cpu_gdn.cpp
+C:\Users\GanYv\bnb_repo\csrc\cpu_ops.h(42): warning C4067: Ԥ������ָ����������� - Ӧ���뻻�з�
+pythonInterface.cpp
+C:\Users\GanYv\bnb_repo\csrc\cpu_ops.h(42): warning C4067: Ԥ������ָ����������� - Ӧ���뻻�з�
+  ���ڴ����� bitsandbytes\libbitsandbytes_cpu.lib �Ͷ��� bitsandbytes\libbitsandbytes_cpu.exp
+�������ɴ���
+C:\Users\GanYv\bnb_repo\csrc\cpu_ops.cpp(1414) : info C5002: Omp simd ѭ��δʸ������ԭ���ǡ�1305��
+C:\Users\GanYv\bnb_repo\csrc\cpu_ops.cpp(1414) : info C5002: Omp simd ѭ��δʸ������ԭ���ǡ�1104��
+C:\Users\GanYv\bnb_repo\csrc\cpu_ops.cpp(1592) : info C5002: Omp simd ѭ��δʸ������ԭ���ǡ�1305��
+C:\Users\GanYv\bnb_repo\csrc\cpu_ops.cpp(1592) : info C5002: Omp simd ѭ��δʸ������ԭ���ǡ�1102��
+C:\Users\GanYv\bnb_repo\csrc\cpu_ops.cpp(1592) : info C5002: Omp simd ѭ��δʸ������ԭ���ǡ�1200��
+����ɴ��������
+[2/2] checking artifact ...
+[OK] bitsandbytes\libbitsandbytes_cpu.dll
+[3/3] building sector_mirror.exe (CLI disaster-recovery raw-sector mirror) ...
+[WARN] tools\sector_mirror.c not found, skipping sector_mirror.exe
+[3/3] building sector_mirror_gui.exe (GUI, no-cmd disaster mirror) ...
+[WARN] tools\sector_mirror_gui.c not found, skipping sector_mirror_gui.exe
+[WARN] tools\sector_carve.c not found, skipping sector_carve.exe
+[WARN] tools\sector_carve_gui.c not found, skipping sector_carve_gui.exe
+----------------------------------------
+[done] build_manual.bat exit code = 0
+  [OK] DLL rebuilt: C:\Users\GanYv\bnb_repo\bitsandbytes\libbitsandbytes_cpu.dll
+
+############################################################################
+# STAGE 2 - DLL present, exports the kernels
+############################################################################
+=== DLL file ===
+  size: 395776 bytes   time: 2026/09/28 10:38
+
+=== exports ===
+  [OK] cquantize found
+  [OK] cdequantize found
+  [OK] cgemm found
+  [OK] cgemv found
+  [OK] coptimizer found
+  [--] cgdn MISSING
+
+=== total exported names ===
+  dumpbin output lines: 63
+
+############################################################################
+# STAGE 3 - C selftest (5 checks, incl. vector-vs-scalar bit identity)
+############################################################################
+[env] VCToolsInstallDir=D:\vs2022bt\VC\Tools\MSVC\14.44.35207\
+
+=== build selftest (/arch:AVX2, /TP) ===
+selftest_cpu.c
+selftest_cpu.c(125): warning C4244: ��=��: �ӡ�double��ת������float�������ܶ�ʧ����
+selftest_cpu.c(177): warning C4244: ��������: �ӡ�__int64��ת������float�������ܶ�ʧ����
+cpu_ops.cpp
+C:\Users\GanYv\bnb_repo\csrc\cpu_ops.h(42): warning C4067: Ԥ������ָ����������� - Ӧ���뻻�з�
+csrc\cpu_ops.cpp(346): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+csrc\cpu_ops.cpp(2003): warning C4244: ��return��: �ӡ�int��ת������unsigned char�������ܶ�ʧ����
+csrc\cpu_ops.cpp(2005): warning C4244: ��return��: �ӡ�int��ת������unsigned char�������ܶ�ʧ����
+csrc\cpu_ops.cpp(2007): warning C4244: ��return��: �ӡ�int��ת������unsigned char�������ܶ�ʧ����
+csrc\cpu_ops.cpp(2009): warning C4244: ��return��: �ӡ�int��ת������unsigned char�������ܶ�ʧ����
+csrc\cpu_ops.cpp(2146): warning C4100: 'ldc': δ���õĲ���
+csrc\cpu_ops.cpp(2149): warning C4189: ��k2��: �ֲ������ѳ�ʼ����������
+csrc\cpu_ops.cpp(1597): warning C4849: ��reduction��ָ���к��� OpenMP��simd���Ӿ�
+csrc\cpu_ops.cpp(1597): note: ģ��ʵ����������(�����ʵ����������)Ϊ
+csrc\cpu_ops.cpp(1669): note: �鿴�����ڱ���ĺ��� ģ�� ʵ������void quantize_cpu_impl<float>(float *,const T *,float *,unsigned char *,__int64,__int64)��������
+        with
+        [
+            T=float
+        ]
+csrc\cpu_ops.cpp(1589): warning C4189: ��block_len��: �ֲ������ѳ�ʼ����������
+cpu_gdn.cpp
+C:\Users\GanYv\bnb_repo\csrc\cpu_ops.h(42): warning C4067: Ԥ������ָ����������� - Ӧ���뻻�з�
+csrc\cpu_gdn.cpp(172): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+csrc\cpu_gdn.cpp(431): warning C4127: �������ʽ�ǳ���
+csrc\cpu_gdn.cpp(431): note: ���Ǹ��� "if constexpr" ���
+csrc\cpu_gdn.cpp(431): note: ģ��ʵ����������(�����ʵ����������)Ϊ
+csrc\cpu_gdn.cpp(700): note: �鿴�����ڱ���ĺ��� ģ�� ʵ������int `anonymous-namespace'::gdn_fwd_dispatch<true>(const void *,const void *,const void *,const float *,const float *,const float *,void *,float *,float *,int,int,int,int,int,int,int,int)��������
+csrc\cpu_gdn.cpp(626): note: �鿴�����ڱ���ĺ��� ģ�� ʵ������void `anonymous-namespace'::gdn_fwd_head<true,2>(const char *,const char *,const char *,const float *,const float *,const float *,char *,float *,float *,int,int,int,int,int64_t,int64_t)��������
+csrc\cpu_gdn.cpp(464): note: �鿴�����ڱ���� �� ģ�� ʵ������`anonymous-namespace'::DTy<2>��������
+csrc\cpu_gdn.cpp(430): note: �ڱ��� �� ģ�� ��Ա������void `anonymous-namespace'::DTy<2>::st(void *,int64_t,float)��ʱ
+csrc\cpu_gdn.cpp(485): note: ����� "`anonymous-namespace'::gdn_fwd_head" �ж� "`anonymous-namespace'::DTy<2>::st" �ĵ�һ������
+csrc\cpu_gdn.cpp(626): note: ����� "`anonymous-namespace'::gdn_fwd_dispatch" �ж� "`anonymous-namespace'::gdn_fwd_head" �ĵ�һ������
+csrc\cpu_gdn.cpp(433): warning C4127: �������ʽ�ǳ���
+csrc\cpu_gdn.cpp(433): note: ���Ǹ��� "if constexpr" ���
+csrc\cpu_gdn.cpp(425): warning C4127: �������ʽ�ǳ���
+csrc\cpu_gdn.cpp(425): note: ���Ǹ��� "if constexpr" ���
+csrc\cpu_gdn.cpp(425): note: ģ��ʵ����������(�����ʵ����������)Ϊ
+csrc\cpu_gdn.cpp(424): note: �ڱ��� �� ģ�� ��Ա������float `anonymous-namespace'::DTy<2>::ld(const void *,int64_t)��ʱ
+csrc\cpu_gdn.cpp(464): note: ����� "`anonymous-namespace'::gdn_fwd_head" �ж� "`anonymous-namespace'::DTy<2>::ld" �ĵ�һ������
+csrc\cpu_gdn.cpp(626): note: ����� "`anonymous-namespace'::gdn_fwd_dispatch" �ж� "`anonymous-namespace'::gdn_fwd_head" �ĵ�һ������
+C:\Users\GanYv\bnb_repo\csrc\cpu_ops.h(233): warning C4505: ��bf16_to_float��: ��ɾ�������ڲ����ӵ�δ���ú���
+pythonInterface.cpp
+C:\Users\GanYv\bnb_repo\csrc\cpu_ops.h(42): warning C4067: Ԥ������ָ����������� - Ӧ���뻻�з�
+C:\Users\GanYv\bnb_repo\csrc\cpu_ops.h(233): warning C4505: ��bf16_to_float��: ��ɾ�������ڲ����ӵ�δ���ú���
+�������ɴ���...
+C:\Users\GanYv\bnb_repo\csrc\cpu_ops.cpp(1414) : info C5002: Omp simd ѭ��δʸ������ԭ���ǡ�1305��
+C:\Users\GanYv\bnb_repo\csrc\cpu_ops.cpp(1414) : info C5002: Omp simd ѭ��δʸ������ԭ���ǡ�1104��
+C:\Users\GanYv\bnb_repo\csrc\cpu_ops.cpp(1592) : info C5002: Omp simd ѭ��δʸ������ԭ���ǡ�1200��
+C:\Users\GanYv\bnb_repo\csrc\cpu_ops.cpp(1592) : info C5002: Omp simd ѭ��δʸ������ԭ���ǡ�1102��
+C:\Users\GanYv\bnb_repo\csrc\cpu_ops.cpp(1592) : info C5002: Omp simd ѭ��δʸ������ԭ���ǡ�1305��
+
+=== run ===
+=== bitsandbytes CPU 内核独立自检（无 torch）===
+[PASS] quantize_blockwise 8bit 往返误差 <0.6%
+[PASS] gemm_8bit 前向误差 <1%
+[PASS] gemv_4bit nf4 输出有限且非全零
+[PASS] AdamW8bit 单步更新有限且有效
+[PASS] 向量分派(bs=64)与标量(bs=32)结果逐位一致
+
+=== 汇总: 0 失败 / 5 项 ===
+[PASSED] bitsandbytes CPU 内核自检全部通过（可安全在 Linux/ARM 使用）
+
+[selftest exit code = 0]
+
+############################################################################
+# STAGE 4 - python regression suite
+############################################################################
+==============================================================================
+CPU-forge regression sweep -- 8 test(s)
+==============================================================================
+
+>>> bnb regression (after DLL rebuild)   (verify_bnb_intact.py, timeout 600s)
+    -> OK  rc=0  5.3s  [14/14]
+
+>>> optimizer 210 combinations   (stress_opt.py, timeout 3600s)
+    -> OK  rc=0  6.1s  [failed=0]
+
+>>> temporal-only LoRA decision   (test_temporal_only_lora.py, timeout 900s)
+    -> OK  rc=0  9.2s
+
+>>> end-to-end combined smoke   (verify_e2e_train.py, timeout 1800s)
+    -> OK  rc=0  11.0s
+
+>>> real-weight finetune   (verify_real_finetune.py, timeout 3600s)
+    -> SKIP  rc=77  2.2s
+       |   - model weights: C:\Users\GanYv\models\qwen3.5-0.8B
+       |   - training data: C:\Users\GanYv\sujvji\lomhzhu-xiami_training.json
+       | This test exercises the real-weight path (GDN + MoE + EFST + AdamW8bit
+       | on Qwen3.5-0.8B). It cannot run without the weights, and it is NOT
+       | reported as a failure: nothing about the kernels was tested either way.
+       | Provide the artefacts and re-run to get a real verdict.
+
+>>> disk_balancer zero-copy correctness   (verify_zerocopy.py, timeout 900s)
+    -> OK  rc=0  3.9s  [39/39]
+
+>>> latent chunk store   (verify_latent.py, timeout 600s)
+    -> OK  rc=0  6.7s  [12/12]
+
+>>> real video model x balancer   (integration_video_balancer.py, timeout 1800s)
+    -> SKIP  rc=77  0.1s
+       | SKIPPED: required local artefacts are not present on this machine
+       |   - video_models.py (repo file) in C:\Users\GanYv\bnb_repo
+       | This is the real-video-model integration test for the disk balancer.
+       | It needs ~5 GB of local model weights, so it is not runnable on every
+       | box. Nothing about the balancer was tested either way; this is NOT a
+       | failure. Provide the artefacts and re-run for a real verdict.
+
+==============================================================================
+SUMMARY
+==============================================================================
+  bnb regression (after DLL rebuild)   OK                  14/14      5.3s
+  optimizer 210 combinations           OK               failed=0      6.1s
+  temporal-only LoRA decision          OK                      -      9.2s
+  end-to-end combined smoke            OK                      -     11.0s
+  real-weight finetune                 SKIP                    -      2.2s
+  disk_balancer zero-copy correctness  OK                  39/39      3.9s
+  latent chunk store                   OK                  12/12      6.7s
+  real video model x balancer          SKIP                    -      0.1s
+
+  2 of 8 SKIPPED (missing local artefact, not a failure):
+    - real-weight finetune
+    - real video model x balancer
+
+  all 6 executed test(s) passed; 2 skipped
+
+############################################################################
+# STAGE 5 - 1000-step training acceptance run
+############################################################################
+==============================================================================
+1000-step end-to-end training acceptance test
+==============================================================================
+  host        : DESKTOP-2J5D1P7
+  platform    : Windows-10-10.0.19045-SP0
+  processor   : Intel64 Family 6 Model 165 Stepping 5, GenuineIntel
+  python      : 3.14.7
+  torch       : 2.14.0+cpu
+  threads     : 6
+  memory      : 11.8 GB total, 6.8 GB free
+==============================================================================
+building Qwen3Next (GDN + MoE) ...
+GDN patch: OK
+[transformers] `causal_conv1d_fn` is falling back to its reference PyTorch implementation because `causal_conv1d` is not installed. This is correct but much slower; install `causal_conv1d` for the optimized kernel.
+model.layers.0.mlp.experts is a 3D tensor expert (no nn.Linear children); LoRA injection skipped - use unfreeze_experts() to tune expert rows directly
+model.layers.1.mlp.experts is a 3D tensor expert (no nn.Linear children); LoRA injection skipped - use unfreeze_experts() to tune expert rows directly
+model.layers.2.mlp.experts is a 3D tensor expert (no nn.Linear children); LoRA injection skipped - use unfreeze_experts() to tune expert rows directly
+EFST applied:
+  expert groups : 3
+  total params  : 725,712
+  trainable     : 725,712 -> 143,600
+  frozen        : 582,112
+  lora          : False
+  model.layers.0.mlp.experts: ['0', '1']
+  model.layers.1.mlp.experts: ['0', '1']
+  model.layers.2.mlp.experts: ['0', '1']
+trainable 143,600/725,712 (19.79%)
+  step     0  loss   5.5613  grad_norm 2.868e-01     46.6 ms/step
+  step   100  loss   4.2707  grad_norm 4.700e-02     33.3 ms/step
+  step   200  loss   4.2702  grad_norm 1.349e-02     33.0 ms/step
+  step   300  loss   4.2702  grad_norm 2.082e-02     33.1 ms/step
+  step   400  loss   4.2703  grad_norm 2.654e-02     33.2 ms/step
+  step   500  loss   4.2702  grad_norm 1.976e-02     33.2 ms/step
+  step   600  loss   4.2701  grad_norm 1.455e-02     33.3 ms/step
+  step   700  loss   4.2702  grad_norm 1.855e-02     33.5 ms/step
+  step   800  loss   4.2701  grad_norm 1.462e-02     32.9 ms/step
+  step   900  loss   4.2701  grad_norm 1.283e-02     32.8 ms/step
+  step   999  loss   4.2700  grad_norm 1.005e-02     32.9 ms/step
+
+==============================================================================
+RESULT
+==============================================================================
+  steps            : 1000
+  wall time        : 33.1 s
+  throughput       : 30.20 step/s  (33.1 ms/step)
+  loss first20      : 5.1778
+  loss last20       : 4.2700
+  loss p50 / p95   : 4.2702 / 4.2924
+  loss min / max   : 4.2700 / 5.5613
+  drop             : 17.5%
+  early progress   : +0.1162  (first 20% vs next 20%)
+  late progress    : +0.0001  (last 40% vs last 20%)
+  grad_norm first/last : 2.868e-01 / 1.005e-02
+  steps with grad>0    : 1000/1000
+  [PASS] all losses finite
+  [PASS] loss fell meaningfully (>10%)
+  [PASS] converged rather than oscillating (tail stable)
+  [PASS] progress front-loaded, i.e. real descent happened
+  [PASS] grad_norm decayed (optimizer actually converged)
+  [PASS] gradients were non-zero
+  [PASS] no catastrophic spike (max < 5x first)
+
+TRAIN-1000 PASSED
+  wrote C:\Users\GanYv\i5build\train1000_i5.json
+
+############################################################################
+# STAGE 6 - cross-architecture trajectory verdict
+############################################################################
+==============================================================================
+trajectory comparison: R5 (Zen2, AMD) vs i5 (Comet Lake, Intel)
+==============================================================================
+  R5  host=DESKTOP-K05F44Q    torch=2.13.0+cpu     ms/step=31.36
+  i5  host=DESKTOP-2J5D1P7    torch=2.14.0+cpu     ms/step=33.11
+
+  loss points: R5=1000  i5=1000
+
+  identical for steps 1..2 : 11 of 1000 bit-identical overall
+  first divergence      : step 3
+    loss R5 = 5.498955726623535
+    loss i5 = 5.498955249786377
+    seed gap= 4.768e-07
+  loss peak             : 5.561300
+  1 ulp at that scale   : 6.630e-07
+  SEED / ULP            : 0.719
+
+  max |R5 - i5|         : 6.714e-04  (step 45)
+  mean |R5 - i5|        : 5.708e-05
+  max relative to peak  : 1.207e-04
+  max in ulp of peak    : 1,013
+  mean diff first 25%   : 7.343e-05
+  mean diff last 25%    : 3.974e-05
+  amplification seed->max: 1,408x over 42 steps
+  worst gap first half  : 6.714e-04
+  worst gap second half : 6.113e-04
+  final loss R5 / i5    : 4.270039 / 4.270030  (rel 2.010e-06)
+
+=== verdict ===
+  [PASS] both runs completed 1000 steps
+  [PASS] first divergence is a last-bit difference (<= 2 ulp of loss scale)
+  [PASS] max divergence below 1e-3 absolute
+  [PASS] max divergence below 1e-3 relative to peak loss
+  [PASS] the gap does not grow over the run (no systematic drift)
+  [PASS] the gap does not run away in the second half
+  [PASS] both runs converge to the same loss basin (rel < 1e-4)
+
+  => the two architectures trained the same trajectory.
+     The kernels agreed to 0.72 ulp at the first divergence
+     (step 3); the remaining 6.7e-04 at step 45 is the
+     chaotic amplification of that single last-bit difference, and it
+     saturates rather than growing.
+
+############################################################################
+# ACCEPTANCE PASSED - every stage above succeeded
+#   finished = 2026/09/28 ��һ 10:39:58.44
+############################################################################
