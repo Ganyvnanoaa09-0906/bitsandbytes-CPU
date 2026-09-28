@@ -52,6 +52,7 @@ Write-Host "=== python-side test + helper modules ==="
 $pyFiles = @(
     'run_all_tests.py', '_testpath.py', 'efst.py', 'train_1000_steps.py',
     'termux_check.py',
+    'termux_train.py',
     'torch_part.py',
     'verify_bnb_intact.py', 'verify_zerocopy.py', 'verify_latent.py',
     'stress_opt.py', 'verify_e2e_train.py', 'verify_real_finetune.py',
@@ -98,4 +99,5 @@ foreach ($f in @('setup_termux_test.sh', 'get_termux_test.sh', 'bnb_launch.sh'))
 Write-Host ""
 Write-Host "=== served ==="
 Get-ChildItem $serve | Select-Object Name, Length | Format-Table -AutoSize
+
 

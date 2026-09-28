@@ -204,10 +204,66 @@ bash build_termux.sh --selftest
 | torch + bitsandbytes 同进程 T8（多线程 `.so`） | **SIGABRT**，双 OpenMP —— 记为 SKIP 并给出原因与修法 |
 | torch + bitsandbytes 同进程 T8（`--no-openmp`，128 KB） | **8/8 通过**；`AdamW8bit` 真跑一步：`max|dW| 6.2269e-02`，loss `0.3553 → 0.0296` |
 | 单线程版数值一致性 | 与多线程版**完全相同**（T4 0.392%、T5 2.514e-07） |
+| **50 步训练**（`termux_train.py`） | **7/7 通过**：loss `5.6960 → 0.0130`（-99.77%），45 ms/step |
 
 `gemm_8bit` 那条参考值值得一提：C 自检把 `gemm_8bit` 与它自己的标量路径对比，
 那是**一致性**检查 —— 两条路径共有的错误也会通过。T5 的参考值是**本脚本用 numpy
 在 float64 下独立算出来的**（权重字节由脚本自己反量化），所以是独立判据。
+
+### 50 步训练：为什么不用 transformers，以及结果
+
+第一版 `termux_train.py` 导入 Qwen3Next，在手机上死在 `No module named 'transformers'`。
+**transformers 在 Android 上装不了**：`tokenizers`/`safetensors` 是 Rust 扩展，
+`regex`/`pyyaml` 是 C 扩展，PyPI 上 aarch64 轮子**全是 manylinux（glibc）**，
+Android 用 bionic；Termux 仓库里这些包**一个都没有**。硬啃等于在手机上装 Rust 工具链现编。
+
+**但那是正交的事。** 要回答的问题是"8-bit 训练路径在 ARM64 上能不能让 loss 下降"，
+这既不需要 transformers 也不需要预训练配置。所以改用 `bnb.nn.Linear8bitLt` 搭模型 ——
+写之前先用 `probe_quant_layers.py` 探清能力边界：
+
+```
+nn.Linear8bitLt   forward OK   backward OK   |w.grad|max = 4.0000e+00
+nn.Linear4bit     forward FAILS: "FP4 quantization state not initialized.
+                  Please call .cuda()"        ← CUDA-only，设计边界而非 Termux 问题
+7 个 8-bit 优化器   全部可用
+```
+
+**这条路比原方案更深入**：原来只是 `AdamW8bit` 优化一个**普通 float** `nn.Linear`；
+现在是**量化权重层** `Linear8bitLt` 做前向 + 梯度穿回量化层 + 8-bit 优化器更新。
+
+判据（刻意多于"末值更小"）：
+
+| 判据 | 实测 |
+|---|---|
+| 所有 loss 有限 | min 0.0130 / max 5.6960 |
+| loss 下降 | 5.6960 → 0.0130（**-99.77%**） |
+| **下降在第 1 步之后仍在继续**（前 1/5 最优 vs 后 1/5 最优） | 2.4728 → 0.0130 |
+| 梯度非零 | grad_norm 1.246e+00 → 1.764e-02 |
+| 8-bit 优化器 state 已分配 | 44 项 |
+| **量化权重真的生成**（`state.CB` 存在） | **8/8** 层都有量化 state |
+
+最后一条是关键：`state.CB` 是量化后的权重缓冲区。**它存在，才证明那 8 层真的量化了，
+而不是静默退回普通 float matmul** —— 这正是本项目反复踩的那类坑（把"跑通了"当成
+"用了被测路径"）。
+
+### 意外结果：ARM64 与 x86 的 50 步曲线【逐位相同】
+
+| step | x86 (R5, AVX2) | 手机 (aarch64, NEON) |
+|---|---|---|
+| 1 | 5.6960 | 5.6960 |
+| 10 | 2.4728 | 2.4728 |
+| 20 | 0.3828 | 0.3828 |
+| 30 | 0.0601 | 0.0601 |
+| 40 | 0.0217 | 0.0217 |
+| 50 | 0.0130 | 0.0130 |
+
+两台机器的曲线数组**完全一致**（不是"接近"，是逐位相同）。这比 x86 内部的跨架构
+对比（i5 vs R5：种子 0.72 ulp，混沌放大到 6.7e-04）强得多。
+
+原因值得记下来：这个模型小、训练短，而且**量化是"块内取 absmax → 查固定 code table"**，
+没有累加顺序敏感的长归约；唯一可能分岔的 GEMM 归约在这个规模下误差还没累积到能改变
+fp32 最低位。**这也说明 ARM64 的 NEON 内核与 x86 的 AVX2 内核算的是同一个函数，
+精确到浮点能表示的极限。**
 
 ## 六、曾经踩过的坑（都已修，记下来避免重犯）
 

@@ -102,27 +102,37 @@ python termux_check.py
 PY_RC=$?
 echo "[termux_check.py exit code = $PY_RC]"
 
-# Optional second pass: a single-threaded .so cannot collide with torch's own
-# OpenMP runtime, so this is what makes python-side bitsandbytes usable here.
-if [ "${BNB_NO_OPENMP:-0}" = "1" ]; then
-  step "rebuild WITHOUT OpenMP, then retry the torch+bnb path"
-  bash build_termux.sh --no-openmp --selftest
-  NOMP_RC=$?
-  echo "[no-openmp build rc = $NOMP_RC]"
-  python termux_check.py
-  PY2_RC=$?
-  echo "[termux_check.py after no-openmp = $PY2_RC]"
-else
-  NOMP_RC=skipped
-  PY2_RC=skipped
-  echo
-  echo "NOTE: pass BNB_NO_OPENMP=1 to also rebuild single-threaded and retry the"
-  echo "      torch + bitsandbytes path. Rationale: our .so statically links libomp"
-  echo "      and torch ships its own, and two OpenMP runtimes in one process make"
-  echo "      LLVM abort (Error #15). KMP_DUPLICATE_LIB_OK would suppress the abort"
-  echo "      but is documented to allow silently incorrect results, so it is not"
-  echo "      used here."
-fi
+# ---------------------------------------------------------------------------
+# Rebuild WITHOUT OpenMP, then TRAIN.
+#
+# This is not optional, it is the order the platform forces:
+#   * build_termux.sh links libomp statically by default, and torch ships its own
+#     copy; two OpenMP runtimes in one process make LLVM abort (Error #15). The
+#     training script imports torch AND bitsandbytes, so with the default build it
+#     cannot even start.
+#   * a single-threaded .so cannot collide with anything, and numerical
+#     correctness does not depend on the thread count -- the C selftest asserts
+#     vector == scalar bit-for-bit, and the measured results are identical.
+#
+# KMP_DUPLICATE_LIB_OK is deliberately NOT used to paper over the abort: its own
+# documentation says it "may cause crashes or silently produce incorrect
+# results", and a run whose purpose is to show that the loss descends correctly
+# must not execute under a flag that permits silently wrong answers.
+# ---------------------------------------------------------------------------
+step "rebuild WITHOUT OpenMP (required before training can start)"
+bash build_termux.sh --no-openmp --selftest
+NOMP_RC=$?
+echo "[no-openmp build rc = $NOMP_RC]"
+
+step "training smoke (${BNB_STEPS:-50} steps)"
+python termux_train.py --steps "${BNB_STEPS:-50}" --threads "${BNB_THREADS:-4}"
+TRAIN_RC=$?
+echo "[termux_train.py exit code = $TRAIN_RC]"
+
+step "re-run python checks against the single-threaded .so"
+python termux_check.py
+PY2_RC=$?
+echo "[termux_check.py after no-openmp = $PY2_RC]"
 
 step "verdict"
 SO="$WORK/bnb/bitsandbytes/libbitsandbytes_cpu.so"
@@ -134,16 +144,23 @@ else
 fi
 echo "build rc  : $BUILD_RC"
 echo "python rc : $PY_RC"
-echo "noomp rc  : $NOMP_RC   python rc after noomp: $PY2_RC"
+echo "noomp rc  : $NOMP_RC"
+echo "train rc  : $TRAIN_RC"
+echo "python rc after noomp: $PY2_RC"
 echo
-echo "########## TERMUX RUN COMPLETE ##########"
+if [ "$BUILD_RC" = "0" ] && [ "$TRAIN_RC" = "0" ]; then
+  echo "########## TERMUX ACCEPTANCE: PASSED (C selftest + python checks + training) ##########"
+else
+  echo "########## TERMUX ACCEPTANCE: needs attention -- see the rcs above ##########"
+fi
 
 { echo "arch=$(uname -m)"; echo "build_rc=$BUILD_RC"; echo "python_rc=$PY_RC";
-  echo "noomp_rc=$NOMP_RC"; echo "python_rc_after_noomp=$PY2_RC";
+  echo "noomp_rc=$NOMP_RC"; echo "train_rc=$TRAIN_RC"; echo "python_rc_after_noomp=$PY2_RC";
   ls -l "$SO" 2>/dev/null; } > "$TMPLOG" 2>/dev/null \
   || { TMPLOG="$WORK/bnb_termux_result.txt"; { echo "arch=$(uname -m)";
         echo "build_rc=$BUILD_RC"; echo "python_rc=$PY_RC";
-        echo "noomp_rc=$NOMP_RC"; echo "python_rc_after_noomp=$PY2_RC";
+        echo "noomp_rc=$NOMP_RC"; echo "train_rc=$TRAIN_RC";
+        echo "python_rc_after_noomp=$PY2_RC";
         ls -l "$SO" 2>/dev/null; } > "$TMPLOG"; }
 cp "$TMPLOG" "$SDLOG" 2>/dev/null && echo "result copied to $SDLOG"
 echo "result file: $TMPLOG"
