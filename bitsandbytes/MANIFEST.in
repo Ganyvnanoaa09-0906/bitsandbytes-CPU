@@ -17,6 +17,17 @@ graft csrc
 graft build_manual
 graft docs_cpu
 graft examples
+# tools/ holds gen_api_reference.py and verify_help_examples.py, which regenerate and
+# check docs_cpu/API_REFERENCE*.md from the tables in bitsandbytes_cpu_cli.py. The
+# generated documents ARE shipped, so leaving the generators out would hand users the
+# output of scripts they cannot run.
+graft tools
+# ...but not the Windows binaries inside it. `graft tools` takes the whole directory,
+# and the four sector_*.exe disaster-recovery tools were 0.65 MB of a 1.36 MB sdist --
+# nearly half its weight, on every platform, for binaries that cannot run on two of the
+# three. Their .c sources stay in the sdist and in the repository.
+global-exclude *.exe
+global-exclude *.exe.manifest
 include build_linux.sh
 include build_termux.sh
 include selftest_cpu.c

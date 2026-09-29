@@ -1,3 +1,83 @@
+> **This is the CPU fork** — `bitsandbytes-cpu-fork`, not upstream `bitsandbytes`.
+> It replaces the CUDA kernels with a pure-CPU backend (AVX2 on x86-64, NEON on ARM64):
+> 8-bit optimizers, fused Gated DeltaNet, `gemm_8bit`, block-wise 4/8-bit quantisation.
+> No GPU, no CUDA toolkit, no NVIDIA driver. Full guide:
+> [`docs_cpu/QUICKSTART.md`](docs_cpu/QUICKSTART.md) (中文) ·
+> [`docs_cpu/QUICKSTART_EN.md`](docs_cpu/QUICKSTART_EN.md).
+
+## Install
+
+**`torch` is deliberately not a dependency.** On PyPI the name `torch` resolves to the
+CUDA build, so declaring it made this CPU-only library download roughly 2.5 GB of
+`nvidia-*` wheels — cublas, cudnn, nccl, nvshmem and thirteen more — onto machines with
+no NVIDIA device at all. Measured on a clean Ubuntu install. `install_requires` cannot
+express "the CPU build", because that lives on a different index, so install it first:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install bitsandbytes-cpu-fork
+```
+
+### Windows
+
+A wheel is published with the CPU library already built in, so no compiler and no
+Visual C++ Redistributable are needed:
+
+```bat
+pip install bitsandbytes-cpu-fork
+```
+
+### Linux
+
+Only the source distribution is published. `pip` builds it, and `setup.py` runs
+`build_linux.sh` for you, so the library is compiled against your own glibc rather than
+shipped prebuilt. That needs a C++ compiler with OpenMP:
+
+```bash
+sudo apt install g++ libomp-dev        # Debian / Ubuntu
+sudo dnf install gcc-c++ libomp-devel  # Fedora / RHEL
+sudo pacman -S gcc openmp              # Arch
+```
+
+If the toolchain is missing the build **stops and names that command**, rather than
+producing a wheel that installs cleanly and then fails at `import bitsandbytes`.
+
+To build by hand instead, or to check the kernels without torch:
+
+```bash
+bash build_linux.sh --selftest
+```
+
+### Verify the install
+
+```bash
+python -m bitsandbytes
+```
+
+### Then ask it what it can do
+
+`pip` installs a `bitsandbytes-cpu` command (also available as `bnb-cpu`). It is the
+reference for this fork: what the hardware is, whether the kernels load, and **how to
+call every feature it adds** — each entry carries the exact call, and every Python
+example in it is executed before release.
+
+```bash
+bitsandbytes-cpu detect          # CPU model, cores, SIMD, RAM, recommended thread count
+bitsandbytes-cpu selftest        # runs a 4-bit layer, an 8-bit optimizer step, the GDN kernel
+bitsandbytes-cpu help            # the whole reference
+bitsandbytes-cpu help 8bitopt    # one section: the 8-bit optimizer
+bitsandbytes-cpu help 4bit       # one section: 4-bit layers on a CPU
+bitsandbytes-cpu help kernels    # one section: the fused kernels, called directly
+bitsandbytes-cpu doctor          # which .dll/.so will load, and which symbols it has
+```
+
+Section keys: `intro start 4bit qlora 8bitopt kernels toolkit threads memory gdn disks
+layers optim functional notes`. The same tables are published as
+[`docs_cpu/API_REFERENCE.md`](docs_cpu/API_REFERENCE.md)
+([English](docs_cpu/API_REFERENCE_EN.md)).
+
+---
+
 <p align="center"><img src="https://avatars.githubusercontent.com/u/175231607?s=200&v=4" alt=""></p>
 <h1 align="center">bitsandbytes</h1>
 <p align="center">

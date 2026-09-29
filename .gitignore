@@ -68,3 +68,16 @@ data/
 .vscode/
 *.swp
 node_modules/
+
+# ---- 工作区遗留物（2026-09 清理时补的）----
+# .hf_home 是 HF 下载缓存（本机 580 MB），属于可再生成的缓存而不是源码；
+# *.part 是没下完的分片，*.bak 是改代码前的手工备份，dist_check 是旧轮子。
+# 都留在盘上，只是不参与提交。
+.hf_home/
+*.part
+*.bak
+*.bak_*
+dist_check/
+# 上一条会连 setup.py 注释里点名保留的两份 upstream 参考配置一起挡掉，这里放行。
+!bitsandbytes/pyproject.upstream-cuda.toml.bak
+!bitsandbytes/setup.upstream-cuda.py.bak

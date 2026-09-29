@@ -66,7 +66,13 @@ else
 fi
 
 # 编译（g++ 或 clang++，两者 OpenMP 均受支持）
-$COMPILER -O2 -std=c++17 -fopenmp $ARCH_FLAGS \
+#
+# -fno-math-errno 不只是为了快，是为了可移植：
+#   没有它时 gcc 会调用 libm 的 sqrtf，而 glibc 2.43 给这个符号加了新版本，
+#   于是产出的 .so 强制要求 GLIBC_2.43，在更老的发行版上直接加载失败。
+#   加上它之后 sqrt 变成 sqrtss 指令，这个要求就消失了。
+#   实测：门槛从 GLIBC_2.43 降到 GLIBC_2.32。
+$COMPILER -O2 -std=c++17 -fno-math-errno -fopenmp $ARCH_FLAGS \
   -fPIC -shared -DNOMINMAX -DNDEBUG \
   -DBUILD_CUDA=0 -DBUILD_HIP=0 -DBUILD_XPU=0 \
   -I csrc \

@@ -167,6 +167,12 @@ build-*/
 build_linux/
 *.so
 
+# 上面那条 *.bak 会挡掉 setup.py 注释里点名保留的两份 upstream 参考配置
+# （"The upstream version is kept beside this file as setup.upstream-cuda.py.bak"）。
+# 注释说它们在，就得真的在。
+!pyproject.upstream-cuda.toml.bak
+!setup.upstream-cuda.py.bak
+
 
 # 编译产物
 *.lib

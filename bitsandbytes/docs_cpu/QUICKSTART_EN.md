@@ -6,6 +6,36 @@
 
 ---
 
+## 0. First thing after installing: `bitsandbytes-cpu help`
+
+This fork installs a `bitsandbytes-cpu` command (short alias `bnb-cpu`). It is the
+command-line form of this document: **how every added feature is called, what its
+arguments are, and what its errors look like**, each entry with a snippet that can be
+copied as-is. Those snippets are executed before every release.
+
+```bash
+bitsandbytes-cpu detect        # CPU model, cores, SIMD, memory, recommended threads
+bitsandbytes-cpu selftest      # runs a 4-bit layer, an 8-bit optimizer step, the GDN kernel
+bitsandbytes-cpu doctor        # which .dll/.so is loaded, whether it loads, which symbols it has
+bitsandbytes-cpu help          # the whole reference
+bitsandbytes-cpu help 8bitopt  # one section: the 8-bit optimizer
+bitsandbytes-cpu help 4bit     # one section: 4-bit layers on a CPU
+```
+
+Section keys: `intro start 4bit qlora 8bitopt kernels toolkit threads memory gdn disks
+layers optim functional notes`.
+
+`help`, `detect`, `doctor` and `version` **do not need torch**: this package deliberately
+does not depend on it (the name `torch` on PyPI is the CUDA build, about 2.5 GB), so a
+user who has not installed torch yet can still read what to install. Only `selftest`
+needs torch, and says so when it is missing.
+
+The markdown version is generated from the same tables:
+[`API_REFERENCE_EN.md`](API_REFERENCE_EN.md) ([中文](API_REFERENCE.md)). Section 4 below
+is the long-form description of the same features.
+
+---
+
 ## 1. Prerequisites
 
 This project extends the bitsandbytes **CPU backend** for machines **without a discrete

@@ -51,17 +51,53 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "torch>=2.4,<3",
+    # torch is deliberately NOT a dependency.
+    #
+    # On PyPI the name `torch` resolves to the CUDA build. Declaring it therefore made a
+    # CPU-only library install ~2.5 GB of nvidia-* wheels -- cublas, cudnn, nccl,
+    # nvshmem and the rest -- on machines that have no NVIDIA device at all. Measured on
+    # a fresh Ubuntu install: `pip install bitsandbytes-cpu-fork` pulled 31 packages
+    # including torch-2.14.0, triton, and thirteen nvidia-* distributions.
+    #
+    # install_requires cannot express "the CPU build", because that lives on a different
+    # index. So torch is left to the user, and the README gives the two lines:
+    #
+    #     pip install torch --index-url https://download.pytorch.org/whl/cpu
+    #     pip install bitsandbytes-cpu-fork
+    #
+    # numpy and packaging carry no such ambiguity and stay.
     "numpy>=1.17",
     "packaging>=20.9",
+    # The CPU tooling modules (bitsandbytes.torch_cpu_kit, .disk_balancer, .detect_cpu)
+    # import psutil at module level to read memory and enumerate disks portably. It was
+    # only in the `test` extra while those three lived outside the package; now that they
+    # ship inside it, leaving it there would make `import bitsandbytes.disk_balancer`
+    # fail on a clean install.
+    "psutil>=5.9",
 ]
+
+[project.scripts]
+# Installed as an executable, so "what is this and how do I use it" is answerable from
+# the shell the moment pip finishes -- `bitsandbytes-cpu help`. A reference that lives
+# only in a file is read by the people who already know it exists.
+#
+# The short alias exists because the name is long enough to be mistyped, and on Windows
+# the console is case-insensitive so `bitsandbytes-CPU help` resolves here too; on Linux
+# it is case-sensitive and the lower-case spelling is the one that works.
+#
+# The target is the top-level module, NOT bitsandbytes.cli. Importing anything under the
+# package runs bitsandbytes/__init__.py, which imports torch -- and torch is absent by
+# design (see above). Pointed at bitsandbytes.cli:main, `bitsandbytes-cpu help` died with
+# ModuleNotFoundError on precisely the machine whose user needs to read it, which was
+# reproduced on Ubuntu 26.04 / Python 3.14 right after `pip install` of the sdist.
+bitsandbytes-cpu = "bitsandbytes_cpu_cli:main"
+bnb-cpu = "bitsandbytes_cpu_cli:main"
 
 [project.optional-dependencies]
 # Not the upstream test set: those tests build CUDA kernels. These are the checks
 # that are meaningful for a CPU-only install.
 test = [
     "pytest~=8.3",
-    "psutil>=5.9",
 ]
 
 [project.urls]
@@ -71,6 +107,11 @@ repository = "https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU"
 
 [tool.setuptools.dynamic]
 version = {attr = "bitsandbytes.__version__"}
+
+# The reference tables and the CLI entry point are a top-level module rather than part of
+# the package, so that they can be imported without torch; see the module docstring.
+[tool.setuptools]
+py-modules = ["bitsandbytes_cpu_cli"]
 
 [tool.setuptools.packages.find]
 include = ["bitsandbytes*"]

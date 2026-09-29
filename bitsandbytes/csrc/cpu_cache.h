@@ -41,7 +41,15 @@
 #define BNB_CPU_CACHE_H
 
 #include <cstddef>
+#include <cstdio>    // std::fopen / fclose / fgets / snprintf
 #include <cstring>
+//
+// <cstdlib> is deliberately NOT included, and no strto* or scanf function is called.
+// Both are needed for a Linux build to compile at all -- MSVC pulls <cstdio> in
+// transitively and GCC does not, which is why this file never built with g++ until the
+// include above was added -- but calling fscanf or strtoul costs more than it looks:
+// g++ defines _GNU_SOURCE, and with it glibc 2.38+ redirects those families to
+// __isoc23_* symbols that carry a GLIBC_2.38 requirement. See os_fallback below.
 
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -92,6 +100,21 @@ inline int enum_leaf(int leaf, size_t* l1d, size_t* l2, size_t* l3) {
     return found;
 }
 
+// Decimal parse with no libc strto* call: see the comment in os_fallback for why that
+// matters for the shared library's glibc floor. Returns false if no digit was present,
+// leaving *out untouched.
+inline bool parse_decimal(const char* s, size_t* out) {
+    size_t v = 0;
+    bool any = false;
+    while (*s >= '0' && *s <= '9') {
+        v = v * 10 + (size_t)(*s - '0');
+        ++s;
+        any = true;
+    }
+    if (any) *out = v;
+    return any;
+}
+
 inline void os_fallback(size_t* l1d, size_t* l2, size_t* l3) {
 #if defined(_WIN32)
     DWORD len = 0;
@@ -117,6 +140,19 @@ inline void os_fallback(size_t* l1d, size_t* l2, size_t* l3) {
     }
     free(buf);
 #elif defined(__linux__)
+    // Why this does not use fscanf/strtoul:
+    //
+    // g++ defines _GNU_SOURCE by default, and with it defined glibc 2.38+ redirects the
+    // strto* and scanf families to __isoc23_* entry points. Those symbols carry an
+    // explicit GLIBC_2.38 requirement, which then becomes the floor for the entire
+    // shared library: `objdump -T` on a build from Ubuntu 26.04 listed
+    // __isoc23_fscanf and __isoc23_strtoul as two of the five symbols holding the floor
+    // above 2.32, and the floor is what decides whether the .so loads at all on an older
+    // distribution. _GNU_SOURCE cannot be undefined (libstdc++ needs its pthread
+    // extensions), so the two calls are replaced instead. Reading a small decimal by
+    // hand costs ten lines, has no locale or format-string behaviour to get wrong, and
+    // removes the dependency completely.
+    //
     // /sys/devices/system/cpu/cpu0/cache/indexN/{level,size}
     for (int i = 0; i < 8; ++i) {
         char path[128];
@@ -125,8 +161,15 @@ inline void os_fallback(size_t* l1d, size_t* l2, size_t* l3) {
         std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu0/cache/index%d/level", i);
         FILE* f = std::fopen(path, "r");
         if (!f) continue;
-        if (std::fscanf(f, "%d", &level) != 1) { std::fclose(f); continue; }
+        {
+            char buf[64] = {0};
+            if (std::fgets(buf, sizeof buf, f)) {
+                size_t v = 0;
+                if (parse_decimal(buf, &v)) level = (int)v;
+            }
+        }
         std::fclose(f);
+        if (level < 1 || level > 3) continue;
         std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu0/cache/index%d/size", i);
         f = std::fopen(path, "r");
         if (!f) continue;
@@ -134,7 +177,7 @@ inline void os_fallback(size_t* l1d, size_t* l2, size_t* l3) {
         if (std::fgets(val, sizeof val, f)) {
             size_t n = std::strlen(val);
             while (n && (val[n - 1] == '\n' || val[n - 1] == ' ')) val[--n] = 0;
-            sz = (size_t)std::strtoul(val, nullptr, 10);
+            parse_decimal(val, &sz);
             if (n && (val[n - 1] == 'K' || val[n - 1] == 'k')) sz *= 1024;
             else if (n && (val[n - 1] == 'M' || val[n - 1] == 'm')) sz *= 1024 * 1024;
         }

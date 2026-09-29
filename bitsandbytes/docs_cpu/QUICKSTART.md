@@ -1,7 +1,25 @@
 # 快速入门流程指南
 
-> 适用对象：首次使用本项目的开发者。
-> 说明：本文档提供每一步操作的**命令、命令作用及参数说明**，您可直接复制执行。
+---
+
+## 0. 装完之后第一件事：`bitsandbytes-cpu help`
+
+本 fork 会随包安装一个 `bitsandbytes-cpu` 命令（简写 `bnb-cpu`）。它是这份文档的命令行版本：**每个新增功能怎么调用、参数是什么、报错长什么样**，每条都带一段可以直接复制的代码，而且这些代码在发版前都会真跑一遍。
+
+```bash
+bitsandbytes-cpu detect        # 这台机器是什么 CPU、几核、SIMD、内存、推荐线程数
+bitsandbytes-cpu selftest      # 真跑一遍 4-bit 层、8-bit 优化器、GDN 内核；失败退出码 1
+bitsandbytes-cpu doctor        # 加载的是哪个 .dll/.so、能不能加载、符号齐不齐
+bitsandbytes-cpu help          # 完整参考
+bitsandbytes-cpu help 8bitopt  # 只看一节：8-bit 优化器
+bitsandbytes-cpu help 4bit     # 只看一节：CPU 上的 4-bit 层
+```
+
+节名：`intro start 4bit qlora 8bitopt kernels toolkit threads memory gdn disks layers optim functional notes`。
+
+`help` / `detect` / `doctor` / `version` **不需要 torch**：本包刻意不依赖 torch（PyPI 上的 `torch` 是 CUDA 版，约 2.5 GB），所以一个还没装 torch 的用户也能先读到该装什么。只有 `selftest` 需要 torch，缺了会直接告诉你怎么装。
+
+Markdown 版本由同一份表格生成，即 [`API_REFERENCE.md`](API_REFERENCE.md)（[English](API_REFERENCE_EN.md)）；下面的第 4 节是同一批功能的长文说明。
 
 ---
 
