@@ -16,14 +16,44 @@ pip install bitsandbytes-cpu-fork
 ```
 
 The wheel bundles the prebuilt CPU kernel and its OpenMP runtime, so nothing needs to
-be built after installing; `pip` resolves `torch` / `numpy` itself. One wheel covers
-every Python 3 version on 64-bit Windows. The import name is unchanged, so existing
-code and the Transformers / PEFT / Diffusers integrations work as-is:
+be built after installing. One wheel covers every Python 3 version on 64-bit Windows.
+The import name is unchanged, so existing code and the Transformers / PEFT / Diffusers
+integrations work as-is:
 
 ```python
 import bitsandbytes as bnb
-print(bnb.__version__)      # 0.50.2.dev0
+print(bnb.__version__)      # 0.50.2.dev1
 ```
+
+> **`torch` is deliberately not a dependency.** On PyPI that name resolves to the CUDA
+> build — installing this package used to pull 31 distributions and about 2.5 GB of
+> `nvidia-*` wheels onto a machine that has no NVIDIA device. Install the CPU build
+> first, then this:
+>
+> ```bash
+> pip install torch --index-url https://download.pytorch.org/whl/cpu
+> pip install bitsandbytes-cpu-fork
+> ```
+
+### Then ask it what it can do
+
+`pip` also installs a `bitsandbytes-cpu` command (alias `bnb-cpu`). It is the reference
+for this fork: what the hardware is, whether the kernels load, and **how to call every
+feature it adds** — each entry a signature plus the call itself, and every Python
+example in it is executed before release.
+
+```bash
+bitsandbytes-cpu detect          # CPU model, cores, SIMD, RAM, recommended threads
+bitsandbytes-cpu selftest        # runs a 4-bit layer, an 8-bit optimizer step, the GDN kernel
+bitsandbytes-cpu doctor          # which .dll/.so loads, and which symbols it has
+bitsandbytes-cpu help            # the whole reference
+bitsandbytes-cpu help 8bitopt    # one section: the 8-bit optimizer
+bitsandbytes-cpu help 4bit       # one section: 4-bit layers on a CPU
+```
+
+`help`, `detect`, `doctor` and `version` work with **no torch installed**, which is the
+state of the machine whose user needs to read them. Section keys: `intro start 4bit
+qlora 8bitopt kernels toolkit threads memory gdn disks layers optim functional notes`.
 
 The distribution is named `bitsandbytes-cpu-fork` (upstream `bitsandbytes` is a
 different package and is not replaced by this one). Prebuilt wheels are Windows-only;
