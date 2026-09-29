@@ -151,7 +151,7 @@ def _wheel_platform():
 
 
 setup(
-    version="0.50.2.dev0",
+    version="0.50.2.dev1",
     distclass=PureDistribution,
     cmdclass={"bdist_wheel": PlatformWheel},
 )

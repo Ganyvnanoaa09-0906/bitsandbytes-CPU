@@ -297,7 +297,7 @@ code and the Transformers / PEFT / Diffusers integrations keep working as-is:
 
 ```python
 import bitsandbytes as bnb          # the fork, not upstream
-print(bnb.__version__)              # 0.50.2.dev0
+print(bnb.__version__)              # 0.50.2.dev1
 ```
 
 Building from source instead (any platform) is described in
