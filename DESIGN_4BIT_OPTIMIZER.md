@@ -65,7 +65,53 @@ void optimizer_update_8bit_blockwise_cpu(
 
 ---
 
-## 四、4-bit 的设计
+## 三之二、★ 读完模板后的重大更正（2026-10-07，以代码为准）
+
+原方案假设"要自己写更新循环" ✗ **错了**。8-bit 模板的真实结构（cpu_ops.cpp:2743~2818）是：
+
+```cpp
+// —— 优化器数学：已抽成【共享函数】，4-bit 直接复用，不重写 ——
+OptElemResult r = opt_update_element<T>(P, qmap1, qmap2, am1, am2, am3,
+                                        c1, c2, c3, g_raw, p_val, one_state);   // :2779
+if (r.update_p)
+    opt_store<T>(p, i, opt_update_p(P, P.optimizer_id, p_val,
+                                    r.s1, r.s2, r.s3, g_wd, one_state));        // :2783
+
+// —— 状态量化：码表【参数化】+ LUT 加速 ——
+const unsigned char zc1 = opt_zero_code(qmap1);                                 // :2749
+const std::shared_ptr<const LUTEntry> lut1 = get_opt_lut(qmap1, true);          // :2753
+state1[i] = opt_sign_fix(qmap1,
+                (unsigned char)opt_quant_fast(qmap1, lut1p, s1buf[j]*inv1, true),
+                s1buf[j]);                                                      // :2805
+
+// —— 每块的 absmax = 新状态的块内 max|x|（NaN 视为 0）——
+n1 = std::fmax(n1, std::isnan(r.s1) ? 0.0f : std::fabs(r.s1));                  // :2788
+```
+
+**⇒ 结论：4-bit 版本只需要换【存储与量化层】，优化器数学一行都不用改** ✓✓
+
+要写的只有三件：
+
+| # | 要写的 | 复用 |
+|---|---|---|
+| 1 | **4-bit 打包存取**：一字节两个 nibble（HIGH = 偶数下标，见 `avx2_gemv_4bit.h:99` 注释 ✓）；`get4(state,i)` / `set4(state,i,code)` | `nibbles_to_lut8` 的解包思路 ✓ |
+| 2 | **16 项码表路径**：把 `qmap1/qmap2` 换成 16 项表；16 项时**不需要 LUT**（直接线性或位运算 ✓） | `get_opt_lut` 的结构可参考，但大概率**不需要它** |
+| 3 | **入口 + 声明 + 暴露 + Python 通路** | 照 `cpu_ops.cpp:3189` / `cpu_ops.h:501` / `pythonInterface.cpp:917` 抄 |
+
+**⇒ 其余全部复用**：`OptParams`（各优化器分支 ✓）、`opt_update_element` ✓、`opt_update_p` ✓、
+`opt_load/opt_store<T>`（fp32/bf16/fp16 三种 ✓）、NaN 处理 ✓、`ademamix` 的三状态 ✓、
+OpenMP 分块（注意 2760 那条注释：**parking buffer 必须声明在循环体内** ✗ 否则多线程互相践踏 ✓）
+
+**⚠️ 还有一个必须照抄的细节**：`opt_sign_fix` —— 量化后要按【原始状态值的符号】修正码字（CUDA 同款 ✓）。
+4-bit 版本也要做（否则负值会量化到错误的码 ✓）。
+
+**⚠️ 16 项码表的取舍**：8-bit 用 `create_dynamic_map()`（非线性 ✓ 见 :3252 那段教训 ✓）。
+4-bit 只有 16 个码 ⇒ **非线性表的收益很小、复杂度代价大** ✗
+⇒ **建议纯线性对称量化**（code ∈ 0..15 映射到 [-1,1]，或 ±7 对称 ✓），
+   并把这条取舍写进测试注释（判据是"收敛贴合"而非"与 8-bit 一致"✓）
+
+**⇒ 结论：这是"加一个存储层 + 抄三处接口"，不是内核重写** ✓
+
 
 ### 4.1 状态布局
 
