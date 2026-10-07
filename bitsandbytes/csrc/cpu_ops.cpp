@@ -2860,20 +2860,22 @@ static inline void opt4_set(unsigned char* s, long long i, unsigned char code) {
 // 决策：用线性而不是 8-bit 的 create_dynamic_map()。只有 16 个码时非线性收益很小，
 //   却要背上 :2458 附近记录的那个坑（硬编码表与量化器对不上 ⇒ 相对误差 ~100% ✗）。
 //   线性可以逐项验证 ✓
-// ⚠️ 取整【不能用 std::lrintf】：MSVC 默认 /fp:precise 下它是库函数调用（还要读
-//   舍入模式），而本内核每个元素要调它两次 ⇒ 1M 参数每步 800 万次调用。
-//   实测代价：4-bit 比结构相同的 8-bit 版慢 4 倍（7.99 ms vs 1.96 ms）✗
-//   改用魔法数取整：一次加法 + 一次 cvttss2si，无调用、无舍入模式依赖 ✓
-//   值域 (x+1)*7.5 ∈ [0,15]（x 已按块 absmax 归一化到 [-1,1]）⇒ 安全 ✓
+// ⚠️ 取整【必须】用 std::lrintf。我试过"魔法数取整"（加 1.5*2^23 再减掉）来避开
+//   库调用，结果【破坏了正确性】✗：50 步后状态码与参考完全不一致，参数出现 NaN。
+//   原因：/fp:precise 下 (x+1)*7.5 + magic 可能被收缩成 FMA（中间不舍入），
+//   于是 r - magic 会偏离一个 magic-ulp（=1.0）✗；且越界/NaN 输入没有守卫，
+//   而 8-bit 那条路是用 CMP_NLT_UQ 兜住 NaN 的，我漏了 ✓。
+//   而且它【没换来速度】：配对比较 0.250 → 0.232，在噪声内 ✓ ⇒ 已回退。
+//   教训：用"看起来更快"的实现替换一个已验证的实现之前，先重跑正确性测试 ✓✓
+//   —— 这次正是那个测试把它拦下来的 ✓
 static constexpr float kOpt4InvLevels = 15.0f / 2.0f;
-static constexpr float kOpt4Magic = 12582912.0f;   // 1.5 * 2^23，尾数对齐用
 // 注：16 级对称【无法精确表示 0】（中间两码是 ∓1/15）⇒ 全零块写 code 8，
 //     偏差 absmax/15，而那时 absmax 就是 0 ⇒ 偏差为 0 ✓
 
 static inline unsigned char opt4_quant(float x) {
-    const float v = (x + 1.0f) * kOpt4InvLevels;
-    const float r = v + kOpt4Magic;               // 加完即完成"四舍五入到最近"
-    int c = (int)(r - kOpt4Magic);
+    if (!std::isfinite(x))      // 越界/NaN 兜底；8-bit 用 CMP_NLT_UQ 做同一件事
+        return 8;               // 最靠近 0 的码
+    int c = (int)std::lrintf((x + 1.0f) * kOpt4InvLevels);
     if (c < 0) c = 0;
     if (c > 15) c = 15;
     return (unsigned char)c;
