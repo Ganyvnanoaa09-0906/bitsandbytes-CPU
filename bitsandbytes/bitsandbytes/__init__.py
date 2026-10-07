@@ -75,7 +75,7 @@ __pdoc__ = {
     "optim.optimizer.MockArgs": False,
 }
 
-__version__ = "0.50.2.dev2"
+__version__ = "0.50.2.dev3"
 
 # 挂载 gdn_cpu（GDN 融合内核 / patch_transformers 入口），让 bnb.gdn_cpu 可直接访问
 from . import gdn_cpu  # noqa: E402,F401
