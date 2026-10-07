@@ -20,7 +20,7 @@ build-backend = "setuptools.build_meta"
 # PyPI.
 name = "bitsandbytes-cpu-fork"
 dynamic = ["version"]
-description = "bitsandbytes with a pure-CPU training backend (AVX2 / NEON): 8-bit optimizers, fused GDN, gemm_8bit, disk balancer. No GPU required."
+description = "bitsandbytes with a pure-CPU training backend (AVX2 / NEON): 8-bit and 4-bit optimizers, fused GDN, gemm_8bit, disk balancer. No GPU required."
 requires-python = ">=3.10"
 readme = "README.md"
 license = "MIT"

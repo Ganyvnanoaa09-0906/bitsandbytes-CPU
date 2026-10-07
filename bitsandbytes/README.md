@@ -1,6 +1,6 @@
 > **This is the CPU fork** — `bitsandbytes-cpu-fork`, not upstream `bitsandbytes`.
 > It replaces the CUDA kernels with a pure-CPU backend (AVX2 on x86-64, NEON on ARM64):
-> 8-bit optimizers, fused Gated DeltaNet, `gemm_8bit`, block-wise 4/8-bit quantisation.
+> 8/4-bit optimizers, fused Gated DeltaNet, `gemm_8bit`, block-wise 4/8-bit quantisation.
 > No GPU, no CUDA toolkit, no NVIDIA driver. Full guide:
 > [`docs_cpu/QUICKSTART.md`](docs_cpu/QUICKSTART.md) (中文) ·
 > [`docs_cpu/QUICKSTART_EN.md`](docs_cpu/QUICKSTART_EN.md).
@@ -323,6 +323,7 @@ Building from source instead (any platform) is described in
 | **Gated DeltaNet fwd/bwd** | `gdn_fwd_cpu` / `gdn_bwd_cpu` (csrc/cpu_gdn.cpp) | Fused Gated DeltaNet (Qwen3-Next/3.5 linear attention) — ~35× vs per-step Python loop; chunk-checkpointed backward |
 | **Fused 8-bit blockwise dequant GEMM** | `cgemm_8bit_inference_cpu_fp32` (`bitsandbytes::gemm_8bit`, `bnb.functional.fused_dequant_linear_8bit`) | `out = A @ dequant8(B)` with weights kept uint8 (¼ DRAM traffic), no fp32 temporary |
 | **Fused 8-bit optimizer** | `coptimizer_update_8bit_blockwise_cpu` (`bnb.optim.AdamW8bit` etc.) | Single-pass dequant→update→requant; optimizer state memory ≈ 1/3.8 of fp32 |
+| **Fused 4-bit optimizer** | `coptimizer_update_4bit_blockwise_cpu` (`bnb.optim.AdamW4bit`) | Same single-pass shape as the 8-bit one at half the state: **1.031 vs 2.062 B/param** at 1M params, and **0.658 ms vs 1.682 ms** per step (AVX2). On a real 30.49M model the state drops 232.6 MB to 29.5 MB. Trains to the same place: loss curves track fp32 within 0.27% over 120 steps, state codes identical to an independent numpy reference over 50 |
 | **Blockwise 8/4-bit quant & dequant** | `cquantize_blockwise_cpu_*` / `cdequantize_blockwise_cpu_*` | AVX2 LUT quantize + dequantize; NF4/FP4 kernels with NEON/AVX2 paths |
 | **4-bit inference GEMV** | `cgemv_4bit_inference_cpu_*` | Fused 4-bit dequant GEMV/GEMM for AVX2 machines (symbol alias fixed) |
 | **GDN runtime patch** | `bitsandbytes/gdn_cpu.py` | `patch_transformers()` / `patch_fla()` — route transformers GDN slow paths to the fused kernel |
