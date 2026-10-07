@@ -30,21 +30,37 @@ import os
 
 import torch
 
-_DLL_HINTS = [
-    # 本文件在仓库根 ⇒ DLL 就在 <repo>/bitsandbytes/libbitsandbytes_cpu.dll。
-    # 原先这里多套了一层 dirname（得出 D:\work\... ✗），只是因为后面的候选和
-    # bitsandbytes.lib 兜住了才没暴露 —— 靠兜底掩盖的错误要在源头修掉。
-    os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                 'bitsandbytes', 'libbitsandbytes_cpu.dll'),
-    # wheel 安装后的位置：直接问 bitsandbytes 自己（见下面的 fallback）
-    r'D:\work\bnb-4bitopt\bitsandbytes\bitsandbytes\libbitsandbytes_cpu.dll',
-]
+def _find_dll() -> str:
+    """Locate libbitsandbytes_cpu.dll without hardcoding a machine-specific path.
 
-_lib = None
-for _h in _DLL_HINTS:
-    if os.path.exists(_h):
-        _lib = ctypes.CDLL(_h)
-        break
+    Asking the installed package is the only approach that works for both layouts:
+      * source checkout: <repo>/bitsandbytes/bitsandbytes/libbitsandbytes_cpu.dll
+        (the first 'bitsandbytes' is the repo, the second is the package)
+      * wheel install:   <site-packages>/bitsandbytes/libbitsandbytes_cpu.dll
+    Two earlier versions of this got the relative path wrong and only worked
+    because a later candidate covered for them. Prefer the package's own answer.
+    """
+    try:
+        import bitsandbytes as _b
+        cand = os.path.join(os.path.dirname(os.path.abspath(_b.__file__)),
+                            'libbitsandbytes_cpu.dll')
+        if os.path.exists(cand):
+            return cand
+    except Exception:
+        pass
+    # fallbacks, in order of how likely they are to be right
+    here = os.path.dirname(os.path.abspath(__file__))
+    for rel in (os.path.join('bitsandbytes', 'bitsandbytes', 'libbitsandbytes_cpu.dll'),
+                os.path.join('bitsandbytes', 'libbitsandbytes_cpu.dll'),
+                'libbitsandbytes_cpu.dll'):
+        cand = os.path.join(here, rel)
+        if os.path.exists(cand):
+            return cand
+    return ''
+
+
+_dll_path = _find_dll()
+_lib = ctypes.CDLL(_dll_path) if _dll_path else None
 if _lib is None:  # last resort: whatever bitsandbytes itself loaded
     import bitsandbytes as _b
     _lib = _b.lib
