@@ -361,7 +361,13 @@ def _apply_video(video_family: str, transformer, *, lora: bool,
         # PEFT 的 target_modules 按**叶子名**匹配，时序(motion_modules)与空间(attentions)
         # 的叶子名相同 ⇒ 默认两者都被注入；这里按需把 scope 外的换回 base_layer。
         scope = lora_scope or os.environ.get("BNB_LORA_SCOPE") or "all"
-        if video_family == "animatediff_lora" and scope in ("temporal", "spatial"):
+        # 原先这里限定只用 animatediff_lora ✗ 但 temporal_only_lora 的 pattern 表
+        # 本来就是通用的（含 r"temporal"），而 diffusers 的时序类名全都带它
+        # （TemporalBasicTransformerBlock / ResidualTemporalBlock1D /
+        #  TemporalConvLayer / TemporalResnetBlock / SpatioTemporalResBlock）。
+        # ⇒ 放开族限制，由 restrict_to_temporal 里的空转守卫去拦住那些
+        #   没有可分离时序层的族（Wan2.1 / CogVideoX 是时空融合注意力）。
+        if scope in ("temporal", "spatial"):
             try:
                 from temporal_only_lora import restrict_to_temporal
                 transformer, st = restrict_to_temporal(transformer, scope=scope, verbose=True)

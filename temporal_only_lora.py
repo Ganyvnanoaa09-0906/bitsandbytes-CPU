@@ -80,6 +80,20 @@ def restrict_to_temporal(model, scope: str = "temporal", verbose: bool = True):
         print('[restrict_to_temporal] 注入总数=%d  时序=%d  空间=%d  scope=%s  ⇒ 保留 %d 丢弃 %d'
               % (len(tem) + len(spa), len(tem), len(spa), scope, len(keep), len(drop)))
 
+    # ★ 响亮失败，而不是静默空转。
+    #   scope='temporal' 但一个时序模块都没匹配到时，keep 为空 ⇒ 下面会把【全部】
+    #   LoRA 换回 base_layer ⇒ 可训练量为 0 ⇒ 训练照常跑、loss 照常打、什么也没学 ✗✗
+    #   这不是假设：Wan2.1 / CogVideoX 是 3D DiT，注意力【时空融合】，模块名是
+    #   attn1/attn2 不含 temporal ⇒ 对它们"只训时序层"没有意义，必然匹配到 0 个。
+    #   ⇒ 抛异常，让调用方显式选择 scope='all'，而不是拿到一个空转的运行。
+    if not keep:
+        raise ValueError(
+            'scope=%r 匹配到 0 个模块（时序=%d 空间=%d 注入总数=%d）。'
+            '继续下去会把所有 LoRA 换回 base_layer，可训练量为 0 而训练照常进行。'
+            '若该模型没有可分离的时序层（Wan2.1 / CogVideoX 的注意力是时空融合的），'
+            '请改用 scope="all"。'
+            % (scope, len(tem), len(spa), len(tem) + len(spa)))
+
     # 逐模块替换：把 PEFT 的 Linear 换回它的 base_layer
     removed = 0
     for name in sorted(drop):

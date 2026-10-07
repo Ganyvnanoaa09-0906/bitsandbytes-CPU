@@ -146,9 +146,19 @@ python train_diffusion.py --video_selftest --method animatediff_lora \
 
 ### 2.4 已知缺口
 
-- `--lora_scope` **目前只在 `animatediff_lora` 上生效**。
-  `wan_lora` / `cogvideo_lora` / `svd_lora` 的时序层命名不同（不是 `motion_modules`），
-  要支持需各自补 pattern。（report §10.157.6）
+- `--lora_scope` **对 `animatediff_lora` 与 `svd_lora` 生效**。
+    原先只在 `animatediff_lora` 上生效；原因不在 pattern 缺失 ——
+    `temporal_only_lora.py` 的 `TEMPORAL_PATTERNS` 本来就含 `r"temporal"`，
+    而 diffusers 的时序类名全都带它（`TemporalBasicTransformerBlock` /
+    `ResidualTemporalBlock1D` / `TemporalConvLayer` / `TemporalResnetBlock` /
+    `SpatioTemporalResBlock`）。挡住其他族的只是 `diffusion_backends.py` 里
+    一句 `video_family == "animatediff_lora"`，现已放开。
+- **`wan_lora` / `cogvideo_lora` 上 `--lora_scope` 没有意义，不是待补的 pattern。**
+    这两族是 3D DiT，注意力**时空融合**，模块名是 `attn1` / `attn2`，
+    不存在可分离的时序层，传进去只会匹配到 0 个模块。
+    ⇒ 因此 `restrict_to_temporal` 在保留集为空时**直接抛异常**而不是继续：
+      否则会把全部 LoRA 换回 `base_layer`，可训练量为 0，而训练照常跑、
+      loss 照常打 —— 一个完全静默的空转。这两族要用 `scope="all"`。
 - `Wan2.1-T2V-1.3B` 磁盘上那份（16.7 GB）**是坏的**，要用得重下。
 - `diffusion_backends.py` 里五个视频族（`wan_lora`/`cogvideo_lora`/`svd_lora`/
   `animatediff_lora`/`video_full`）**架子已就位**，接新模型从那里进。
