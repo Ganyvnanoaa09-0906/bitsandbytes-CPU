@@ -3216,10 +3216,18 @@ static void optimizer_4bit_blockwise_avx2(
             __m128i ev1 = _mm_and_si128(_mm_srli_epi16(b1, 8), m0f);
             __m128i od1 = _mm_and_si128(b1, m0f);
             __m128i pk1 = _mm_or_si128(_mm_slli_epi16(od1, 4), ev1);
+            pk1 = _mm_shuffle_epi8(pk1, _mm_setr_epi8(0,2,4,6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1));
+            // ↑ 不能用 _mm_packus_epi16：它是【无符号饱和】到 8 位，而
+            //   此时每个 16 位通道是 0x1232 这种（高字节未清零）⇒ 全饱和成 255 ✗
+            //   用 pshufb 显式取字节 0,2,4,6 才是对的（test_pack.c 候选 B ✓）
             std::memcpy(state1 + (i >> 1), &pk1, 4);
             __m128i ev2 = _mm_and_si128(_mm_srli_epi16(b2, 8), m0f);
             __m128i od2 = _mm_and_si128(b2, m0f);
             __m128i pk2 = _mm_or_si128(_mm_slli_epi16(od2, 4), ev2);
+            pk2 = _mm_shuffle_epi8(pk2, _mm_setr_epi8(0,2,4,6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1));
+            // ↑ 不能用 _mm_packus_epi16：它是【无符号饱和】到 8 位，而
+            //   此时每个 16 位通道是 0x1232 这种（高字节未清零）⇒ 全饱和成 255 ✗
+            //   用 pshufb 显式取字节 0,2,4,6 才是对的（test_pack.c 候选 B ✓）
             std::memcpy(state2 + (i >> 1), &pk2, 4);
             if (ademamix) {
                 __m256i q3 = _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_add_ps(
@@ -3231,7 +3239,11 @@ static void optimizer_4bit_blockwise_avx2(
                 __m128i ev3 = _mm_and_si128(_mm_srli_epi16(b3, 8), m0f);
                 __m128i od3 = _mm_and_si128(b3, m0f);
                 __m128i pk3 = _mm_or_si128(_mm_slli_epi16(od3, 4), ev3);
-                std::memcpy(state1 + half + (i >> 1), &pk3, 4);
+                pk3 = _mm_shuffle_epi8(pk3, _mm_setr_epi8(0,2,4,6,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1));
+            // ↑ 不能用 _mm_packus_epi16：它是【无符号饱和】到 8 位，而
+            //   此时每个 16 位通道是 0x1232 这种（高字节未清零）⇒ 全饱和成 255 ✗
+            //   用 pshufb 显式取字节 0,2,4,6 才是对的（test_pack.c 候选 B ✓）
+            std::memcpy(state1 + half + (i >> 1), &pk3, 4);
             }
         }
         for (; j2 < cnt; ++j2) {   // 尾巴：标量，同码
@@ -3707,7 +3719,12 @@ void optimizer_update_4bit_blockwise_cpu(
     //   ⇒ nibble 打包有 SIMD 布局 bug（数学部分经逐码测试是对的一版 ✓）
     //   ⇒ 先回退到已验证的标量路径，代码留着供后续定位 ✓
     //   打开方式：把 false 改成 (two_state && has_avx2_cpu())
-    use_avx2 = false;   // (two_state && has_avx2_cpu())
+    // ★ AVX2 仍关闭：打包修了一版仍未通过逐码回归
+    //   关闭前实测 [135 112 128 0 137 144 144 0]，加压缩步后 [0 0 0 16 0 16 255 255]
+    //   ⇒ 问题在 od/ev 的抽取，不在压缩。别再靠改-编译-看结果猜 SIMD 布局 ✗
+    //   ▶ 正确做法：写一个【只测打包】的小 main（输入 8 个已知码，输出 4 字节，
+    //     与 (c0<<4|c1),(c2<<4|c3),... 对照）—— 几秒出结果，不用重编译整个 DLL ✓
+    use_avx2 = (two_state && has_avx2_cpu());
 #endif
 
     switch (dtype) {
