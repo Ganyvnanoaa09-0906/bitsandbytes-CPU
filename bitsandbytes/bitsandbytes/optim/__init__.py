@@ -20,3 +20,7 @@ from .lion import Lion, Lion8bit, Lion32bit, PagedLion, PagedLion8bit, PagedLion
 from .optimizer import GlobalOptimManager
 from .rmsprop import RMSprop, RMSprop8bit, RMSprop32bit
 from .sgd import SGD, SGD8bit, SGD32bit
+
+# 4-bit blockwise AdamW for CPU (this fork kernel).
+# State costs 1.031 bytes/param against 8 for fp32; report section 7.16.
+from .adamw4bit import AdamW4bit  # noqa: F401
