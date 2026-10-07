@@ -925,6 +925,20 @@ void coptimizer_update_8bit_blockwise_cpu(
     );
 }
 
+// 4-bit blockwise optimizer step. Same contract as the 8-bit wrapper;
+// state1/state2 are ceil(n/2) bytes each (two 4-bit codes per byte,
+// high nibble = even index).
+void coptimizer_update_4bit_blockwise_cpu(
+    int optimizer_id, void* g, void* p, unsigned char* state1, unsigned char* state2, float beta1, float beta2,
+    float beta3, float alpha, float eps, int step, float lr, const float* qmap1, const float* qmap2,
+    float* absmax1, float* absmax2, float weight_decay, float gnorm_scale, int skip_zeros, long long n, int dtype
+) {
+    optimizer_update_4bit_blockwise_cpu(
+        optimizer_id, g, p, state1, state2, beta1, beta2, beta3, alpha, eps, step, lr, qmap1, qmap2, absmax1,
+        absmax2, weight_decay, gnorm_scale, skip_zeros != 0, n, dtype
+    );
+}
+
 #if defined(__AVX512F__) && defined(__AVX512BF16__)
 void gemv_4bit_inference_cpu_fp4_bf16(
     int64_t M, int64_t N, int64_t K, const bf16_t* __restrict__ x, const unsigned char* __restrict__ w,

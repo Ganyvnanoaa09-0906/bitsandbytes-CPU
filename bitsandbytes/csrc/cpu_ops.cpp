@@ -2817,6 +2817,139 @@ static void optimizer_8bit_blockwise_scalar(
     }
 }
 
+// =====================================================================
+// 4-bit blockwise optimizer (CPU)
+// ---------------------------------------------------------------------
+// 动机：fp32 Adam 的 m/v 是 8 字节/参数 ⇒ 100M 模型光优化器状态就 800 MB，
+//   这是 15.4 GB 机器上真正的天花板。8-bit blockwise 已有（约 1.06 字节/参数），
+//   这里加 4-bit（约 0.53 字节/参数）。
+// ⚠️ 这是【省内存】不是【省时间】：Adam 在训练步里只占 1~4%（报告 §7.12），
+//   声称提速是不诚实的。它的意义是"更大的模型变得可微调"。
+//
+// 关键设计：不重写任何优化器数学 ✓
+//   optimizer_8bit_blockwise_scalar(:2743) 已经把数学抽成
+//     opt_update_element<T>(...)  → r.s1/r.s2/r.s3
+//     opt_update_p(...)           → 参数更新
+//   而它解码用的是【传进去的 qmap 数组】⇒ 只要传一张前 16 项为 4-bit 码表的
+//   qmap，并让自己的量化器只产生 0..15，所有共享函数原封不动 ✓✓
+//   （连 fp32/bf16/fp16 三种梯度加载、NaN 策略、ademamix 三状态都白拿 ✓）
+//
+// 顺带：opt_sign_fix 在这里【不需要】—— 8-bit 的动态码表非单调所以要事后修符号，
+//   16 级对称表是单调的，最近码搜索本身已尊重符号 ✓
+// =====================================================================
+
+// 4-bit 码，0..15，一字节两个。约定按【代码】核实：
+//   nibbles_to_lut8 (avx2_gemv_4bit.h:101) 用 _mm_unpacklo_epi8(hi, lo)
+//   构造"8 个输出顺序的索引"，而 unpacklo 把 hi 放在前面
+//   ⇒ 【高半字节 = 偶数下标】✓
+//   这条如果搞反：训练写进去的状态，推理读出来每一对相邻元素都是交换的 ✗✗
+static inline unsigned char opt4_get(const unsigned char* s, long long i) {
+    const unsigned char byte = s[i >> 1];
+    return (i & 1) ? (unsigned char)(byte & 0x0F) : (unsigned char)(byte >> 4);
+}
+
+static inline void opt4_set(unsigned char* s, long long i, unsigned char code) {
+    unsigned char& byte = s[i >> 1];
+    if (i & 1)
+        byte = (unsigned char)((byte & 0xF0) | (code & 0x0F));          // 奇数 -> 低半字节
+    else
+        byte = (unsigned char)((byte & 0x0F) | ((code & 0x0F) << 4));   // 偶数 -> 高半字节
+}
+
+// 16 级对称线性量化：code 0 ↔ -1，code 15 ↔ +1，中间步长 2/15
+// 决策：用线性而不是 8-bit 的 create_dynamic_map()。只有 16 个码时非线性收益很小，
+//   却要背上 :3252 记录的那个坑（硬编码表与量化器对不上 ⇒ 相对误差 ~100% ✗）。
+//   线性可以逐项验证 ✓
+// ⚠️ 16 级对称【无法精确表示 0】（中间两码是 ∓1/15）⇒ 全零块写 code 8，
+//   偏差 absmax/15，而那时 absmax 就是 0 ⇒ 偏差为 0 ✓
+static constexpr float kOpt4InvLevels = 15.0f / 2.0f;
+
+static inline unsigned char opt4_quant(float x) {
+    int c = (int)std::lrintf((x + 1.0f) * kOpt4InvLevels);
+    if (c < 0) c = 0;
+    if (c > 15) c = 15;
+    return (unsigned char)c;
+}
+
+static inline float opt4_dequant(unsigned char code) {
+    return (float)code * (2.0f / 15.0f) - 1.0f;
+}
+
+// 给共享函数用的 256 项 qmap：只有前 16 项会被读到，其余按同一公式外推填充
+// （而不是填 0 —— 万一有越界码，不要让它静默解码成 0 而掩盖 bug ✗）
+static inline void opt4_fill_qmap(float* qmap256) {
+    for (int i = 0; i < 256; ++i) qmap256[i] = opt4_dequant((unsigned char)(i & 0x0F));
+}
+
+// 逐元素镜像 optimizer_8bit_blockwise_scalar(:2743)，只有三处不同：
+//   1. 码的读写走 4-bit 打包（opt4_get/opt4_set）
+//   2. 重新量化用 opt4_quant（线性 16 级），不用 qmap/LUT 下降
+//   3. 不做 opt_sign_fix（理由见文件头）
+template <typename T>
+static void optimizer_4bit_blockwise_scalar(
+    const OptParams& P, const void* g, void* p, unsigned char* state1, unsigned char* state2,
+    const float* qmap1, const float* qmap2, float* absmax1, float* absmax2, long long n
+) {
+    const bool one_state = state2 == nullptr;
+    const bool ademamix = P.optimizer_id == bnb_cpu_opt_ademamix;
+    const unsigned char zc1 = 8;   // +1/15，见上面的取舍说明
+    const unsigned char zc2 = 8;
+    const long long blocks = (n + kOptBlockSize - 1) / kOptBlockSize;
+    const long long half = (n + 1) >> 1;   // ademamix 第三个状态的字节数
+
+    BNB_OMP_PARALLEL_FOR
+    for (long long b = 0; b < blocks; ++b) {
+        // 必须声明在循环体内：放函数作用域会被所有 OpenMP 线程共享，
+        // 并发块互相践踏各自的暂存状态（数据竞态）。同 :2760 那条教训。
+        float s1buf[kOptBlockSize], s2buf[kOptBlockSize], s3buf[kOptBlockSize];
+        const long long begin = b * kOptBlockSize;
+        const long long end = std::min(n, begin + kOptBlockSize);
+        const int cnt = (int)(end - begin);
+        const float am1 = absmax1[b];
+        const float am2 = one_state ? 0.0f : absmax2[b];
+        const float am3 = ademamix ? absmax1[blocks + b] : 0.0f;
+
+        float n1 = 0.0f, n2 = 0.0f, n3 = 0.0f;   // 新状态的块内 max|x|（NaN 记 0）
+        for (int j = 0; j < cnt; ++j) {
+            const long long i = begin + j;
+            const float g_raw = opt_load<T>(g, i);
+            const float p_val = opt_load<T>(p, i);
+            const unsigned char c1 = opt4_get(state1, i);
+            const unsigned char c2 = one_state ? 0 : opt4_get(state2, i);
+            const unsigned char c3 = ademamix ? opt4_get(state1 + half, i) : 0;
+            OptElemResult r = opt_update_element<T>(P, qmap1, qmap2, am1, am2, am3,
+                                                    c1, c2, c3, g_raw, p_val, one_state);
+            if (r.update_p) {
+                const float g_wd = one_state ? r.s3 : g_raw;
+                opt_store<T>(p, i, opt_update_p(P, P.optimizer_id, p_val, r.s1, r.s2,
+                                                r.s3, g_wd, one_state));
+            }
+            s1buf[j] = r.s1;
+            s2buf[j] = r.s2;
+            s3buf[j] = r.s3;
+            n1 = std::fmax(n1, std::isnan(r.s1) ? 0.0f : std::fabs(r.s1));
+            n2 = std::fmax(n2, std::isnan(r.s2) ? 0.0f : std::fabs(r.s2));
+            n3 = std::fmax(n3, std::isnan(r.s3) ? 0.0f : std::fabs(r.s3));
+        }
+
+        absmax1[b] = n1;
+        if (!one_state) absmax2[b] = n2;
+        if (ademamix) absmax1[blocks + b] = n3;
+
+        const float inv1 = n1 > 0.0f ? 1.0f / n1 : 0.0f;
+        const float inv2 = n2 > 0.0f ? 1.0f / n2 : 0.0f;
+        const float inv3 = n3 > 0.0f ? 1.0f / n3 : 0.0f;
+        for (int j = 0; j < cnt; ++j) {
+            const long long i = begin + j;
+            opt4_set(state1, i, n1 > 0.0f ? opt4_quant(s1buf[j] * inv1) : zc1);
+            if (!one_state)
+                opt4_set(state2, i, n2 > 0.0f ? opt4_quant(s2buf[j] * inv2) : zc2);
+            if (ademamix)
+                opt4_set(state1 + half, i, n3 > 0.0f ? opt4_quant(s3buf[j] * inv3) : zc1);
+        }
+    }
+}
+
 } // namespace
 
 #if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
@@ -3240,6 +3373,58 @@ void optimizer_update_8bit_blockwise_cpu(
         else
 #endif
             optimizer_8bit_blockwise_scalar<fp16_t>(P, g, p, state1, state2, qmap1, qmap2, absmax1, absmax2, n);
+        break;
+    default:
+        break;
+    }
+}
+
+
+// =====================================================================
+// 4-bit blockwise optimizer -- exported entry point
+// ---------------------------------------------------------------------
+// 与 8-bit 版同构；差别只在状态的存取宽度。调用方（Python 侧）负责：
+//   · state1/state2 各 ceil(n/2) 字节（一字节两个 4-bit 码）
+//   · absmax1/absmax2 每 kOptBlockSize 个元素一个 fp32
+//   · qmap1/qmap2 用 opt4_fill_qmap 填好的 256 项表（只有前 16 项会被读）
+// ⚠️ ademamix 的第三个状态接在 state1 之后，偏移 (n+1)/2 字节 —— 与 8-bit 版
+//   （接在 n 字节之后）不同，因为打包后字节数减半。
+// =====================================================================
+void optimizer_update_4bit_blockwise_cpu(
+    int optimizer_id, void* g, void* p, unsigned char* state1, unsigned char* state2, float beta1,
+    float beta2, float beta3, float alpha, float eps, int step, float lr, const float* qmap1,
+    const float* qmap2, float* absmax1, float* absmax2, float weight_decay, float gnorm_scale,
+    bool skip_zeros, long long n, int dtype
+) {
+    if (n <= 0 || g == nullptr || p == nullptr || state1 == nullptr || qmap1 == nullptr ||
+        absmax1 == nullptr)
+        return;
+
+    OptParams P;
+    P.optimizer_id = optimizer_id;
+    P.beta1 = beta1;
+    P.beta2 = beta2;
+    P.beta3 = beta3;
+    P.alpha = alpha;
+    P.eps = eps;
+    P.lr = lr;
+    P.weight_decay = weight_decay;
+    P.gnorm_scale = gnorm_scale;
+    P.step = step;
+    P.skip_zeros = skip_zeros;
+    P.correction1 = 1.0f - (float)std::pow((double)beta1, (double)step);
+    P.correction2 = std::sqrt(1.0f - (float)std::pow((double)beta2, (double)step));
+    P.step_size = -lr * P.correction2 / P.correction1;
+
+    switch (dtype) {
+    case 0:
+        optimizer_4bit_blockwise_scalar<float>(P, g, p, state1, state2, qmap1, qmap2, absmax1, absmax2, n);
+        break;
+    case 1:
+        optimizer_4bit_blockwise_scalar<bf16_t>(P, g, p, state1, state2, qmap1, qmap2, absmax1, absmax2, n);
+        break;
+    case 2:
+        optimizer_4bit_blockwise_scalar<fp16_t>(P, g, p, state1, state2, qmap1, qmap2, absmax1, absmax2, n);
         break;
     default:
         break;
