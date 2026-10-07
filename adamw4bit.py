@@ -31,8 +31,12 @@ import os
 import torch
 
 _DLL_HINTS = [
-    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                 'libbitsandbytes_cpu.dll'),
+    # 本文件在仓库根 ⇒ DLL 就在 <repo>/bitsandbytes/libbitsandbytes_cpu.dll。
+    # 原先这里多套了一层 dirname（得出 D:\work\... ✗），只是因为后面的候选和
+    # bitsandbytes.lib 兜住了才没暴露 —— 靠兜底掩盖的错误要在源头修掉。
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 'bitsandbytes', 'libbitsandbytes_cpu.dll'),
+    # wheel 安装后的位置：直接问 bitsandbytes 自己（见下面的 fallback）
     r'D:\work\bnb-4bitopt\bitsandbytes\bitsandbytes\libbitsandbytes_cpu.dll',
 ]
 
