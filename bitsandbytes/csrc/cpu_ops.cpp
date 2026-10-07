@@ -3091,6 +3091,10 @@ static void optimizer_4bit_blockwise_avx2(
         const __m256 vam3 = _mm256_set1_ps(am3);
 
         float n1 = 0.0f, n2 = 0.0f, n3 = 0.0f;
+        // 向量累加器：每块只在最后归约一次，避免每 8 个元素做 3 次 store
+        // 加 24 次标量 fmax（原实现那样）
+        __m256 acc1 = _mm256_setzero_ps(), acc2 = _mm256_setzero_ps(),
+               acc3 = _mm256_setzero_ps();
         int j = 0;
         for (; j + 8 <= cnt; j += 8) {
             const long long i = begin + j;
@@ -3121,13 +3125,21 @@ static void optimizer_4bit_blockwise_avx2(
             __m256 s3 = ademamix ? _mm256_mul_ps(_mm256_sub_ps(
                 _mm256_mul_ps(_mm256_cvtepi32_ps(c3), two15), vone), vam3) : _mm256_castsi256_ps(vzi);
             // 梯度与参数（fp32/bf16/fp16 统一走标量载入再打包）
-            float gt[8], pt[8];
-            for (int q = 0; q < 8; ++q) {
-                gt[q] = opt_load<T>(g, i + q) * P.gnorm_scale;
-                pt[q] = opt_load<T>(p, i + q);
+            __m256 gv, pv;
+            if constexpr (std::is_same<T, float>::value) {
+                // fp32 直接向量化载入（bf16/fp16 需要转换，仍走标量）
+                gv = _mm256_mul_ps(_mm256_loadu_ps(static_cast<const float*>(g) + i),
+                                   _mm256_set1_ps(P.gnorm_scale));
+                pv = _mm256_loadu_ps(static_cast<const float*>(p) + i);
+            } else {
+                float gt[8], pt[8];
+                for (int q = 0; q < 8; ++q) {
+                    gt[q] = opt_load<T>(g, i + q) * P.gnorm_scale;
+                    pt[q] = opt_load<T>(p, i + q);
+                }
+                gv = _mm256_loadu_ps(gt);
+                pv = _mm256_loadu_ps(pt);
             }
-            const __m256 gv = _mm256_loadu_ps(gt);
-            const __m256 pv = _mm256_loadu_ps(pt);
             // NaN/Inf 梯度：标量路径会保留 p、清零状态（见 opt_update_element）。
             // 这里为保持与标量【逐码一致】，遇到非有限值时整组退回标量处理。
             const __m256 finite = _mm256_cmp_ps(_mm256_mul_ps(gv, gv),
@@ -3158,21 +3170,19 @@ static void optimizer_4bit_blockwise_avx2(
                 _mm256_div_ps(m, _mm256_add_ps(_mm256_sqrt_ps(v), veps))));
             if (P.weight_decay > 0.0f)
                 pn = _mm256_mul_ps(pn, _mm256_set1_ps(1.0f - P.lr * P.weight_decay));
-            float ot[8];
-            _mm256_storeu_ps(ot, pn);
-            for (int q = 0; q < 8; ++q) opt_store<T>(p, i + q, ot[q]);
+            if constexpr (std::is_same<T, float>::value) {
+                _mm256_storeu_ps(static_cast<float*>(p) + i, pn);
+            } else {
+                float ot[8];
+                _mm256_storeu_ps(ot, pn);
+                for (int q = 0; q < 8; ++q) opt_store<T>(p, i + q, ot[q]);
+            }
             _mm256_storeu_ps(s1buf + j, m);
             _mm256_storeu_ps(s2buf + j, v);
             if (ademamix) _mm256_storeu_ps(s3buf + j, s3);
-            float t[8];
-            _mm256_storeu_ps(t, _mm256_and_ps(m, mask4));
-            for (int q = 0; q < 8; ++q) n1 = std::fmax(n1, std::isnan(t[q]) ? 0.0f : t[q]);
-            _mm256_storeu_ps(t, _mm256_and_ps(v, mask4));
-            for (int q = 0; q < 8; ++q) n2 = std::fmax(n2, std::isnan(t[q]) ? 0.0f : t[q]);
-            if (ademamix) {
-                _mm256_storeu_ps(t, _mm256_and_ps(s3, mask4));
-                for (int q = 0; q < 8; ++q) n3 = std::fmax(n3, std::isnan(t[q]) ? 0.0f : t[q]);
-            }
+            acc1 = _mm256_max_ps(acc1, _mm256_and_ps(m, mask4));
+            acc2 = _mm256_max_ps(acc2, _mm256_and_ps(v, mask4));
+            if (ademamix) acc3 = _mm256_max_ps(acc3, _mm256_and_ps(s3, mask4));
         }
         for (; j < cnt; ++j) {   // 尾巴：走标量，保证与标量路径同码
             const long long i = begin + j;
@@ -3190,6 +3200,17 @@ static void optimizer_4bit_blockwise_avx2(
             n3 = std::fmax(n3, std::isnan(r.s3) ? 0.0f : std::fabs(r.s3));
         }
 
+        {   // 每块归约一次（配合上面的向量累加器）
+            float t[8];
+            _mm256_storeu_ps(t, acc1);
+            for (int q = 0; q < 8; ++q) n1 = std::fmax(n1, t[q]);
+            _mm256_storeu_ps(t, acc2);
+            for (int q = 0; q < 8; ++q) n2 = std::fmax(n2, t[q]);
+            if (ademamix) {
+                _mm256_storeu_ps(t, acc3);
+                for (int q = 0; q < 8; ++q) n3 = std::fmax(n3, t[q]);
+            }
+        }
         absmax1[b] = n1;
         absmax2[b] = n2;
         if (ademamix) absmax1[blocks + b] = n3;
