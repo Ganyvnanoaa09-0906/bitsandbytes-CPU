@@ -2858,14 +2858,22 @@ static inline void opt4_set(unsigned char* s, long long i, unsigned char code) {
 
 // 16 级对称线性量化：code 0 ↔ -1，code 15 ↔ +1，中间步长 2/15
 // 决策：用线性而不是 8-bit 的 create_dynamic_map()。只有 16 个码时非线性收益很小，
-//   却要背上 :3252 记录的那个坑（硬编码表与量化器对不上 ⇒ 相对误差 ~100% ✗）。
+//   却要背上 :2458 附近记录的那个坑（硬编码表与量化器对不上 ⇒ 相对误差 ~100% ✗）。
 //   线性可以逐项验证 ✓
-// ⚠️ 16 级对称【无法精确表示 0】（中间两码是 ∓1/15）⇒ 全零块写 code 8，
-//   偏差 absmax/15，而那时 absmax 就是 0 ⇒ 偏差为 0 ✓
+// ⚠️ 取整【不能用 std::lrintf】：MSVC 默认 /fp:precise 下它是库函数调用（还要读
+//   舍入模式），而本内核每个元素要调它两次 ⇒ 1M 参数每步 800 万次调用。
+//   实测代价：4-bit 比结构相同的 8-bit 版慢 4 倍（7.99 ms vs 1.96 ms）✗
+//   改用魔法数取整：一次加法 + 一次 cvttss2si，无调用、无舍入模式依赖 ✓
+//   值域 (x+1)*7.5 ∈ [0,15]（x 已按块 absmax 归一化到 [-1,1]）⇒ 安全 ✓
 static constexpr float kOpt4InvLevels = 15.0f / 2.0f;
+static constexpr float kOpt4Magic = 12582912.0f;   // 1.5 * 2^23，尾数对齐用
+// 注：16 级对称【无法精确表示 0】（中间两码是 ∓1/15）⇒ 全零块写 code 8，
+//     偏差 absmax/15，而那时 absmax 就是 0 ⇒ 偏差为 0 ✓
 
 static inline unsigned char opt4_quant(float x) {
-    int c = (int)std::lrintf((x + 1.0f) * kOpt4InvLevels);
+    const float v = (x + 1.0f) * kOpt4InvLevels;
+    const float r = v + kOpt4Magic;               // 加完即完成"四舍五入到最近"
+    int c = (int)(r - kOpt4Magic);
     if (c < 0) c = 0;
     if (c > 15) c = 15;
     return (unsigned char)c;
@@ -2910,7 +2918,56 @@ static void optimizer_4bit_blockwise_scalar(
         const float am3 = ademamix ? absmax1[blocks + b] : 0.0f;
 
         float n1 = 0.0f, n2 = 0.0f, n3 = 0.0f;   // 新状态的块内 max|x|（NaN 记 0）
-        for (int j = 0; j < cnt; ++j) {
+        // 【成对处理】—— 性能关键。
+        // 逐元素 get/set 会对同一个字节做"读-改-写"，相邻两个元素之间产生
+        // store-to-load forwarding 停顿，而且彻底阻断向量化：实测比 8-bit 版
+        // 慢 4.6 倍（7.385 ms vs 1.591 ms，1M 参数）。改成一次读字节、拆两个码、
+        // 算完再打包写一次之后，每个字节只碰一次。
+        // 前提：块起点与块大小都是偶数（kOptBlockSize = 256 ✓，begin = b*256 ✓）
+        // ⇒ 每个块内 i 的奇偶是固定的，且 j 为偶数时 i 必为偶数 ✓
+        int j = 0;
+        for (; j + 1 < cnt; j += 2) {
+            const long long i = begin + j;
+            const unsigned char b1 = state1[i >> 1];          // 一次读
+            const unsigned char c1a = (unsigned char)(b1 >> 4);        // 偶数 -> 高
+            const unsigned char c1b = (unsigned char)(b1 & 0x0F);      // 奇数 -> 低
+            const unsigned char b2 = one_state ? 0 : state2[i >> 1];
+            const unsigned char c2a = (unsigned char)(b2 >> 4);
+            const unsigned char c2b = (unsigned char)(b2 & 0x0F);
+            const unsigned char b3 = ademamix ? state1[half + (i >> 1)] : 0;
+            const unsigned char c3a = (unsigned char)(b3 >> 4);
+            const unsigned char c3b = (unsigned char)(b3 & 0x0F);
+
+            const float g0 = opt_load<T>(g, i);
+            const float g1 = opt_load<T>(g, i + 1);
+            const float p0 = opt_load<T>(p, i);
+            const float p1 = opt_load<T>(p, i + 1);
+
+            OptElemResult ra = opt_update_element<T>(P, qmap1, qmap2, am1, am2, am3,
+                                                     c1a, c2a, c3a, g0, p0, one_state);
+            OptElemResult rb = opt_update_element<T>(P, qmap1, qmap2, am1, am2, am3,
+                                                     c1b, c2b, c3b, g1, p1, one_state);
+            if (ra.update_p) {
+                const float gw = one_state ? ra.s3 : g0;
+                opt_store<T>(p, i, opt_update_p(P, P.optimizer_id, p0, ra.s1, ra.s2,
+                                                ra.s3, gw, one_state));
+            }
+            if (rb.update_p) {
+                const float gw = one_state ? rb.s3 : g1;
+                opt_store<T>(p, i + 1, opt_update_p(P, P.optimizer_id, p1, rb.s1, rb.s2,
+                                                    rb.s3, gw, one_state));
+            }
+            s1buf[j] = ra.s1; s1buf[j + 1] = rb.s1;
+            s2buf[j] = ra.s2; s2buf[j + 1] = rb.s2;
+            s3buf[j] = ra.s3; s3buf[j + 1] = rb.s3;
+            n1 = std::fmax(n1, std::fmax(std::isnan(ra.s1) ? 0.0f : std::fabs(ra.s1),
+                                         std::isnan(rb.s1) ? 0.0f : std::fabs(rb.s1)));
+            n2 = std::fmax(n2, std::fmax(std::isnan(ra.s2) ? 0.0f : std::fabs(ra.s2),
+                                         std::isnan(rb.s2) ? 0.0f : std::fabs(rb.s2)));
+            n3 = std::fmax(n3, std::fmax(std::isnan(ra.s3) ? 0.0f : std::fabs(ra.s3),
+                                         std::isnan(rb.s3) ? 0.0f : std::fabs(rb.s3)));
+        }
+        for (; j < cnt; ++j) {   // 奇数长度块的尾巴（kOptBlockSize 是偶数，正常走不到）
             const long long i = begin + j;
             const float g_raw = opt_load<T>(g, i);
             const float p_val = opt_load<T>(p, i);
@@ -2924,9 +2981,7 @@ static void optimizer_4bit_blockwise_scalar(
                 opt_store<T>(p, i, opt_update_p(P, P.optimizer_id, p_val, r.s1, r.s2,
                                                 r.s3, g_wd, one_state));
             }
-            s1buf[j] = r.s1;
-            s2buf[j] = r.s2;
-            s3buf[j] = r.s3;
+            s1buf[j] = r.s1; s2buf[j] = r.s2; s3buf[j] = r.s3;
             n1 = std::fmax(n1, std::isnan(r.s1) ? 0.0f : std::fabs(r.s1));
             n2 = std::fmax(n2, std::isnan(r.s2) ? 0.0f : std::fabs(r.s2));
             n3 = std::fmax(n3, std::isnan(r.s3) ? 0.0f : std::fabs(r.s3));
@@ -2939,13 +2994,31 @@ static void optimizer_4bit_blockwise_scalar(
         const float inv1 = n1 > 0.0f ? 1.0f / n1 : 0.0f;
         const float inv2 = n2 > 0.0f ? 1.0f / n2 : 0.0f;
         const float inv3 = n3 > 0.0f ? 1.0f / n3 : 0.0f;
-        for (int j = 0; j < cnt; ++j) {
-            const long long i = begin + j;
-            opt4_set(state1, i, n1 > 0.0f ? opt4_quant(s1buf[j] * inv1) : zc1);
+        // 同样是成对写回：两个码打包进一个字节，只写一次 ✓
+        int j2 = 0;
+        for (; j2 + 1 < cnt; j2 += 2) {
+            const long long i = begin + j2;
+            const unsigned char a1 = n1 > 0.0f ? opt4_quant(s1buf[j2] * inv1) : zc1;
+            const unsigned char a2 = n1 > 0.0f ? opt4_quant(s1buf[j2 + 1] * inv1) : zc1;
+            state1[i >> 1] = (unsigned char)((a1 << 4) | (a2 & 0x0F));
+            if (!one_state) {
+                const unsigned char b1 = n2 > 0.0f ? opt4_quant(s2buf[j2] * inv2) : zc2;
+                const unsigned char b2 = n2 > 0.0f ? opt4_quant(s2buf[j2 + 1] * inv2) : zc2;
+                state2[i >> 1] = (unsigned char)((b1 << 4) | (b2 & 0x0F));
+            }
+            if (ademamix) {
+                const unsigned char c1 = n3 > 0.0f ? opt4_quant(s3buf[j2] * inv3) : zc1;
+                const unsigned char c2 = n3 > 0.0f ? opt4_quant(s3buf[j2 + 1] * inv3) : zc1;
+                state1[half + (i >> 1)] = (unsigned char)((c1 << 4) | (c2 & 0x0F));
+            }
+        }
+        for (; j2 < cnt; ++j2) {
+            const long long i = begin + j2;
+            opt4_set(state1, i, n1 > 0.0f ? opt4_quant(s1buf[j2] * inv1) : zc1);
             if (!one_state)
-                opt4_set(state2, i, n2 > 0.0f ? opt4_quant(s2buf[j] * inv2) : zc2);
+                opt4_set(state2, i, n2 > 0.0f ? opt4_quant(s2buf[j2] * inv2) : zc2);
             if (ademamix)
-                opt4_set(state1 + half, i, n3 > 0.0f ? opt4_quant(s3buf[j] * inv3) : zc1);
+                opt4_set(state1 + half, i, n3 > 0.0f ? opt4_quant(s3buf[j2] * inv3) : zc1);
         }
     }
 }
