@@ -159,7 +159,7 @@ python train_diffusion.py --video_selftest --method animatediff_lora \
     ⇒ 因此 `restrict_to_temporal` 在保留集为空时**直接抛异常**而不是继续：
       否则会把全部 LoRA 换回 `base_layer`，可训练量为 0，而训练照常跑、
       loss 照常打 —— 一个完全静默的空转。这两族要用 `scope="all"`。
-- `Wan2.1-T2V-1.3B` 磁盘上那份（16.7 GB）**是坏的**，要用得重下。
+- `Wan2.1-T2V-1.3B` 磁盘上那份（16.7 GB）**不是坏包**，无需重下：那三个 15 B 的文件是 ModelScope 占位符，HF 仓库本就没有；safetensors 已逐字节校验（5676070424 B 对 5676070424 B），详见 §4.1。
 - `diffusion_backends.py` 里五个视频族（`wan_lora`/`cogvideo_lora`/`svd_lora`/
   `animatediff_lora`/`video_full`）**架子已就位**，接新模型从那里进。
 
