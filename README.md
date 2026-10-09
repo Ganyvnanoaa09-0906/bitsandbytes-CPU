@@ -7,7 +7,14 @@ ARM64 NEON and 12–16 GB RAM).
 
 > Target machines: **i5-10400 (6C12T / 12GB)** and **R5-4500U (6C6T / 16GB)** — both
 > AVX2, no NVIDIA GPU. Pure CPU (fp32) + oneDNN + bnb fused kernels is the fast path;
-> iGPU/GPU offload was tested and is a **negative** on these shared-memory machines.
+> iGPU/GPU offload was measured and is **only worth it in a narrow band**:
+> GEMM-dense with seq≤256 gains **+30~35%**; seq≥512 **loses 30%** because the
+> DML attention path is slow (a driver limit, not fixable in a kernel); and
+> concurrent *training* measured **0.83x**. The reason is that these are APUs —
+> CPU and iGPU share one memory bus, so concurrency contends instead of adding
+> (measured concurrency bandwidth ≈32 GB/s, *below* the iGPU alone). The block-level
+> executor behind `train.py --igpu` auto-calibrates per machine
+> (`GPU_SCHED_CALIB_MIN=1.10`) and is off by default.
 
 ## Install (Windows, no compiler required)
 
