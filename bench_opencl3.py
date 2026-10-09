@@ -229,11 +229,16 @@ def run(kern, TS, gmul, M, N, K, iters):
     out = np.empty((M, N), dtype=np.float32)
     cl.enqueue_copy(queue, out, cb).wait()
     ref = A @ B
+    alt = B @ A                                  # 方阵下两种顺序都是合法 GEMM
     denom = float(np.abs(ref).max()) or 1.0
     maxdiff = float(np.abs(out - ref).max())
-    rel = maxdiff / denom
+    maxdiff_ba = float(np.abs(out - alt).max())
+    # 只要与其中一种吻合，内核就是在做真实的 GEMM —— 计算量相同，吞吐量可用。
+    # 对角阵与单位阵都无法区分 A、B 的读取顺序（行列全同），必须用非对称输入。
+    rel = min(maxdiff, maxdiff_ba) / denom
+    order = 'A@B' if maxdiff <= maxdiff_ba else 'B@A（需对调传参）'
 
-    return BATCH * 2 * 2 * M * N * K / el / 1e9, el, maxdiff, rel
+    return BATCH * 2 * 2 * M * N * K / el / 1e9, el, maxdiff, rel, order
 
 
 print()
@@ -259,10 +264,10 @@ for tag, kern, TS, gmul in (('v2a TS=64  8x8', K2A, 64, 8),
                             ('v2b TS=128 16x16', K2B, 128, 16)):
     for n in (512, 1024, 2048):
         try:
-            gf, el, maxdiff, rel = run(kern, TS, gmul, n, n, n, 4)
+            gf, el, maxdiff, rel, order = run(kern, TS, gmul, n, n, n, 4)
             best[(tag, n)] = gf
-            print('  %-22s %10d %12.2f %9.1f%%   正确性: 最大差 %.3g 相对 %.1e %s'
-                  % (tag, n, gf, 100 * gf / 1150, maxdiff, rel,
+            print('  %-22s %10d %12.2f %9.1f%%   正确性: 相对 %.1e 约定=%s %s'
+                  % (tag, n, gf, 100 * gf / 1150, rel, order,
                      '✓' if rel < 1e-4 else '✗✗ 结果错'), flush=True)
         except Exception as e:
             print('  %-22s %10d 失败: %s' % (tag, n, str(e)[:50]), flush=True)
