@@ -68,7 +68,7 @@ def frames_stats(frames, tag):
 # --------------------------------------------------------------------------
 # 阶段 1：生成
 # --------------------------------------------------------------------------
-def stage_gen(frames, res, steps, seed, use_lcm, adapter):
+def stage_gen(frames, res, steps, seed, use_lcm, adapter, lora=""):
     from anime_adiff import build
     from PIL import Image
 
@@ -101,6 +101,19 @@ def stage_gen(frames, res, steps, seed, use_lcm, adapter):
         from diffusers import DPMSolverMultistepScheduler
         pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
         print("[gen] scheduler=%s" % type(pipe.scheduler).__name__)
+
+    if lora:
+        print("[gen] 加载本 fork 训练的 LoRA: %s" % lora)
+        before = len(getattr(pipe, "peft_config", {}) or {})
+        pipe.load_lora_weights(os.path.dirname(lora),
+                               weight_name=os.path.basename(lora),
+                               local_files_only=True, adapter_name="fork")
+        pipe.set_adapters(["fork"], adapter_weights=[1.0])
+        print("[gen] LoRA 已挂载（adapter_name=fork, weight=1.0）"
+              " peft_config %d -> %d"
+              % (before, len(getattr(pipe, "peft_config", {}) or {})))
+        # diffusers 在键全不匹配时【不报错】，只是什么都没加载 ✗
+        # 所以这里打印 peft_config 的数量变化，让静默失败看得见
 
     g = torch.Generator(device="cpu").manual_seed(seed)
     gs = 1.5 if use_lcm else 7.5
@@ -233,6 +246,8 @@ def main():
     ap.add_argument("--steps", type=int, default=20)
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--lcm", action="store_true", help="用 LCM LoRA（4 步即可）")
+    ap.add_argument("--lora", default="",
+                    help="本 fork 训练出的 LoRA（convert_lora_ckpt.py 转过的 safetensors）")
     ap.add_argument("--adapter",
                     default=r"D:\work\textmodel\animatediff-motion-adapter-v1-5-2")
     ap.add_argument("--scale", type=int, default=4)
@@ -248,7 +263,7 @@ def main():
     t_all = time.time()
     ok = True
     if a.stage in ("gen", "all"):
-        ok &= stage_gen(a.frames, a.res, a.steps, a.seed, a.lcm, a.adapter)
+        ok &= stage_gen(a.frames, a.res, a.steps, a.seed, a.lcm, a.adapter, a.lora)
     if a.stage in ("sr", "all"):
         ok &= stage_sr(a.scale, a.fps, a.keep_frames)
     print("\n总耗时 %.1f s   结果: %s" % (time.time() - t_all, "PASS" if ok else "FAIL"))
