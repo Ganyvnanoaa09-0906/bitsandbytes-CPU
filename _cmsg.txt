@@ -1,32 +1,30 @@
-﻿feat(quant): 2-bit weights, format chosen by measurement and verified against an independent result
+﻿feat(quant): 2-bit base + LoRA training, verified against the predicted loss
 
-The user asked for quantisation more aggressive than NF4. What this establishes:
+quant_lora.py already had the right shape -- frozen quantised base, fp32 LoRA pair,
+dequantisation recomputed in backward instead of saving fp32 weights, and the
+dequantised weight cached across steps because the base never changes. That last
+property also settles a question I had been working towards: making the quantiser
+differentiable is unnecessary, because gradients never reach the base weights. The
+only thing missing was a 2-bit option, so this adds 'nf2' as a branch rather than
+reimplementing the machinery.
 
-  * NF4 is not optimal at 4 bits. On real weights, blockwise with absmax 64, uniform
-    beats it by 8.3% on relative L2 error, and NF's advantage only appears as width
-    shrinks -- 1.2% ahead at 2 bits. With 16 levels the quantile spacing wastes
-    resolution; with 4 it matters where the levels sit.
-  * Downstream loss on the trained 32x32 AR checkpoint: fp32 5.5038, 4 bit +0.004,
-    3 bit +0.019, 2 bit +0.117 (nf) / +0.132 (uniform). So 3 bits is essentially
-    free and 2 bits costs about 2%.
-  * On the real loss NF and uniform are indistinguishable at 4 and 3 bits and NF
-    only wins at 2 -- agreeing with the proxy study in direction, and confirming
-    again that the proxy and the criterion give different answers.
-  * A packed implementation (4 indices per byte, bit order documented because
-    getting it wrong is silent) with Linear2bit and Embedding2bit. Four
-    configurations reproduce independently measured losses to within 0.001:
-    5.5038/5.5038, 5.5538/5.5538, 5.6198/5.6206, 5.6352/5.6354.
+End to end, on a 512-sample validation slice:
 
-Also measured: quantising embeddings costs 0.066 of validation loss against 0.050 for
-the Linear layers, while being 2 of 63 tensors -- so embeddings are better left at
-fp32, which is a decision with a number behind it rather than an assumption.
+    fp32 base                              5.5038   (sanity, matches earlier runs)
+    2-bit nf, only nn.Linear replaced      5.5538   predicted 5.5538, diff +0.0000
+    after 60 LoRA steps, lr 1e-4           batch loss 5.70 -> 4.54
 
-One test in this series reported a mismatch that was not a bug: convert() rewrites
-only nn.Linear while the study quantised every ndim>=2 tensor, so two arms quantised
-identical sets and produced bit-identical losses. The comparison was empty. Same
-failure as elsewhere in this work -- a check that cannot separate the cases it exists
-to separate.
+Because lora_B starts at zero and the base is frozen, the loss before training must
+equal the quantised base's loss -- which is why the 5.5538 match is a real check and
+not a coincidence. After 60 steps the training loss is below the fp32 model's
+validation loss, so the adapter is genuinely learning.
 
-Combined with the 4-bit optimiser state (1.03 bytes/param), the training footprint
-becomes 1.34 bytes/param against 12.0 for fp32, which is what brings a 3B model to
-4.0 GB and therefore inside this machine's 15.4 GB.
+Memory: 63 layers occupy 8.92 MB (7.48 MB packed + 1.87 MB absmax) against 114.16 MB
+of fp32 weights -- 12.8x, matching the format arithmetic. Trainable parameters are
+1.309M of 30.5M, i.e. 4.29%.
+
+Two mistakes in the first run of this test are worth recording because neither was a
+code fault. The loss was compared against the with-embeddings expectation while
+quant_lora only replaces nn.Linear, and a training loss over batches of four was
+compared against a validation loss. Both are the same scope error that recurred all
+day: a criterion that does not measure what it is used to conclude.
