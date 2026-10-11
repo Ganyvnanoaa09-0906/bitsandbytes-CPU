@@ -25,6 +25,26 @@ from bitsandbytes.functional import (
     quantize_blockwise,
 )
 
+# --- 2-bit 权重支持 ---------------------------------------------------------
+# 格式与代价见报告 7.23：2 bit + NF 码表在验证 loss 上代价 +0.117（约 2%），
+# 打包为每字节 4 个索引（字节内第 k 个权重占 [2k, 2k+1] 位），
+# 每 64 个权重一个 fp32 absmax ⇒ 2.5 bit/权重 ⇒ 对 fp32 是 12.8x。
+from dataclasses import dataclass  # noqa: E402
+
+from quant2bit import NF2 as _NF2_TABLE  # noqa: E402
+from quant2bit import dequantize as _q2_dequantize  # noqa: E402
+from quant2bit import quantize as _q2_quantize  # noqa: E402
+
+
+@dataclass
+class NF2State:
+    """The state a packed 2-bit weight needs. Mirrors QuantState's role."""
+    absmax: object
+    n: int
+    pad: int
+    table: object
+    blocksize: int
+
 
 class _QuantLinearFn(torch.autograd.Function):
     """无缓存版前向/反向：backward 重新 dequant（不保存 fp32 权重）。
@@ -69,6 +89,9 @@ class _QuantLinearFn(torch.autograd.Function):
 
 
 def _dequant_w(wq, stats, quant_dtype, blocksize, out_f, in_f) -> torch.Tensor:
+    if quant_dtype == "nf2":
+        return _q2_dequantize(wq, stats.absmax, stats.n, stats.pad,
+                              (out_f, in_f), stats.table, blocksize)
     # nf4u/fp4u（unpacked uint8）走 8bit 标量查表快路径（pshufb 慢 ~4x）
     if quant_dtype in ("8bit", "nf4u", "fp4u"):
         return dequantize_blockwise(wq, stats, blocksize=blocksize).reshape(out_f, in_f)
@@ -89,7 +112,14 @@ class QuantLinearLora(nn.Module):
         super().__init__()
         self.out_features, self.in_features = weight.shape
         self.quant_dtype = quant_dtype
-        if quant_dtype == "8bit":
+        if quant_dtype == "nf2":
+            self.blocksize = blocksize or 64
+            w = weight.detach().float()
+            packed, absmax, n, pad, _shape = _q2_quantize(w, _NF2_TABLE, self.blocksize)
+            self.register_buffer("wq", packed)
+            self.stats = NF2State(absmax=absmax, n=n, pad=pad,
+                                  table=_NF2_TABLE, blocksize=self.blocksize)
+        elif quant_dtype == "8bit":
             self.blocksize = blocksize or 256
             w = weight.detach().float().reshape(-1)
             wq, stats = quantize_blockwise(w, blocksize=self.blocksize)

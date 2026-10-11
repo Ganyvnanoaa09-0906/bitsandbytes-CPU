@@ -81,3 +81,7 @@ dist_check/
 # 上一条会连 setup.py 注释里点名保留的两份 upstream 参考配置一起挡掉，这里放行。
 !bitsandbytes/pyproject.upstream-cuda.toml.bak
 !bitsandbytes/setup.upstream-cuda.py.bak
+
+# 提交信息用的临时文件，不该进仓库
+_cmsg*.txt
+_tmp.txt
