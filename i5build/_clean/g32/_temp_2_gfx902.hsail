@@ -1,0 +1,885 @@
+module &input_bc:1:0:$full:$large:$default;
+extension "amd:gcn";
+extension "amd:mipmap";
+extension "IMAGE";
+group_f32 &g32.As[544];
+group_f32 &g32.Bs[544];
+
+prog kernel &__OpenCL_g32_kernel(
+	kernarg_u64 %_.global_offset_0,
+	kernarg_u64 %_.global_offset_1,
+	kernarg_u64 %_.global_offset_2,
+	kernarg_u64 %_.printf_buffer,
+	kernarg_u64 %_.vqueue_pointer,
+	kernarg_u64 %_.aqlwrap_pointer,
+	kernarg_u32 %M,
+	kernarg_u32 %N,
+	kernarg_u32 %K,
+	kernarg_u64 %A,
+	kernarg_u64 %B,
+	kernarg_u64 %C)
+{
+	requirenopartialworkgroups;
+	pragma "AMD RTI", "ARGSTART:__OpenCL_g32_kernel";
+	pragma "AMD RTI", "version:3:1:104";
+	pragma "AMD RTI", "device:GFX9";
+	pragma "AMD RTI", "uniqueid:1024";
+	pragma "AMD RTI", "value:_.global_offset_0:i64:1:1:0";
+	pragma "AMD RTI", "constarg:0:_.global_offset_0";
+	pragma "AMD RTI", "value:_.global_offset_1:i64:1:1:16";
+	pragma "AMD RTI", "constarg:1:_.global_offset_1";
+	pragma "AMD RTI", "value:_.global_offset_2:i64:1:1:32";
+	pragma "AMD RTI", "constarg:2:_.global_offset_2";
+	pragma "AMD RTI", "pointer:_.printf_buffer:u8:1:1:48:uav:7:1:RO:0:0:0";
+	pragma "AMD RTI", "value:_.vqueue_pointer:i64:1:1:64";
+	pragma "AMD RTI", "value:_.aqlwrap_pointer:i64:1:1:80";
+	pragma "AMD RTI", "value:M:i32:1:1:96";
+	pragma "AMD RTI", "constarg:6:M";
+	pragma "AMD RTI", "value:N:i32:1:1:112";
+	pragma "AMD RTI", "constarg:7:N";
+	pragma "AMD RTI", "value:K:i32:1:1:128";
+	pragma "AMD RTI", "constarg:8:K";
+	pragma "AMD RTI", "pointer:A:float:1:1:144:uav:7:4:RO:0:1:0";
+	pragma "AMD RTI", "constarg:9:A";
+	pragma "AMD RTI", "pointer:B:float:1:1:160:uav:7:4:RO:0:1:0";
+	pragma "AMD RTI", "constarg:10:B";
+	pragma "AMD RTI", "pointer:C:float:1:1:176:uav:7:4:RW:0:1:0";
+	pragma "AMD RTI", "function:1:0";
+	pragma "AMD RTI", "memory:64bitABI";
+	pragma "AMD RTI", "privateid:8";
+	pragma "AMD RTI", "enqueue_kernel:0";
+	pragma "AMD RTI", "kernel_index:0";
+	pragma "AMD RTI", "reflection:0:size_t";
+	pragma "AMD RTI", "reflection:1:size_t";
+	pragma "AMD RTI", "reflection:2:size_t";
+	pragma "AMD RTI", "reflection:3:size_t";
+	pragma "AMD RTI", "reflection:4:size_t";
+	pragma "AMD RTI", "reflection:5:size_t";
+	pragma "AMD RTI", "reflection:6:int";
+	pragma "AMD RTI", "reflection:7:int";
+	pragma "AMD RTI", "reflection:8:int";
+	pragma "AMD RTI", "reflection:9:float*";
+	pragma "AMD RTI", "reflection:10:float*";
+	pragma "AMD RTI", "reflection:11:float*";
+	pragma "AMD RTI", "ARGEND:__OpenCL_g32_kernel";
+	align(16) private_f32 %acc[64];
+
+@__OpenCL_g32_kernel_entry:
+	// BB#0:                                // %.preheader9
+	st_v4_private_align(16)_u32	(0, 0, 0, 0), [%acc];
+	st_v4_private_align(16)_u32	(0, 0, 0, 0), [%acc][16];
+	st_v4_private_align(16)_u32	(0, 0, 0, 0), [%acc][32];
+	st_v4_private_align(16)_u32	(0, 0, 0, 0), [%acc][48];
+	st_v4_private_align(16)_u32	(0, 0, 0, 0), [%acc][64];
+	st_v4_private_align(16)_u32	(0, 0, 0, 0), [%acc][80];
+	workitemid_u32	$s7, 0;
+	workitemid_u32	$s0, 1;
+	shl_u32	$s2, $s0, 3;
+	workgroupid_u32	$s0, 1;
+	ld_kernarg_align(8)_width(all)_u64	$d0, [%C];
+	ld_kernarg_align(8)_width(all)_u64	$d1, [%B];
+	st_v4_private_align(16)_u32	(0, 0, 0, 0), [%acc][96];
+	shl_u32	$s3, $s7, 3;
+	ld_kernarg_align(8)_width(all)_u64	$d5, [%A];
+	shl_u32	$s4, $s0, 6;
+	ld_kernarg_align(4)_width(all)_u32	$s1, [%N];
+	ld_kernarg_align(4)_width(all)_u32	$s0, [%M];
+	ld_kernarg_align(4)_width(all)_u32	$s5, [%K];
+	workgroupid_u32	$s6, 0;
+	shl_u32	$s6, $s6, 6;
+	st_v4_private_align(16)_u32	(0, 0, 0, 0), [%acc][112];
+	st_v4_private_align(16)_u32	(0, 0, 0, 0), [%acc][128];
+	st_v4_private_align(16)_u32	(0, 0, 0, 0), [%acc][144];
+	st_v4_private_align(16)_u32	(0, 0, 0, 0), [%acc][160];
+	st_v4_private_align(16)_u32	(0, 0, 0, 0), [%acc][176];
+	st_v4_private_align(16)_u32	(0, 0, 0, 0), [%acc][192];
+	st_v4_private_align(16)_u32	(0, 0, 0, 0), [%acc][208];
+	st_v4_private_align(16)_u32	(0, 0, 0, 0), [%acc][224];
+	st_v4_private_align(16)_u32	(0, 0, 0, 0), [%acc][240];
+	cmp_lt_b1_s32	$c0, $s5, 1;
+	cbr_b1	$c0, @LBB0_17;
+	// BB#1:                                // %.preheader7.preheader
+	add_u32	$s37, $s2, $s7;
+	shl_u32	$s7, $s2, 2;
+	lda_group_u32	$s8, [&g32.As];
+	add_u32	$s7, $s7, $s8;
+	shl_u32	$s8, $s3, 2;
+	lda_group_u32	$s9, [&g32.Bs];
+	add_u32	$s8, $s8, $s9;
+	mov_b32	$s9, 0;
+	mov_f32	$s10, 0F00000000;
+	cmp_lt_b1_s32	$c0, $s37, 128;
+	shr_u32	$s11, $s37, 31;
+	add_u32	$s12, $s37, $s11;
+	shr_u32	$s11, $s12, 1;
+	shl_u32	$s11, $s11, 1;
+	sub_u32	$s11, $s37, $s11;
+	shl_u32	$s11, $s11, 2;
+	shr_s32	$s12, $s12, 1;
+	add_u32	$s13, $s12, $s4;
+	cmp_lt_b1_s32	$c1, $s13, $s0;
+	mul_u32	$s13, $s13, $s5;
+	cvt_s64_s32	$d2, $s13;
+	shl_u64	$d2, $d2, 2;
+	add_u64	$d2, $d5, $d2;
+	shl_u32	$s15, $s12, 2;
+	mad_u32	$s12, $s11, 0x110, $s15;
+	or_b32	$s13, $s11, 1;
+	mad_u32	$s13, $s13, 0x110, $s15;
+	or_b32	$s14, $s11, 2;
+	mad_u32	$s14, $s14, 0x110, $s15;
+	or_b32	$s16, $s11, 3;
+	mad_u32	$s15, $s16, 0x110, $s15;
+	add_u32	$s35, $s37, 64;
+	cmp_lt_b1_s32	$c2, $s35, 128;
+	shr_u32	$s16, $s35, 31;
+	add_u32	$s17, $s35, $s16;
+	shr_u32	$s16, $s17, 1;
+	shl_u32	$s16, $s16, 1;
+	sub_u32	$s16, $s35, $s16;
+	shl_u32	$s16, $s16, 2;
+	shr_s32	$s17, $s17, 1;
+	add_u32	$s18, $s17, $s4;
+	cmp_lt_b1_s32	$c3, $s18, $s0;
+	mul_u32	$s18, $s18, $s5;
+	cvt_s64_s32	$d3, $s18;
+	shl_u64	$d3, $d3, 2;
+	add_u64	$d3, $d5, $d3;
+	shl_u32	$s20, $s17, 2;
+	mad_u32	$s17, $s16, 0x110, $s20;
+	or_b32	$s18, $s16, 1;
+	mad_u32	$s18, $s18, 0x110, $s20;
+	or_b32	$s19, $s16, 2;
+	mad_u32	$s19, $s19, 0x110, $s20;
+	or_b32	$s21, $s16, 3;
+	mad_u32	$s20, $s21, 0x110, $s20;
+	add_u32	$s33, $s37, 128;
+	cmp_lt_b1_s32	$c4, $s37, 0;
+	shr_u32	$s21, $s33, 31;
+	add_u32	$s22, $s33, $s21;
+	shr_u32	$s21, $s22, 1;
+	shl_u32	$s21, $s21, 1;
+	sub_u32	$s21, $s33, $s21;
+	shl_u32	$s21, $s21, 2;
+	shr_s32	$s22, $s22, 1;
+	add_u32	$s23, $s22, $s4;
+	cmp_lt_b1_s32	$c5, $s23, $s0;
+	mul_u32	$s23, $s23, $s5;
+	cvt_s64_s32	$d4, $s23;
+	shl_u64	$d4, $d4, 2;
+	add_u64	$d4, $d5, $d4;
+	shl_u32	$s25, $s22, 2;
+	mad_u32	$s22, $s21, 0x110, $s25;
+	or_b32	$s23, $s21, 1;
+	mad_u32	$s23, $s23, 0x110, $s25;
+	or_b32	$s24, $s21, 2;
+	mad_u32	$s24, $s24, 0x110, $s25;
+	or_b32	$s26, $s21, 3;
+	mad_u32	$s25, $s26, 0x110, $s25;
+	add_u32	$s31, $s37, 192;
+	cmp_lt_b1_s32	$c6, $s31, 128;
+	shr_u32	$s26, $s31, 31;
+	add_u32	$s27, $s31, $s26;
+	shr_u32	$s26, $s27, 1;
+	shl_u32	$s26, $s26, 1;
+	sub_u32	$s26, $s31, $s26;
+	shl_u32	$s26, $s26, 2;
+	shr_s32	$s27, $s27, 1;
+	add_u32	$s28, $s27, $s4;
+	cmp_lt_b1_s32	$c7, $s28, $s0;
+	mul_u32	$s28, $s28, $s5;
+	cvt_s64_s32	$d6, $s28;
+	shl_u64	$d6, $d6, 2;
+	add_u64	$d5, $d5, $d6;
+	shl_u32	$s30, $s27, 2;
+	mad_u32	$s27, $s26, 0x110, $s30;
+	or_b32	$s28, $s26, 1;
+	mad_u32	$s28, $s28, 0x110, $s30;
+	or_b32	$s29, $s26, 2;
+	mad_u32	$s29, $s29, 0x110, $s30;
+	or_b32	$s32, $s26, 3;
+	mad_u32	$s30, $s32, 0x110, $s30;
+	cmp_gt_b1_s32	$c8, $s31, 255;
+	shr_s32	$s31, $s35, 31;
+	shr_u32	$s31, $s31, 28;
+	add_u32	$s31, $s35, $s31;
+	shr_u32	$s32, $s31, 4;
+	shl_u32	$s32, $s32, 4;
+	sub_u32	$s32, $s35, $s32;
+	shl_u32	$s32, $s32, 2;
+	add_u32	$s34, $s32, $s6;
+	or_b32	$s36, $s34, 3;
+	shr_s32	$s31, $s31, 4;
+	cmp_lt_b1_s32	$c9, $s36, $s1;
+	cvt_s64_s32	$d6, $s34;
+	shl_u64	$d6, $d6, 2;
+	shl_u32	$s32, $s32, 2;
+	mad_u32	$s32, $s31, 0x110, $s32;
+	cmp_gt_b1_s32	$c10, $s33, 255;
+	shr_s32	$s33, $s37, 31;
+	shr_u32	$s33, $s33, 28;
+	add_u32	$s33, $s37, $s33;
+	shr_u32	$s33, $s33, 4;
+	shl_u32	$s34, $s33, 4;
+	shr_u32	$s33, $s37, 4;
+	sub_u32	$s34, $s37, $s34;
+	shl_u32	$s34, $s34, 2;
+	add_u32	$s36, $s34, $s6;
+	or_b32	$s38, $s36, 3;
+	cmp_lt_b1_s32	$c11, $s38, $s1;
+	cvt_s64_s32	$d7, $s36;
+	shl_u64	$d7, $d7, 2;
+	shl_u32	$s34, $s34, 2;
+	mad_u32	$s34, $s33, 0x110, $s34;
+	cmp_gt_b1_s32	$c12, $s35, 255;
+	add_u32	$s35, $s37, -64;
+	shr_s32	$s36, $s35, 31;
+	shr_u32	$s36, $s36, 28;
+	add_u32	$s36, $s35, $s36;
+	shr_u32	$s38, $s36, 4;
+	shl_u32	$s38, $s38, 4;
+	sub_u32	$s35, $s35, $s38;
+	shl_u32	$s38, $s35, 2;
+	add_u32	$s39, $s38, $s6;
+	or_b32	$s40, $s39, 3;
+	shr_s32	$s35, $s36, 4;
+	cmp_lt_b1_s32	$c13, $s40, $s1;
+	cvt_s64_s32	$d8, $s39;
+	shl_u64	$d8, $d8, 2;
+	shl_u32	$s36, $s38, 2;
+	mad_u32	$s36, $s35, 0x110, $s36;
+	cmp_gt_b1_s32	$c14, $s37, 255;
+	add_u32	$s37, $s37, -128;
+	shr_s32	$s38, $s37, 31;
+	shr_u32	$s38, $s38, 28;
+	add_u32	$s38, $s37, $s38;
+	shr_u32	$s39, $s38, 4;
+	shl_u32	$s39, $s39, 4;
+	sub_u32	$s37, $s37, $s39;
+	shl_u32	$s39, $s37, 2;
+	add_u32	$s40, $s39, $s6;
+	or_b32	$s41, $s40, 3;
+	shr_s32	$s37, $s38, 4;
+	cmp_lt_b1_s32	$c15, $s41, $s1;
+	cvt_s64_s32	$d9, $s40;
+	shl_u64	$d9, $d9, 2;
+	shl_u32	$s38, $s39, 2;
+	mad_u32	$s38, $s37, 0x110, $s38;
+	mov_f32	$s39, 0F00000000;
+	mov_f32	$s40, 0F00000000;
+	mov_f32	$s41, 0F00000000;
+	mov_f32	$s42, 0F00000000;
+	mov_f32	$s43, 0F00000000;
+	mov_f32	$s44, 0F00000000;
+	mov_f32	$s45, 0F00000000;
+	mov_f32	$s46, 0F00000000;
+	mov_f32	$s47, 0F00000000;
+	mov_f32	$s48, 0F00000000;
+	mov_f32	$s49, 0F00000000;
+	mov_f32	$s50, 0F00000000;
+	mov_f32	$s51, 0F00000000;
+	mov_f32	$s52, 0F00000000;
+	mov_f32	$s53, 0F00000000;
+	mov_f32	$s54, 0F00000000;
+	mov_f32	$s55, 0F00000000;
+	mov_f32	$s56, 0F00000000;
+	mov_f32	$s57, 0F00000000;
+	mov_f32	$s58, 0F00000000;
+	mov_f32	$s59, 0F00000000;
+	mov_f32	$s60, 0F00000000;
+	mov_f32	$s61, 0F00000000;
+	mov_f32	$s62, 0F00000000;
+	mov_f32	$s63, 0F00000000;
+	mov_f32	$s64, 0F00000000;
+	mov_f32	$s65, 0F00000000;
+	mov_f32	$s66, 0F00000000;
+	mov_f32	$s67, 0F00000000;
+	mov_f32	$s68, 0F00000000;
+	mov_f32	$s69, 0F00000000;
+	mov_f32	$s70, 0F00000000;
+	mov_f32	$s71, 0F00000000;
+	mov_f32	$s72, 0F00000000;
+	mov_f32	$s73, 0F00000000;
+	mov_f32	$s74, 0F00000000;
+	mov_f32	$s75, 0F00000000;
+	mov_f32	$s76, 0F00000000;
+	mov_f32	$s77, 0F00000000;
+	mov_f32	$s78, 0F00000000;
+	mov_f32	$s79, 0F00000000;
+	mov_f32	$s80, 0F00000000;
+	mov_f32	$s81, 0F00000000;
+	mov_f32	$s82, 0F00000000;
+	mov_f32	$s83, 0F00000000;
+	mov_f32	$s84, 0F00000000;
+	mov_f32	$s85, 0F00000000;
+	mov_f32	$s86, 0F00000000;
+	mov_f32	$s87, 0F00000000;
+	mov_f32	$s88, 0F00000000;
+	mov_f32	$s89, 0F00000000;
+	mov_f32	$s90, 0F00000000;
+	mov_f32	$s91, 0F00000000;
+	mov_f32	$s92, 0F00000000;
+	mov_f32	$s93, 0F00000000;
+	mov_f32	$s94, 0F00000000;
+	mov_f32	$s95, 0F00000000;
+	mov_f32	$s96, 0F00000000;
+	mov_f32	$s97, 0F00000000;
+	mov_f32	$s98, 0F00000000;
+	mov_f32	$s99, 0F00000000;
+	mov_f32	$s100, 0F00000000;
+	mov_f32	$s101, 0F00000000;
+
+@LBB0_2:
+	// %.preheader7
+	cbr_b1	$c0, @LBB0_3;
+	br	@LBB0_7;
+
+@LBB0_3:
+	add_u32	$s102, $s11, $s9;
+	or_b32	$s103, $s102, 3;
+	cmp_lt_b1_s32	$c16, $s103, $s5;
+	and_b1	$c16, $c1, $c16;
+	cmp_ne_b1_b1	$c16, $c16, 1;
+	cbr_b1	$c16, @LBB0_4;
+	// BB#5:
+	cvt_s64_s32	$d10, $s102;
+	shl_u64	$d10, $d10, 2;
+	add_u64	$d10, $d2, $d10;
+	ld_v4_global_align(16)_const_f32	($s102, $s103, $s104, $s105), [$d10];
+	br	@LBB0_6;
+
+@LBB0_7:
+	cbr_b1	$c14, @LBB0_12;
+	// BB#8:
+	add_u32	$s102, $s37, $s9;
+	cmp_lt_b1_s32	$c16, $s102, $s5;
+	and_b1	$c16, $c16, $c15;
+	cmp_ne_b1_b1	$c16, $c16, 1;
+	cbr_b1	$c16, @LBB0_9;
+	// BB#10:
+	mul_u32	$s102, $s102, $s1;
+	cvt_s64_s32	$d10, $s102;
+	shl_u64	$d10, $d10, 2;
+	add_u64	$d10, $d1, $d10;
+	add_u64	$d10, $d10, $d9;
+	ld_v4_global_align(16)_const_f32	($s102, $s103, $s104, $s105), [$d10];
+	br	@LBB0_11;
+
+@LBB0_4:
+	mov_f32	$s102, 0F00000000;
+	mov_f32	$s103, 0F00000000;
+	mov_f32	$s104, 0F00000000;
+	mov_f32	$s105, 0F00000000;
+
+@LBB0_6:
+	st_group_align(4)_f32	$s102, [&g32.As][$s12];
+	st_group_align(4)_f32	$s103, [&g32.As][$s13];
+	st_group_align(4)_f32	$s104, [&g32.As][$s14];
+	st_group_align(4)_f32	$s105, [&g32.As][$s15];
+	br	@LBB0_12;
+
+@LBB0_9:
+	mov_f32	$s102, 0F00000000;
+	mov_f32	$s103, 0F00000000;
+	mov_f32	$s104, 0F00000000;
+	mov_f32	$s105, 0F00000000;
+
+@LBB0_11:
+	st_v4_group_align(4)_f32	($s102, $s103, $s104, $s105), [&g32.Bs][$s38];
+
+@LBB0_12:
+	cbr_b1	$c2, @LBB0_56;
+	br	@LBB0_13;
+
+@LBB0_56:
+	add_u32	$s102, $s16, $s9;
+	or_b32	$s103, $s102, 3;
+	cmp_lt_b1_s32	$c16, $s103, $s5;
+	and_b1	$c16, $c3, $c16;
+	cmp_ne_b1_b1	$c16, $c16, 1;
+	cbr_b1	$c16, @LBB0_57;
+	// BB#58:
+	cvt_s64_s32	$d10, $s102;
+	shl_u64	$d10, $d10, 2;
+	add_u64	$d10, $d3, $d10;
+	ld_v4_global_align(16)_const_f32	($s102, $s103, $s104, $s105), [$d10];
+	br	@LBB0_59;
+
+@LBB0_13:
+	cbr_b1	$c12, @LBB0_60;
+	// BB#14:
+	add_u32	$s102, $s35, $s9;
+	cmp_lt_b1_s32	$c16, $s102, $s5;
+	and_b1	$c16, $c16, $c13;
+	cmp_ne_b1_b1	$c16, $c16, 1;
+	cbr_b1	$c16, @LBB0_15;
+	// BB#54:
+	mul_u32	$s102, $s102, $s1;
+	cvt_s64_s32	$d10, $s102;
+	shl_u64	$d10, $d10, 2;
+	add_u64	$d10, $d1, $d10;
+	add_u64	$d10, $d10, $d8;
+	ld_v4_global_align(16)_const_f32	($s102, $s103, $s104, $s105), [$d10];
+	st_v4_group_align(4)_f32	($s102, $s103, $s104, $s105), [&g32.Bs][$s36];
+	br	@LBB0_60;
+
+@LBB0_57:
+	mov_f32	$s102, 0F00000000;
+	mov_f32	$s103, 0F00000000;
+	mov_f32	$s104, 0F00000000;
+	mov_f32	$s105, 0F00000000;
+
+@LBB0_59:
+	st_group_align(4)_f32	$s102, [&g32.As][$s17];
+	st_group_align(4)_f32	$s103, [&g32.As][$s18];
+	st_group_align(4)_f32	$s104, [&g32.As][$s19];
+	st_group_align(4)_f32	$s105, [&g32.As][$s20];
+	br	@LBB0_60;
+
+@LBB0_15:
+	mov_f32	$s102, 0F00000000;
+	mov_f32	$s103, 0F00000000;
+	mov_f32	$s104, 0F00000000;
+	mov_f32	$s105, 0F00000000;
+	st_v4_group_align(4)_f32	($s102, $s103, $s104, $s105), [&g32.Bs][$s36];
+
+@LBB0_60:
+	cbr_b1	$c4, @LBB0_66;
+	// BB#61:
+	cbr_b1	$c10, @LBB0_70;
+	// BB#62:
+	add_u32	$s102, $s33, $s9;
+	cmp_lt_b1_s32	$c16, $s102, $s5;
+	and_b1	$c16, $c16, $c11;
+	cmp_ne_b1_b1	$c16, $c16, 1;
+	cbr_b1	$c16, @LBB0_63;
+	// BB#64:
+	mul_u32	$s102, $s102, $s1;
+	cvt_s64_s32	$d10, $s102;
+	shl_u64	$d10, $d10, 2;
+	add_u64	$d10, $d1, $d10;
+	add_u64	$d10, $d10, $d7;
+	ld_v4_global_align(16)_const_f32	($s102, $s103, $s104, $s105), [$d10];
+	st_v4_group_align(4)_f32	($s102, $s103, $s104, $s105), [&g32.Bs][$s34];
+	br	@LBB0_70;
+
+@LBB0_66:
+	add_u32	$s102, $s21, $s9;
+	or_b32	$s103, $s102, 3;
+	cmp_lt_b1_s32	$c16, $s103, $s5;
+	and_b1	$c16, $c5, $c16;
+	cmp_ne_b1_b1	$c16, $c16, 1;
+	cbr_b1	$c16, @LBB0_67;
+	// BB#68:
+	cvt_s64_s32	$d10, $s102;
+	shl_u64	$d10, $d10, 2;
+	add_u64	$d10, $d4, $d10;
+	ld_v4_global_align(16)_const_f32	($s102, $s103, $s104, $s105), [$d10];
+	br	@LBB0_69;
+
+@LBB0_67:
+	mov_f32	$s102, 0F00000000;
+	mov_f32	$s103, 0F00000000;
+	mov_f32	$s104, 0F00000000;
+	mov_f32	$s105, 0F00000000;
+
+@LBB0_69:
+	st_group_align(4)_f32	$s102, [&g32.As][$s22];
+	st_group_align(4)_f32	$s103, [&g32.As][$s23];
+	st_group_align(4)_f32	$s104, [&g32.As][$s24];
+	st_group_align(4)_f32	$s105, [&g32.As][$s25];
+	br	@LBB0_70;
+
+@LBB0_63:
+	mov_f32	$s102, 0F00000000;
+	mov_f32	$s103, 0F00000000;
+	mov_f32	$s104, 0F00000000;
+	mov_f32	$s105, 0F00000000;
+	st_v4_group_align(4)_f32	($s102, $s103, $s104, $s105), [&g32.Bs][$s34];
+
+@LBB0_70:
+	cbr_b1	$c6, @LBB0_76;
+	br	@LBB0_71;
+
+@LBB0_76:
+	add_u32	$s102, $s26, $s9;
+	or_b32	$s103, $s102, 3;
+	cmp_lt_b1_s32	$c16, $s103, $s5;
+	and_b1	$c16, $c7, $c16;
+	cmp_ne_b1_b1	$c16, $c16, 1;
+	cbr_b1	$c16, @LBB0_77;
+	// BB#78:
+	cvt_s64_s32	$d10, $s102;
+	shl_u64	$d10, $d10, 2;
+	add_u64	$d10, $d5, $d10;
+	ld_v4_global_align(16)_const_f32	($s102, $s103, $s104, $s105), [$d10];
+	br	@LBB0_79;
+
+@LBB0_71:
+	cbr_b1	$c8, @LBB0_80;
+	// BB#72:
+	add_u32	$s102, $s31, $s9;
+	cmp_lt_b1_s32	$c16, $s102, $s5;
+	and_b1	$c16, $c16, $c9;
+	cmp_ne_b1_b1	$c16, $c16, 1;
+	cbr_b1	$c16, @LBB0_73;
+	// BB#74:
+	mul_u32	$s102, $s102, $s1;
+	cvt_s64_s32	$d10, $s102;
+	shl_u64	$d10, $d10, 2;
+	add_u64	$d10, $d1, $d10;
+	add_u64	$d10, $d10, $d6;
+	ld_v4_global_align(16)_const_f32	($s102, $s103, $s104, $s105), [$d10];
+	st_v4_group_align(4)_f32	($s102, $s103, $s104, $s105), [&g32.Bs][$s32];
+	br	@LBB0_80;
+
+@LBB0_77:
+	mov_f32	$s102, 0F00000000;
+	mov_f32	$s103, 0F00000000;
+	mov_f32	$s104, 0F00000000;
+	mov_f32	$s105, 0F00000000;
+
+@LBB0_79:
+	st_group_align(4)_f32	$s102, [&g32.As][$s27];
+	st_group_align(4)_f32	$s103, [&g32.As][$s28];
+	st_group_align(4)_f32	$s104, [&g32.As][$s29];
+	st_group_align(4)_f32	$s105, [&g32.As][$s30];
+	br	@LBB0_80;
+
+@LBB0_73:
+	mov_f32	$s102, 0F00000000;
+	mov_f32	$s103, 0F00000000;
+	mov_f32	$s104, 0F00000000;
+	mov_f32	$s105, 0F00000000;
+	st_v4_group_align(4)_f32	($s102, $s103, $s104, $s105), [&g32.Bs][$s32];
+
+@LBB0_80:
+	memfence_screl_wg;
+	barrier;
+	memfence_scacq_wg;
+	mov_b32	$s102, 8;
+	mov_b32	$s103, $s7;
+	mov_b32	$s104, $s8;
+
+@LBB0_81:
+	// %.preheader631
+	ld_v4_group_align(4)_f32	($s105, $s106, $s107, $s108), [$s104];
+	ld_v4_group_align(4)_f32	($s109, $s110, $s111, $s112), [$s103];
+	fma_ftz_f32	$s90, $s110, $s108, $s90;
+	fma_ftz_f32	$s100, $s109, $s106, $s100;
+	fma_ftz_f32	$s99, $s109, $s107, $s99;
+	ld_v4_group_align(4)_f32	($s113, $s114, $s115, $s116), [$s104+16];
+	fma_ftz_f32	$s73, $s112, $s113, $s73;
+	fma_ftz_f32	$s72, $s112, $s114, $s72;
+	fma_ftz_f32	$s71, $s112, $s115, $s71;
+	fma_ftz_f32	$s74, $s112, $s108, $s74;
+	fma_ftz_f32	$s89, $s110, $s113, $s89;
+	fma_ftz_f32	$s88, $s110, $s114, $s88;
+	fma_ftz_f32	$s87, $s110, $s115, $s87;
+	fma_ftz_f32	$s92, $s110, $s106, $s92;
+	fma_ftz_f32	$s91, $s110, $s107, $s91;
+	fma_ftz_f32	$s70, $s112, $s116, $s70;
+	fma_ftz_f32	$s81, $s111, $s113, $s81;
+	fma_ftz_f32	$s84, $s111, $s106, $s84;
+	fma_ftz_f32	$s83, $s111, $s107, $s83;
+	fma_ftz_f32	$s86, $s110, $s116, $s86;
+	fma_ftz_f32	$s97, $s109, $s113, $s97;
+	fma_ftz_f32	$s80, $s111, $s114, $s80;
+	fma_ftz_f32	$s79, $s111, $s115, $s79;
+	fma_ftz_f32	$s85, $s111, $s105, $s85;
+	fma_ftz_f32	$s82, $s111, $s108, $s82;
+	fma_ftz_f32	$s96, $s109, $s114, $s96;
+	fma_ftz_f32	$s95, $s109, $s115, $s95;
+	fma_ftz_f32	$s101, $s109, $s105, $s101;
+	fma_ftz_f32	$s98, $s109, $s108, $s98;
+	fma_ftz_f32	$s77, $s112, $s105, $s77;
+	fma_ftz_f32	$s76, $s112, $s106, $s76;
+	fma_ftz_f32	$s75, $s112, $s107, $s75;
+	fma_ftz_f32	$s78, $s111, $s116, $s78;
+	fma_ftz_f32	$s93, $s110, $s105, $s93;
+	fma_ftz_f32	$s94, $s109, $s116, $s94;
+	ld_v4_group_align(4)_f32	($s109, $s110, $s111, $s112), [$s103+16];
+	fma_ftz_f32	$s65, $s109, $s113, $s65;
+	fma_ftz_f32	$s64, $s109, $s114, $s64;
+	fma_ftz_f32	$s63, $s109, $s115, $s63;
+	fma_ftz_f32	$s62, $s109, $s116, $s62;
+	fma_ftz_f32	$s10, $s112, $s116, $s10;
+	fma_ftz_f32	$s39, $s112, $s115, $s39;
+	fma_ftz_f32	$s40, $s112, $s114, $s40;
+	fma_ftz_f32	$s41, $s112, $s113, $s41;
+	fma_ftz_f32	$s46, $s111, $s116, $s46;
+	fma_ftz_f32	$s47, $s111, $s115, $s47;
+	fma_ftz_f32	$s48, $s111, $s114, $s48;
+	fma_ftz_f32	$s49, $s111, $s113, $s49;
+	fma_ftz_f32	$s54, $s110, $s116, $s54;
+	fma_ftz_f32	$s55, $s110, $s115, $s55;
+	fma_ftz_f32	$s56, $s110, $s114, $s56;
+	fma_ftz_f32	$s57, $s110, $s113, $s57;
+	fma_ftz_f32	$s69, $s109, $s105, $s69;
+	fma_ftz_f32	$s68, $s109, $s106, $s68;
+	fma_ftz_f32	$s67, $s109, $s107, $s67;
+	fma_ftz_f32	$s66, $s109, $s108, $s66;
+	fma_ftz_f32	$s42, $s112, $s108, $s42;
+	fma_ftz_f32	$s43, $s112, $s107, $s43;
+	fma_ftz_f32	$s44, $s112, $s106, $s44;
+	fma_ftz_f32	$s45, $s112, $s105, $s45;
+	fma_ftz_f32	$s50, $s111, $s108, $s50;
+	fma_ftz_f32	$s51, $s111, $s107, $s51;
+	fma_ftz_f32	$s52, $s111, $s106, $s52;
+	fma_ftz_f32	$s53, $s111, $s105, $s53;
+	fma_ftz_f32	$s58, $s110, $s108, $s58;
+	fma_ftz_f32	$s59, $s110, $s107, $s59;
+	fma_ftz_f32	$s60, $s110, $s106, $s60;
+	fma_ftz_f32	$s61, $s110, $s105, $s61;
+	add_u32	$s103, $s103, 0x110;
+	add_u32	$s104, $s104, 0x110;
+	st_v4_private_align(16)_f32	($s101, $s100, $s99, $s98), [%acc];
+	st_v4_private_align(16)_f32	($s97, $s96, $s95, $s94), [%acc][16];
+	st_v4_private_align(16)_f32	($s93, $s92, $s91, $s90), [%acc][32];
+	st_v4_private_align(16)_f32	($s89, $s88, $s87, $s86), [%acc][48];
+	st_v4_private_align(16)_f32	($s85, $s84, $s83, $s82), [%acc][64];
+	st_v4_private_align(16)_f32	($s81, $s80, $s79, $s78), [%acc][80];
+	st_v4_private_align(16)_f32	($s77, $s76, $s75, $s74), [%acc][96];
+	st_v4_private_align(16)_f32	($s73, $s72, $s71, $s70), [%acc][112];
+	st_v4_private_align(16)_f32	($s69, $s68, $s67, $s66), [%acc][128];
+	st_v4_private_align(16)_f32	($s65, $s64, $s63, $s62), [%acc][144];
+	add_u32	$s102, $s102, -1;
+	st_v4_private_align(16)_f32	($s61, $s60, $s59, $s58), [%acc][160];
+	st_v4_private_align(16)_f32	($s57, $s56, $s55, $s54), [%acc][176];
+	st_v4_private_align(16)_f32	($s53, $s52, $s51, $s50), [%acc][192];
+	st_v4_private_align(16)_f32	($s49, $s48, $s47, $s46), [%acc][208];
+	st_v4_private_align(16)_f32	($s45, $s44, $s43, $s42), [%acc][224];
+	st_v4_private_align(16)_f32	($s41, $s40, $s39, $s10), [%acc][240];
+	cmp_ne_b1_s32	$c16, $s102, 0;
+	cbr_b1	$c16, @LBB0_81;
+	// BB#16:
+	memfence_screl_wg;
+	barrier;
+	memfence_scacq_wg;
+	add_u32	$s9, $s9, 8;
+	cmp_lt_b1_s32	$c16, $s9, $s5;
+	cbr_b1	$c16, @LBB0_2;
+
+@LBB0_17:
+	// %.preheader3
+	add_u32	$s23, $s6, $s3;
+	add_u32	$s3, $s4, $s2;
+	mad_u32	$s2, $s1, $s3, $s23;
+	add_u32	$s3, $s3, 1;
+	mad_u32	$s4, $s1, $s3, $s23;
+	add_u32	$s5, $s2, 1;
+	add_u32	$s6, $s2, 2;
+	shl_u32	$s7, $s1, 1;
+	mov_b32	$s8, 0;
+	lda_private_u32	$s9, [%acc];
+	mov_b32	$s10, 8;
+	add_u32	$s11, $s2, 3;
+	add_u32	$s12, $s2, 4;
+	add_u32	$s13, $s2, 5;
+	add_u32	$s14, $s2, 6;
+	add_u32	$s15, $s2, 7;
+	add_u32	$s16, $s4, 1;
+	add_u32	$s17, $s4, 2;
+	add_u32	$s18, $s4, 3;
+	add_u32	$s19, $s4, 4;
+	add_u32	$s20, $s4, 5;
+	add_u32	$s21, $s4, 6;
+	add_u32	$s22, $s4, 7;
+	cmp_ge_b1_s32	$c0, $s23, $s1;
+	or_b32	$s24, $s23, 1;
+	cmp_lt_b1_s32	$c1, $s24, $s1;
+	or_b32	$s25, $s23, 2;
+	cmp_ge_b1_s32	$c2, $s25, $s1;
+	or_b32	$s25, $s23, 3;
+	cmp_ge_b1_s32	$c3, $s25, $s1;
+	or_b32	$s25, $s23, 4;
+	cmp_ge_b1_s32	$c4, $s25, $s1;
+	or_b32	$s25, $s23, 5;
+	cmp_ge_b1_s32	$c5, $s25, $s1;
+	or_b32	$s25, $s23, 6;
+	cmp_ge_b1_s32	$c6, $s25, $s1;
+	or_b32	$s23, $s23, 7;
+	cmp_ge_b1_s32	$c7, $s23, $s1;
+	cmp_ge_b1_s32	$c8, $s24, $s1;
+
+@LBB0_18:
+	add_u32	$s1, $s3, -1;
+	cmp_ge_b1_s32	$c9, $s1, $s0;
+	cbr_b1	$c9, @LBB0_35;
+	// BB#19:                                // %.preheader
+	cbr_b1	$c0, @LBB0_21;
+	// BB#20:
+	add_u32	$s1, $s2, $s8;
+	cvt_s64_s32	$d1, $s1;
+	shl_u64	$d1, $d1, 2;
+	add_u64	$d1, $d0, $d1;
+	ld_private_align(16)_u32	$s1, [$s9];
+	st_global_align(4)_u32	$s1, [$d1];
+
+@LBB0_21:
+	cbr_b1	$c1, @LBB0_22;
+	br	@LBB0_23;
+
+@LBB0_22:
+	add_u32	$s1, $s5, $s8;
+	cvt_s64_s32	$d1, $s1;
+	shl_u64	$d1, $d1, 2;
+	add_u64	$d1, $d0, $d1;
+	ld_private_align(4)_u32	$s1, [$s9+4];
+	st_global_align(4)_u32	$s1, [$d1];
+
+@LBB0_23:
+	cbr_b1	$c2, @LBB0_25;
+	// BB#24:
+	add_u32	$s1, $s6, $s8;
+	cvt_s64_s32	$d1, $s1;
+	shl_u64	$d1, $d1, 2;
+	add_u64	$d1, $d0, $d1;
+	ld_private_align(8)_u32	$s1, [$s9+8];
+	st_global_align(4)_u32	$s1, [$d1];
+
+@LBB0_25:
+	cbr_b1	$c3, @LBB0_27;
+	// BB#26:
+	add_u32	$s1, $s11, $s8;
+	cvt_s64_s32	$d1, $s1;
+	shl_u64	$d1, $d1, 2;
+	add_u64	$d1, $d0, $d1;
+	ld_private_align(4)_u32	$s1, [$s9+12];
+	st_global_align(4)_u32	$s1, [$d1];
+
+@LBB0_27:
+	cbr_b1	$c4, @LBB0_29;
+	// BB#28:
+	add_u32	$s1, $s12, $s8;
+	cvt_s64_s32	$d1, $s1;
+	shl_u64	$d1, $d1, 2;
+	add_u64	$d1, $d0, $d1;
+	ld_private_align(16)_u32	$s1, [$s9+16];
+	st_global_align(4)_u32	$s1, [$d1];
+
+@LBB0_29:
+	cbr_b1	$c5, @LBB0_31;
+	// BB#30:
+	add_u32	$s1, $s13, $s8;
+	cvt_s64_s32	$d1, $s1;
+	shl_u64	$d1, $d1, 2;
+	add_u64	$d1, $d0, $d1;
+	ld_private_align(4)_u32	$s1, [$s9+20];
+	st_global_align(4)_u32	$s1, [$d1];
+
+@LBB0_31:
+	cbr_b1	$c6, @LBB0_33;
+	// BB#32:
+	add_u32	$s1, $s14, $s8;
+	cvt_s64_s32	$d1, $s1;
+	shl_u64	$d1, $d1, 2;
+	add_u64	$d1, $d0, $d1;
+	ld_private_align(8)_u32	$s1, [$s9+24];
+	st_global_align(4)_u32	$s1, [$d1];
+
+@LBB0_33:
+	cbr_b1	$c7, @LBB0_35;
+	// BB#34:
+	add_u32	$s1, $s15, $s8;
+	cvt_s64_s32	$d1, $s1;
+	shl_u64	$d1, $d1, 2;
+	add_u64	$d1, $d0, $d1;
+	ld_private_align(4)_u32	$s1, [$s9+28];
+	st_global_align(4)_u32	$s1, [$d1];
+
+@LBB0_35:
+	// %.loopexit23
+	cmp_ge_b1_s32	$c9, $s3, $s0;
+	cbr_b1	$c9, @LBB0_52;
+	// BB#36:                                // %.preheader.1
+	cbr_b1	$c0, @LBB0_38;
+	// BB#37:
+	add_u32	$s1, $s4, $s8;
+	cvt_s64_s32	$d1, $s1;
+	shl_u64	$d1, $d1, 2;
+	add_u64	$d1, $d0, $d1;
+	ld_private_align(16)_u32	$s1, [$s9+32];
+	st_global_align(4)_u32	$s1, [$d1];
+
+@LBB0_38:
+	cbr_b1	$c8, @LBB0_40;
+	// BB#39:
+	add_u32	$s1, $s16, $s8;
+	cvt_s64_s32	$d1, $s1;
+	shl_u64	$d1, $d1, 2;
+	add_u64	$d1, $d0, $d1;
+	ld_private_align(4)_u32	$s1, [$s9+36];
+	st_global_align(4)_u32	$s1, [$d1];
+
+@LBB0_40:
+	cbr_b1	$c2, @LBB0_42;
+	// BB#41:
+	add_u32	$s1, $s17, $s8;
+	cvt_s64_s32	$d1, $s1;
+	shl_u64	$d1, $d1, 2;
+	add_u64	$d1, $d0, $d1;
+	ld_private_align(8)_u32	$s1, [$s9+40];
+	st_global_align(4)_u32	$s1, [$d1];
+
+@LBB0_42:
+	cbr_b1	$c3, @LBB0_44;
+	// BB#43:
+	add_u32	$s1, $s18, $s8;
+	cvt_s64_s32	$d1, $s1;
+	shl_u64	$d1, $d1, 2;
+	add_u64	$d1, $d0, $d1;
+	ld_private_align(4)_u32	$s1, [$s9+44];
+	st_global_align(4)_u32	$s1, [$d1];
+
+@LBB0_44:
+	cbr_b1	$c4, @LBB0_46;
+	// BB#45:
+	add_u32	$s1, $s19, $s8;
+	cvt_s64_s32	$d1, $s1;
+	shl_u64	$d1, $d1, 2;
+	add_u64	$d1, $d0, $d1;
+	ld_private_align(16)_u32	$s1, [$s9+48];
+	st_global_align(4)_u32	$s1, [$d1];
+
+@LBB0_46:
+	cbr_b1	$c5, @LBB0_48;
+	// BB#47:
+	add_u32	$s1, $s20, $s8;
+	cvt_s64_s32	$d1, $s1;
+	shl_u64	$d1, $d1, 2;
+	add_u64	$d1, $d0, $d1;
+	ld_private_align(4)_u32	$s1, [$s9+52];
+	st_global_align(4)_u32	$s1, [$d1];
+
+@LBB0_48:
+	cbr_b1	$c6, @LBB0_50;
+	// BB#49:
+	add_u32	$s1, $s21, $s8;
+	cvt_s64_s32	$d1, $s1;
+	shl_u64	$d1, $d1, 2;
+	add_u64	$d1, $d0, $d1;
+	ld_private_align(8)_u32	$s1, [$s9+56];
+	st_global_align(4)_u32	$s1, [$d1];
+
+@LBB0_50:
+	cbr_b1	$c7, @LBB0_52;
+	// BB#51:
+	add_u32	$s1, $s22, $s8;
+	cvt_s64_s32	$d1, $s1;
+	shl_u64	$d1, $d1, 2;
+	add_u64	$d1, $d0, $d1;
+	ld_private_align(4)_u32	$s1, [$s9+60];
+	st_global_align(4)_u32	$s1, [$d1];
+
+@LBB0_52:
+	// %.loopexit23.1
+	add_u32	$s8, $s8, $s7;
+	add_u32	$s9, $s9, 64;
+	add_u32	$s3, $s3, 2;
+	add_u32	$s10, $s10, -2;
+	cmp_ne_b1_s32	$c9, $s10, 0;
+	cbr_b1	$c9, @LBB0_18;
+	// BB#53:
+	ret;
+};

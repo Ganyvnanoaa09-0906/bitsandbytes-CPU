@@ -1,0 +1,151 @@
+// Copyright (c) Facebook, Inc. and its affiliates.
+//
+// This source code is licensed under the MIT license found in the
+// LICENSE file in the root directory of this source tree.
+
+#ifndef ops_H
+#define ops_H
+
+#include <assert.h>
+#include <cstdint>
+#include <functional>
+#include <iostream>
+#include <stdio.h>
+#include <vector>
+
+#include "common.cuh"
+#include "compat.cuh"
+#include <common.h>
+
+// Error checking helpers
+
+inline void checkDeviceStatus(bnb_error_t status) {
+    if (status != BNB_SUCCESS) {
+        printf("Device API failed with status %d: %s\n", status, BNB_GET_ERROR_STRING(status));
+        throw std::logic_error("Device API failed");
+    }
+}
+
+inline int checkBlasLtStatus(bnb_blas_status_t status) {
+    if (status != BNB_BLAS_STATUS_SUCCESS) {
+        printf("BLAS Lt API failed with status %d\n", status);
+        return 1;
+    }
+    return 0;
+}
+
+// Enums
+
+typedef enum Operations_t {
+    ksmul = 0,
+} Operations_t;
+
+typedef enum Optimizer_t {
+    ADAM = 0,
+    MOMENTUM = 1,
+    RMSPROP = 2,
+    LARS = 3,
+    ADAGRAD = 4,
+    LION = 5,
+    ADEMAMIX = 6,
+} Optimizer_t;
+
+typedef enum Funcs_t {
+    FILL = 0,
+    ARANGE = 1,
+    _MUL = 2,
+} Funcs_t;
+
+// Context classes
+
+class Context {
+  public:
+#if BNB_HIP
+    rocblas_handle m_handle;
+
+    Context() {
+        rocblas_handle handle;
+        rocblas_create_handle(&handle);
+        m_handle = handle;
+    }
+#else
+    cublasHandle_t m_handle;
+
+    Context() {
+        cublasHandle_t handle;
+        cublasCreate_v2(&handle);
+        m_handle = handle;
+    }
+#endif
+};
+
+class ContextLt {
+  public:
+    bnb_blasLt_handle_t m_handle;
+
+    ContextLt() {
+        bnb_blasLt_handle_t handle;
+        bnb_blasLtCreate(&handle);
+        m_handle = handle;
+    }
+};
+
+// Function declarations
+
+template <typename T, int STOCHASTIC, int DATA_TYPE>
+void quantizeBlockwise(
+    float* code, T* A, float* absmax, unsigned char* out, float* rand, int rand_offset, int blocksize, const int n
+);
+template <typename T, int DATA_TYPE>
+void dequantizeBlockwise(
+    float* code, unsigned char* A, float* absmax, T* out, int block_size, const int n, bnb_stream_t stream
+);
+
+template <typename T, int OPTIMIZER>
+void optimizer32bit(
+    T* g, T* p, float* state1, float* state2, float* unorm, float max_unorm, float param_norm, float beta1, float beta2,
+    float beta3, float alpha, float eps, float weight_decay, int step, float lr, const float gnorm_scale,
+    bool skip_zeros, int n
+);
+
+template <typename T, int OPTIMIZER>
+void optimizerStatic8bitBlockwise(
+    T* p, T* g, unsigned char* state1, unsigned char* state2, float beta1, float beta2, float beta3, float alpha,
+    float eps, int step, float lr, float* quantiles1, float* quantiles2, float* absmax1, float* absmax2,
+    float weight_decay, const float gnorm_scale, bool skip_zeros, int n
+);
+
+void gemmex(
+    Context* context, bool transposeA, bool transposeB, int m, int n, int k, void* A, void* B, void* C, int lda,
+    int ldb, int ldc
+);
+void strided_gemmex(
+    Context* context, bool transposeA, bool transposeB, int m, int n, int k, void* A, void* B, void* C, int lda,
+    int ldb, int ldc, long long int strideA, long long int strideB, long long int strideC, int batchCount
+);
+
+template <int DTYPE_OUT, int SCALE_ROWS>
+int igemmlt(
+    bnb_blasLt_handle_t ltHandle, int m, int n, int k, const int8_t* A, const int8_t* B, void* C, float* row_scale,
+    int lda, int ldb, int ldc, bnb_stream_t stream
+);
+
+void cutlass_igemm(
+    bool transposeA, bool transposeB, int m, int n, int k, void* A, void* B, void* C, int lda, int ldb, int ldc
+);
+void dequant_mm_int32_fp16(
+    int* A, float* rowStats, float* colStats, half* out, half* bias, int numRows, int numCols, bnb_stream_t stream
+);
+void int8VectorQuant(
+    half* __restrict__ A, int8_t* out, float* rowStats, float threshold, int rows, int cols, bnb_stream_t stream
+);
+
+template <typename T, int BITS>
+void gemm_4bit_inference_naive(
+    int m, int n, int k, T* A, unsigned char* B, float* absmax, float* datatype, T* out, int lda, int ldb, int ldc,
+    int blocksize, bnb_stream_t stream
+);
+
+template <typename T, int FUNC> void func(T* A, T* B, T value, long n);
+
+#endif

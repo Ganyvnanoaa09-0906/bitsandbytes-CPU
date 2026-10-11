@@ -1,0 +1,37 @@
+﻿record(igpu): close the iGPU line, including the cause I could not find
+
+Positive: the iGPU is usable on its own terms -- 300 GFLOPS on non-cubic shapes, correct,
+where CLBlast cannot run its own sample shape on this machine at all, and 28.9 GB/s
+streaming against the CPU's 13.2, i.e. its memory efficiency is 2.2x the CPU's. That last
+figure had not been noticed before; what is constrained is the CPU's memory subsystem, not
+the machine's memory.
+
+Negative, and together these close every way of using it beside the CPU:
+
+  splitting one matmul between the devices                 0.68-0.91x
+  two independent workloads concurrently                   0.81x
+  Muon's Newton-Schulz offloaded, synchronous alternation  0.23x of ideal
+  the same, fully device-resident and correct              0.39x of ideal
+  batched enqueue                                          0.92x, but it did one product
+                                                           per matrix rather than the
+                                                           full five-iteration NS
+
+Attribution gives the mechanism: under concurrency the CPU side barely moves (0.88x) while
+the iGPU halves (1.84x); combined streaming bandwidth is 8.0 GB/s, below the iGPU's own
+28.9; and even a compute-only test with no memory traffic interferes by 1.7x. The root
+cause is that an APU has no dedicated video memory, so the iGPU shares one DDR4-2667 dual
+channel (23.7 GB/s measured pure read) with the CPU.
+
+And its own 300 GFLOPS ceiling is unexplained. Pure compute reaches 1089 GFLOPS, 95% of
+peak, so the 3.6x gap is data supply; CLBlast reaches 493.8 on this machine, so 300 is not
+a hardware limit. Seven variants were slower, and two explanations I offered were both
+contradicted -- A's reads are a broadcast rather than a conflict, and the real inner loop
+already exceeds what reads alone can sustain. The measurement I never made is the
+throughput of local memory itself; measure_lds_throughput.py is written and queued, with
+three access patterns. Until that number exists this does not claim a cause. Five confident
+mechanisms without measurements behind them were overturned today, two of them here.
+
+Also added: measure_guard.py, which refuses to benchmark while another substantial job is
+running and stamps every result with its conditions. It exists because three measurements
+were taken while the Muon A/B held 4.79 of 6 cores, all of them suspect as a result. The
+user found that one.

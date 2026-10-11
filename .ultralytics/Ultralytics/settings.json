@@ -1,0 +1,19 @@
+{
+  "settings_version": "0.0.8",
+  "datasets_dir": "D:\\work\\bitsandbytes-CPU\\datasets",
+  "weights_dir": "weights",
+  "runs_dir": "runs",
+  "uuid": "44468ee149d6966d6a67e56b5963eedcf56337efa3a28323c80c0f5489c44ade",
+  "sync": true,
+  "api_key": "",
+  "openai_api_key": "",
+  "clearml": true,
+  "comet": true,
+  "dvc": true,
+  "mlflow": true,
+  "raytune": true,
+  "tensorboard": false,
+  "wandb": false,
+  "vscode_msg": true,
+  "openvino_msg": true
+}

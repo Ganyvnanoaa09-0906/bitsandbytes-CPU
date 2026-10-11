@@ -1,0 +1,76 @@
+{
+  "host": "DESKTOP-K05F44Q",
+  "machine": "AMD64",
+  "python": "3.11.3",
+  "torch": "2.13.0+cpu",
+  "steps": 10,
+  "threads": 6,
+  "params": 337152,
+  "quant_layers": 8,
+  "linear8bitlt": 8,
+  "linear8bitlt_with_state": 8,
+  "wall_s": 0.12046670000017912,
+  "ms_per_step": 12.046670000017912,
+  "losses": [
+    5.6960272789001465,
+    5.325531482696533,
+    4.95876932144165,
+    4.594358921051025,
+    4.2316460609436035,
+    3.8706414699554443,
+    3.5120813846588135,
+    3.1577327251434326,
+    2.8101541996002197,
+    2.4728176593780518
+  ],
+  "gradnorms": [
+    1.2455978393554688,
+    1.2393813133239746,
+    1.2349014282226562,
+    1.2311408519744873,
+    1.2269102334976196,
+    1.2208515405654907,
+    1.2113680839538574,
+    1.1966201066970825,
+    1.1746084690093994,
+    1.1433697938919067
+  ],
+  "checks": [
+    {
+      "name": "first forward is finite (quantize path runs)",
+      "pass": true,
+      "detail": "out (2, 48, 256)"
+    },
+    {
+      "name": "all losses finite",
+      "pass": true,
+      "detail": "min 2.4728 max 5.6960"
+    },
+    {
+      "name": "loss decreased",
+      "pass": true,
+      "detail": "5.6960 -> 2.4728  (+56.59%)"
+    },
+    {
+      "name": "descent continued past the start",
+      "pass": true,
+      "detail": "best early 5.3255 -> best late 2.4728"
+    },
+    {
+      "name": "gradients non-zero",
+      "pass": true,
+      "detail": "grad_norm 1.246e+00 -> 1.143e+00"
+    },
+    {
+      "name": "8-bit optimizer state allocated",
+      "pass": true,
+      "detail": "44 state entries"
+    },
+    {
+      "name": "quantized weights materialised (state.CB present)",
+      "pass": true,
+      "detail": "8/8 Linear8bitLt layers have quantized state"
+    }
+  ],
+  "passed": true
+}

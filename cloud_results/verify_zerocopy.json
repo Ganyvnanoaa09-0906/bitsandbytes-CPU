@@ -1,0 +1,201 @@
+{
+  "results": [
+    {
+      "check": "V0 put_cold 后源张量已置空 [float32_contig]",
+      "pass": true,
+      "detail": "迁移前 8192 -> 迁移后 0"
+    },
+    {
+      "check": "V1 盘上字节 == 源字节 [float32_contig]",
+      "pass": true,
+      "detail": "32768B vs 32768B"
+    },
+    {
+      "check": "V3a get_cold 字节一致(扁平) [float32_contig]",
+      "pass": true,
+      "detail": "dtype=torch.float32 numel=8192 期望 8192"
+    },
+    {
+      "check": "V3b get_cold_shape 数值一致 [float32_contig]",
+      "pass": true,
+      "detail": "shape=(64, 128) 期望 (64, 128)"
+    },
+    {
+      "check": "V4 源 storage 已回收 [float32_contig]",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "check": "V0 put_cold 后源张量已置空 [float32_noncontig]",
+      "pass": true,
+      "detail": "迁移前 8192 -> 迁移后 0"
+    },
+    {
+      "check": "V1 盘上字节 == 源字节 [float32_noncontig]",
+      "pass": true,
+      "detail": "32768B vs 32768B"
+    },
+    {
+      "check": "V3a get_cold 字节一致(扁平) [float32_noncontig]",
+      "pass": true,
+      "detail": "dtype=torch.float32 numel=8192 期望 8192"
+    },
+    {
+      "check": "V3b get_cold_shape 数值一致 [float32_noncontig]",
+      "pass": true,
+      "detail": "shape=(64, 128) 期望 (64, 128)"
+    },
+    {
+      "check": "V4 源 storage 已回收 [float32_noncontig]",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "check": "V0 put_cold 后源张量已置空 [float16_contig]",
+      "pass": true,
+      "detail": "迁移前 8192 -> 迁移后 0"
+    },
+    {
+      "check": "V1 盘上字节 == 源字节 [float16_contig]",
+      "pass": true,
+      "detail": "16384B vs 16384B"
+    },
+    {
+      "check": "V3a get_cold 字节一致(扁平) [float16_contig]",
+      "pass": true,
+      "detail": "dtype=torch.float16 numel=8192 期望 8192"
+    },
+    {
+      "check": "V3b get_cold_shape 数值一致 [float16_contig]",
+      "pass": true,
+      "detail": "shape=(64, 128) 期望 (64, 128)"
+    },
+    {
+      "check": "V4 源 storage 已回收 [float16_contig]",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "check": "V0 put_cold 后源张量已置空 [float16_noncontig]",
+      "pass": true,
+      "detail": "迁移前 8192 -> 迁移后 0"
+    },
+    {
+      "check": "V1 盘上字节 == 源字节 [float16_noncontig]",
+      "pass": true,
+      "detail": "16384B vs 16384B"
+    },
+    {
+      "check": "V3a get_cold 字节一致(扁平) [float16_noncontig]",
+      "pass": true,
+      "detail": "dtype=torch.float16 numel=8192 期望 8192"
+    },
+    {
+      "check": "V3b get_cold_shape 数值一致 [float16_noncontig]",
+      "pass": true,
+      "detail": "shape=(64, 128) 期望 (64, 128)"
+    },
+    {
+      "check": "V4 源 storage 已回收 [float16_noncontig]",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "check": "V0 put_cold 后源张量已置空 [bfloat16_contig]",
+      "pass": true,
+      "detail": "迁移前 8192 -> 迁移后 0"
+    },
+    {
+      "check": "V1 盘上字节 == 源字节 [bfloat16_contig]",
+      "pass": true,
+      "detail": "16384B vs 16384B"
+    },
+    {
+      "check": "V3a get_cold 字节一致(扁平) [bfloat16_contig]",
+      "pass": true,
+      "detail": "dtype=torch.bfloat16 numel=8192 期望 8192"
+    },
+    {
+      "check": "V3b get_cold_shape 数值一致 [bfloat16_contig]",
+      "pass": true,
+      "detail": "shape=(64, 128) 期望 (64, 128)"
+    },
+    {
+      "check": "V4 源 storage 已回收 [bfloat16_contig]",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "check": "V0 put_cold 后源张量已置空 [bfloat16_noncontig]",
+      "pass": true,
+      "detail": "迁移前 8192 -> 迁移后 0"
+    },
+    {
+      "check": "V1 盘上字节 == 源字节 [bfloat16_noncontig]",
+      "pass": true,
+      "detail": "16384B vs 16384B"
+    },
+    {
+      "check": "V3a get_cold 字节一致(扁平) [bfloat16_noncontig]",
+      "pass": true,
+      "detail": "dtype=torch.bfloat16 numel=8192 期望 8192"
+    },
+    {
+      "check": "V3b get_cold_shape 数值一致 [bfloat16_noncontig]",
+      "pass": true,
+      "detail": "shape=(64, 128) 期望 (64, 128)"
+    },
+    {
+      "check": "V4 源 storage 已回收 [bfloat16_noncontig]",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "check": "V4 队列已排空",
+      "pass": true,
+      "detail": "qsize=0 unfinished=0"
+    },
+    {
+      "check": "V4 全部文件已落盘且非空",
+      "pass": true,
+      "detail": "16 个文件，尺寸 [1048576]"
+    },
+    {
+      "check": "V5 前置条件：内存压力判定为真",
+      "pass": true,
+      "detail": "used=0.371 thr=0.321"
+    },
+    {
+      "check": "V5 update_step 一次迁移多个（旧实现恒为 1）",
+      "pass": true,
+      "detail": "迁移了 40 个 / 共 40 个冷参数"
+    },
+    {
+      "check": "V5 不限量时能把全部冷参数迁完",
+      "pass": true,
+      "detail": "40 vs 40"
+    },
+    {
+      "check": "V5 offload_per_step=5 限流生效",
+      "pass": true,
+      "detail": "迁移了 5 个"
+    },
+    {
+      "check": "V6a 正样本比对为真",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "check": "V6b 篡改 1 字节后比对为假（负控制）",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "check": "V6c 用另一个张量当参照比对为假（负控制）",
+      "pass": true,
+      "detail": ""
+    }
+  ],
+  "passed": 39,
+  "total": 39
+}

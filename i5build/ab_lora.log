@@ -1,0 +1,20 @@
+====================================================================================
+AnimateDiff 端到端出片（生成 → 超分 → mp4）
+====================================================================================
+输出目录: D:\work\cloud_results\anime_e2e
+[gen] 构建 AnimateDiff 管线（adapter=animatediff-motion-adapter-v1-5-2）
+Loading weights:   0%|          | 0/196 [00:00<?, ?it/s]Loading weights: 100%|██████████| 196/196 [00:00<00:00, 6076.63it/s]
+The config attributes {'motion_activation_fn': 'geglu', 'motion_attention_bias': False, 'motion_cross_attention_dim': None} were passed to MotionAdapter, but are not expected and will be ignored. Please verify your config.json configuration file.
+There are modules in UNetMotionModel that should be kept in float32: []. Casting directly with `to()` can lead to inconsistent results; set `torch_dtype` in `from_pretrained()` instead to keep these modules in float32.
+[load] pipeline built in 14.8s (unet 1313M params)
+[gen] attention_slicing 已关闭（实测 VAE 快 1.71×）
+[gen] 管线就绪 27.6 s
+[gen] scheduler=DPMSolverMultistepScheduler
+[gen] 加载本 fork 训练的 LoRA: D:\work\bitsandbytes-CPU\i5build\adiff_run1\diffusers_lora.safetensors
+No LoRA keys associated to CLIPTextModel found with the prefix='text_encoder'. This is safe to ignore if LoRA state dict didn't originally have any CLIPTextModel related params. You can also try specifying `prefix=None` to resolve the warning. Otherwise, open an issue if you think it's unexpected: https://github.com/huggingface/diffusers/issues/new
+[gen] LoRA 已挂载（adapter_name=fork, weight=1.0） peft_config 0 -> 0
+[gen] 256x256 x8f x20步 cfg=7.5 = 562.9 s (28.15 s/步, 每帧 70.37 s)
+  [gen] 8 帧 (256, 256, 3)  std=50.7  帧间差分=12.67  VALID
+[gen] 8 帧 -> D:\work\cloud_results\anime_e2e\lr_frames
+
+总耗时 595.0 s   结果: PASS

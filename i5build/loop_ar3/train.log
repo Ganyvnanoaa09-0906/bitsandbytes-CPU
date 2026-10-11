@@ -1,0 +1,97 @@
+[v2] token 文件: 29113 张 x 256 token -> 网格 16x16   VQ ch=(64, 128, 256, 256)
+[v2] 码本簇划分: 32 簇 x 32 码 (vocab=1024)
+[loop] 循环 Transformer 已挂载: L=1 L_max=3 random=True step_enc=True cross_res=True  新增参数 4608
+[v2] params=30.49M tokens=(29113, 256)
+[v2] n_layer=10 loop=[4..7]x1 -> 实际 10 个 block pass/前向
+[v2] use_bos=True  (True 时 logits[:,i] 直接预测 tokens[:,i]，损失不移位)
+[v2] resume: ckpt_14000.pt -> 全局步 14000
+[v2] 训练/验证划分: train=28531 val=582 (验证取固定 512 张)
+[v2] stage T=16 已完成，跳过
+[v2] stage T=64 已完成，跳过
+[v2] stage T=256 steps=20000 batch=8 (跳过前 12000 步)
+[v2 T=256] step 14001  train=5.6412  val=5.4699  gap=-0.1713
+[v2 T=256] 12001/20000 loss=5.6412 3.585s
+[v2 T=256] step 14501  train=5.5410  val=5.4581  gap=-0.0829
+[v2 T=256] step 15001  train=5.6803  val=5.4513  gap=-0.2290
+[v2 T=256] step 15501  train=5.7565  val=5.4421  gap=-0.3144
+[v2 T=256] step 16001  train=5.4552  val=5.4454  gap=-0.0099
+[v2 T=256] step 16501  train=4.6888  val=5.4353  gap=+0.7465
+[v2 T=256] step 17001  train=5.4737  val=5.4294  gap=-0.0443
+[v2 T=256] step 17501  train=5.0179  val=5.4215  gap=+0.4036
+[v2 T=256] step 18001  train=5.4579  val=5.4235  gap=-0.0344
+[v2 T=256] 16001/20000 loss=5.4579 2.854s
+[v2 T=256] step 18501  train=5.3321  val=5.4183  gap=+0.0862
+[v2 T=256] step 19001  train=5.7440  val=5.4114  gap=-0.3326
+[v2 T=256] step 19501  train=5.1400  val=5.4112  gap=+0.2712
+[v2 T=256] step 20001  train=5.3914  val=5.4142  gap=+0.0228
+[v2 T=256] step 20501  train=5.4400  val=5.4085  gap=-0.0315
+[v2 T=256] step 21001  train=4.8224  val=5.4088  gap=+0.5864
+[v2 T=256] step 21501  train=5.2018  val=5.4100  gap=+0.2083
+[v2 T=256] 20000/20000 loss=5.6591 4.986s
+{"T": 256, "steps": 20000, "batch": 8, "mean_step_s": 3.9945459857625027, "first_loss": 5.6411824226379395, "last_loss": 5.659149646759033, "elapsed_s": 33195.94970870018, "tokens_per_s": 512.6990670027461, "corrupt": {"token_dropout": 0.0, "sched_sample_max": 0.0, "repl_token_dropout": 0.0, "repl_sched": 0.0, "ss_rate_end": 0.0, "n_steps_counted": 8000}}
+{
+  "kind": "ar_v2",
+  "params": 30493440,
+  "cfg": {
+    "vocab_size": 1024,
+    "d_model": 512,
+    "n_layer": 10,
+    "n_head": 8,
+    "n_kv_head": 4,
+    "ffn_dim": 2048,
+    "total_tokens": 256,
+    "grid": 16,
+    "think_tokens": 16,
+    "text_dim": 512,
+    "ada_dim": 128,
+    "cond_mode": "none",
+    "cond_dropout": 0.1,
+    "pos_mode": "2d",
+    "token_order": "raster",
+    "head_mode": "flat",
+    "n_cluster": 32,
+    "hier": false,
+    "coarse_grid": 4,
+    "loop_start": 4,
+    "loop_end": 7,
+    "loop_times": 1,
+    "fuse_qkv": false,
+    "use_bos": true,
+    "use_l3": false,
+    "mask_mode": "causal",
+    "patch_nums": [],
+    "msa_groups": "",
+    "msa_local": 0,
+    "nbr_fuse": false,
+    "nbr_window": 0,
+    "l3_v": 1024,
+    "l3_k": 8,
+    "l3_d_emb": 128,
+    "l3_d_up": 128,
+    "l3_key_mode": "1gram",
+    "l3_from": 0,
+    "l3_sparse": false
+  },
+  "stages": [
+    {
+      "T": 256,
+      "steps": 20000,
+      "batch": 8,
+      "mean_step_s": 3.9945459857625027,
+      "first_loss": 5.6411824226379395,
+      "last_loss": 5.659149646759033,
+      "elapsed_s": 33195.94970870018,
+      "tokens_per_s": 512.6990670027461,
+      "corrupt": {
+        "token_dropout": 0.0,
+        "sched_sample_max": 0.0,
+        "repl_token_dropout": 0.0,
+        "repl_sched": 0.0,
+        "ss_rate_end": 0.0,
+        "n_steps_counted": 8000
+      }
+    }
+  ],
+  "peak_rss_gb": 3.041271808,
+  "cond_used": false
+}

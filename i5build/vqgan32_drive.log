@@ -1,0 +1,701 @@
+[2026/10/08 ���� 21:42:32.96] driver start, budget 8000 steps 
+[2026/10/08 ���� 21:42:32.97] round 1 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 500
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 520] loss=3.3326 rec=0.1731 vq=0.0265 perc=3.1330 adv=0.0000 codes=407 3.43s rss=1.18GB
+[gan step 540] loss=2.9669 rec=0.1555 vq=0.0388 perc=2.7726 adv=0.0000 codes=481 3.82s rss=1.72GB
+[gan step 560] loss=2.9226 rec=0.1320 vq=0.0497 perc=2.7409 adv=0.0000 codes=428 2.98s rss=2.28GB
+[gan step 580] loss=2.7173 rec=0.1744 vq=0.0580 perc=2.4849 adv=0.0000 codes=436 2.95s rss=2.83GB
+[gan step 600] loss=2.7573 rec=0.1338 vq=0.0697 perc=2.5537 adv=0.0000 codes=408 3.13s rss=3.25GB
+[gan step 620] loss=2.8835 rec=0.1259 vq=0.0859 perc=2.6717 adv=0.0000 codes=499 3.00s rss=3.98GB
+[gan step 640] loss=3.2390 rec=0.1412 vq=0.0932 perc=3.0046 adv=0.0000 codes=488 3.05s rss=4.59GB
+[gan step 660] loss=2.7799 rec=0.1251 vq=0.1134 perc=2.5414 adv=0.0000 codes=601 3.14s rss=5.27GB
+[gan step 680] loss=2.9345 rec=0.1364 vq=0.1313 perc=2.6668 adv=0.0000 codes=555 3.17s rss=5.79GB
+[gan step 700] loss=2.9519 rec=0.1404 vq=0.1460 perc=2.6654 adv=0.0000 codes=641 3.38s rss=6.39GB
+[gan step 720] loss=2.9034 rec=0.1381 vq=0.1565 perc=2.6088 adv=0.0000 codes=612 3.19s rss=7.08GB
+[gan step 740] loss=2.9594 rec=0.1476 vq=0.1790 perc=2.6327 adv=0.0000 codes=657 3.24s rss=7.66GB
+[gan] RSS 8.05GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 753）
+[gan] 分段保存完毕，正常退出
+[2026/10/08 ���� 21:56:15.40] round 1 ended rc=0 
+[2026/10/08 ���� 21:56:30.17] round 2 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 753
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 760] loss=3.2048 rec=0.1403 vq=0.1993 perc=2.8652 adv=0.0000 codes=698 2.81s rss=0.83GB
+[gan step 780] loss=3.0001 rec=0.1419 vq=0.1915 perc=2.6667 adv=0.0000 codes=713 2.98s rss=1.37GB
+[gan step 800] loss=3.0337 rec=0.1425 vq=0.1907 perc=2.7005 adv=0.0000 codes=704 3.01s rss=1.87GB
+[gan step 820] loss=2.5846 rec=0.1349 vq=0.1959 perc=2.2539 adv=0.0000 codes=727 2.92s rss=2.25GB
+[gan step 840] loss=3.3141 rec=0.1375 vq=0.2583 perc=2.9183 adv=0.0000 codes=775 3.14s rss=2.84GB
+[gan step 860] loss=2.5136 rec=0.1493 vq=0.2164 perc=2.1479 adv=0.0000 codes=703 3.02s rss=3.42GB
+[gan step 880] loss=3.1980 rec=0.1337 vq=0.2909 perc=2.7734 adv=0.0000 codes=795 2.96s rss=4.08GB
+[gan step 900] loss=3.1237 rec=0.1447 vq=0.3033 perc=2.6757 adv=0.0000 codes=804 3.17s rss=4.72GB
+[gan step 920] loss=2.8069 rec=0.1297 vq=0.3074 perc=2.3698 adv=0.0000 codes=819 3.01s rss=5.34GB
+[gan step 940] loss=3.3450 rec=0.1512 vq=0.3695 perc=2.8243 adv=0.0000 codes=890 2.95s rss=5.96GB
+[gan step 960] loss=3.5352 rec=0.1372 vq=0.3986 perc=2.9994 adv=0.0000 codes=804 2.98s rss=6.56GB
+[gan step 980] loss=2.6461 rec=0.0968 vq=0.3395 perc=2.2097 adv=0.0000 codes=811 3.27s rss=7.16GB
+[gan step 1000] loss=2.7356 rec=0.1226 vq=0.3507 perc=2.2623 adv=0.0000 codes=799 3.63s rss=7.81GB
+[gan] RSS 8.05GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 1009）
+[gan] 分段保存完毕，正常退出
+[2026/10/08 ���� 22:09:57.65] round 2 ended rc=0 
+[2026/10/08 ���� 22:10:12.21] round 3 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 1009
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 1020] loss=4.3776 rec=0.4658 vq=0.4795 perc=2.8761 adv=1.1125 codes=477 3.31s rss=0.89GB
+[gan step 1040] loss=6.0533 rec=0.4808 vq=0.2902 perc=4.0640 adv=2.4365 codes=582 3.25s rss=1.42GB
+[gan step 1060] loss=4.5968 rec=0.4940 vq=0.1679 perc=3.3155 adv=1.2386 codes=507 4.03s rss=1.79GB
+[gan step 1080] loss=4.1444 rec=0.4352 vq=0.1804 perc=3.9278 adv=-0.7980 codes=424 4.49s rss=2.20GB
+[gan step 1100] loss=2.9625 rec=0.3088 vq=0.1434 perc=2.5021 adv=0.0164 codes=428 3.53s rss=2.68GB
+[gan step 1120] loss=3.8877 rec=0.3047 vq=0.2279 perc=3.0366 adv=0.6368 codes=542 3.29s rss=3.18GB
+[gan step 1140] loss=3.7920 rec=0.2603 vq=0.3259 perc=3.4754 adv=-0.5393 codes=586 3.27s rss=3.70GB
+[gan step 1160] loss=3.7977 rec=0.2002 vq=0.2656 perc=3.0585 adv=0.5465 codes=595 3.30s rss=4.32GB
+[gan step 1180] loss=2.5276 rec=0.1485 vq=0.2586 perc=2.1401 adv=-0.0392 codes=593 3.16s rss=4.86GB
+[gan step 1200] loss=3.7415 rec=0.2093 vq=0.5436 perc=3.0122 adv=-0.0475 codes=677 3.39s rss=5.40GB
+[gan step 1220] loss=3.3989 rec=0.1780 vq=0.4387 perc=2.8365 adv=-0.1087 codes=732 3.26s rss=5.93GB
+[gan step 1240] loss=3.2403 rec=0.1770 vq=0.4213 perc=2.7101 adv=-0.1362 codes=695 3.92s rss=6.44GB
+[gan step 1260] loss=2.8519 rec=0.1379 vq=0.3722 perc=2.2160 adv=0.2517 codes=727 3.41s rss=6.95GB
+[gan step 1280] loss=3.0975 rec=0.1504 vq=0.4662 perc=2.6550 adv=-0.3482 codes=801 3.30s rss=7.47GB
+[gan] RSS 8.05GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 1298）
+[gan] 分段保存完毕，正常退出
+[2026/10/08 ���� 22:27:13.42] round 3 ended rc=0 
+[2026/10/08 ���� 22:27:28.19] round 4 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 1298
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 1300] loss=3.3803 rec=0.1253 vq=0.5381 perc=2.6128 adv=0.2082 codes=835 3.02s rss=0.55GB
+[gan step 1320] loss=2.9834 rec=0.1204 vq=0.4490 perc=2.4861 adv=-0.1442 codes=844 3.10s rss=1.07GB
+[gan step 1340] loss=2.8598 rec=0.1149 vq=0.4527 perc=2.3199 adv=-0.0554 codes=854 3.13s rss=1.53GB
+[gan step 1360] loss=3.6646 rec=0.1301 vq=0.5741 perc=2.9394 adv=0.0419 codes=880 3.40s rss=2.05GB
+[gan step 1380] loss=2.8021 rec=0.1100 vq=0.4518 perc=2.3060 adv=-0.1312 codes=825 3.19s rss=2.58GB
+[gan step 1400] loss=2.8125 rec=0.1135 vq=0.5094 perc=2.2461 adv=-0.1131 codes=884 3.18s rss=3.16GB
+[gan step 1420] loss=3.0056 rec=0.1457 vq=0.5323 perc=2.3044 adv=0.0463 codes=906 3.07s rss=3.73GB
+[gan step 1440] loss=2.6627 rec=0.1044 vq=0.4374 perc=2.1338 adv=-0.0256 codes=841 3.19s rss=4.18GB
+[gan step 1460] loss=3.8301 rec=0.1584 vq=0.7144 perc=3.1556 adv=-0.3965 codes=894 3.15s rss=4.68GB
+[gan step 1480] loss=3.0299 rec=0.1064 vq=0.5250 perc=2.3212 adv=0.1545 codes=878 3.08s rss=5.15GB
+[gan step 1500] loss=2.8927 rec=0.1212 vq=0.5003 perc=2.3939 adv=-0.2452 codes=858 3.56s rss=5.78GB
+[gan step 1520] loss=3.4376 rec=0.1551 vq=0.5788 perc=2.6304 adv=0.1466 codes=888 3.24s rss=6.16GB
+[gan step 1540] loss=3.2016 rec=0.1545 vq=0.5405 perc=2.4566 adv=0.1001 codes=868 3.33s rss=6.67GB
+[gan step 1560] loss=2.2982 rec=0.0863 vq=0.3788 perc=1.7180 adv=0.2304 codes=802 3.64s rss=7.19GB
+[gan step 1580] loss=2.5833 rec=0.1060 vq=0.4690 perc=2.1285 adv=-0.2406 codes=775 3.35s rss=7.63GB
+[gan] RSS 8.01GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 1596）
+[gan] 分段保存完毕，正常退出
+[2026/10/08 ���� 22:43:46.35] round 4 ended rc=0 
+[2026/10/08 ���� 22:44:01.17] round 5 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 1596
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 1600] loss=3.1484 rec=0.1123 vq=0.6076 perc=2.3514 adv=0.1541 codes=919 3.05s rss=0.77GB
+[gan step 1620] loss=2.1189 rec=0.0945 vq=0.3923 perc=1.6369 adv=-0.0098 codes=719 3.16s rss=1.18GB
+[gan step 1640] loss=2.7628 rec=0.1016 vq=0.5635 perc=2.0560 adv=0.0836 codes=871 3.08s rss=1.88GB
+[gan step 1660] loss=3.2476 rec=0.1199 vq=0.6754 perc=2.3943 adv=0.1158 codes=857 3.01s rss=2.50GB
+[gan step 1680] loss=3.9197 rec=0.1404 vq=0.8126 perc=2.8242 adv=0.2851 codes=879 3.14s rss=3.07GB
+[gan step 1700] loss=3.2095 rec=0.1470 vq=0.6525 perc=2.5410 adv=-0.2620 codes=936 3.15s rss=3.64GB
+[gan step 1720] loss=3.4321 rec=0.1327 vq=0.6734 perc=2.6159 adv=0.0201 codes=895 3.09s rss=4.16GB
+[gan step 1740] loss=3.0788 rec=0.1197 vq=0.6264 perc=2.4214 adv=-0.1774 codes=910 3.13s rss=4.76GB
+[gan step 1760] loss=2.7928 rec=0.0901 vq=0.6585 perc=2.2251 adv=-0.3619 codes=884 3.11s rss=5.31GB
+[gan step 1780] loss=2.7933 rec=0.1037 vq=0.6258 perc=2.1956 adv=-0.2638 codes=893 3.09s rss=5.83GB
+[gan step 1800] loss=3.3219 rec=0.1317 vq=0.7084 perc=2.5153 adv=-0.0668 codes=932 3.27s rss=6.35GB
+[gan step 1820] loss=3.1983 rec=0.1068 vq=0.6736 perc=2.4303 adv=-0.0247 codes=941 3.59s rss=6.90GB
+[gan step 1840] loss=2.8010 rec=0.0897 vq=0.6128 perc=2.0724 adv=0.0521 codes=873 3.33s rss=7.40GB
+[gan step 1860] loss=3.5617 rec=0.1415 vq=0.7260 perc=2.6013 adv=0.1859 codes=908 3.94s rss=7.93GB
+[gan] RSS 8.06GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 1865）
+[gan] 分段保存完毕，正常退出
+[2026/10/08 ���� 22:58:34.12] round 5 ended rc=0 
+[2026/10/08 ���� 22:58:49.16] round 6 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 1865
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 1880] loss=2.3434 rec=0.0687 vq=0.5198 perc=1.8230 adv=-0.1361 codes=824 3.03s rss=1.00GB
+[gan step 1900] loss=3.0236 rec=0.1072 vq=0.7111 perc=2.1819 adv=0.0467 codes=903 3.22s rss=1.61GB
+[gan step 1920] loss=2.8130 rec=0.1061 vq=0.5736 perc=2.1967 adv=-0.1268 codes=858 3.07s rss=2.11GB
+[gan step 1940] loss=2.9673 rec=0.1060 vq=0.7035 perc=2.2987 adv=-0.2820 codes=918 3.13s rss=2.66GB
+[gan step 1960] loss=2.7816 rec=0.0839 vq=0.5822 perc=2.0051 adv=0.2207 codes=854 3.32s rss=3.23GB
+[gan step 1980] loss=3.2885 rec=0.1145 vq=0.7169 perc=2.3926 adv=0.1289 codes=891 3.11s rss=3.67GB
+[gan step 2000] loss=2.8975 rec=0.0937 vq=0.6459 perc=2.2196 adv=-0.1233 codes=863 3.45s rss=4.32GB
+[gan step 2020] loss=2.9607 rec=0.0969 vq=0.6220 perc=2.1996 adv=0.0843 codes=851 3.15s rss=4.67GB
+[gan step 2040] loss=3.3602 rec=0.1084 vq=0.7471 perc=2.4614 adv=0.0867 codes=885 3.05s rss=5.38GB
+[gan step 2060] loss=3.3151 rec=0.1318 vq=0.6722 perc=2.4205 adv=0.1813 codes=918 3.08s rss=5.98GB
+[gan step 2080] loss=3.1251 rec=0.0960 vq=0.7628 perc=2.4715 adv=-0.4102 codes=869 3.13s rss=6.63GB
+[gan step 2100] loss=3.2659 rec=0.1013 vq=0.6655 perc=2.3314 adv=0.3354 codes=868 3.16s rss=7.22GB
+[gan step 2120] loss=2.2662 rec=0.0717 vq=0.5656 perc=1.7081 adv=-0.1582 codes=764 3.44s rss=7.68GB
+[gan] RSS 8.03GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 2134）
+[gan] 分段保存完毕，正常退出
+[2026/10/08 ���� 23:13:10.45] round 6 ended rc=0 
+[2026/10/08 ���� 23:13:25.17] round 7 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 2134
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 2140] loss=2.5998 rec=0.0780 vq=0.5257 perc=1.8987 adv=0.1948 codes=858 2.83s rss=0.80GB
+[gan step 2160] loss=2.7837 rec=0.0828 vq=0.6558 perc=2.0535 adv=-0.0167 codes=901 3.12s rss=1.25GB
+[gan step 2180] loss=2.8283 rec=0.0895 vq=0.6237 perc=2.0347 adv=0.1609 codes=837 3.24s rss=1.78GB
+[gan step 2200] loss=3.7948 rec=0.1083 vq=0.9641 perc=2.6967 adv=0.0516 codes=863 3.39s rss=2.16GB
+[gan step 2220] loss=2.9818 rec=0.0880 vq=0.6631 perc=2.2512 adv=-0.0407 codes=876 3.16s rss=2.75GB
+[gan step 2240] loss=2.5931 rec=0.0728 vq=0.5246 perc=1.8566 adv=0.2782 codes=836 3.08s rss=3.36GB
+[gan step 2260] loss=2.8576 rec=0.0839 vq=0.7446 perc=2.1370 adv=-0.2158 codes=867 3.12s rss=3.87GB
+[gan step 2280] loss=3.5059 rec=0.1009 vq=0.8219 perc=2.3927 adv=0.3808 codes=928 3.03s rss=4.40GB
+[gan step 2300] loss=3.1562 rec=0.1002 vq=0.8281 perc=2.3663 adv=-0.2769 codes=888 3.28s rss=4.94GB
+[gan step 2320] loss=3.3372 rec=0.1018 vq=0.7717 perc=2.2984 adv=0.3307 codes=905 3.13s rss=5.47GB
+[gan step 2340] loss=3.1079 rec=0.0840 vq=0.7781 perc=2.3047 adv=-0.1178 codes=897 3.04s rss=6.09GB
+[gan step 2360] loss=2.6293 rec=0.0849 vq=0.6282 perc=2.0627 adv=-0.2930 codes=857 3.18s rss=6.59GB
+[gan step 2380] loss=3.4025 rec=0.0973 vq=0.8528 perc=2.3407 adv=0.2235 codes=856 3.39s rss=7.06GB
+[gan step 2400] loss=3.1930 rec=0.0992 vq=0.8230 perc=2.4071 adv=-0.2726 codes=923 3.58s rss=7.54GB
+[gan step 2420] loss=3.5668 rec=0.1015 vq=0.8771 perc=2.5016 adv=0.1733 codes=891 3.43s rss=8.02GB
+[gan] RSS 8.00GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 2421）
+[gan] 分段保存完毕，正常退出
+[2026/10/08 ���� 23:28:51.77] round 7 ended rc=0 
+[2026/10/08 ���� 23:29:06.14] round 8 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 2421
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 2440] loss=3.6586 rec=0.1164 vq=1.0059 perc=2.6158 adv=-0.1589 codes=899 3.18s rss=1.05GB
+[gan step 2460] loss=3.7247 rec=0.1059 vq=0.9699 perc=2.6268 adv=0.0443 codes=879 3.14s rss=1.48GB
+[gan step 2480] loss=3.4955 rec=0.1056 vq=0.9470 perc=2.5963 adv=-0.3067 codes=908 3.30s rss=2.06GB
+[gan step 2500] loss=2.8092 rec=0.0650 vq=0.6576 perc=1.9728 adv=0.2275 codes=878 3.35s rss=2.49GB
+[gan step 2520] loss=2.8738 rec=0.0885 vq=0.7049 perc=2.0971 adv=-0.0336 codes=820 3.11s rss=3.14GB
+[gan step 2540] loss=3.2106 rec=0.0894 vq=0.8159 perc=2.3633 adv=-0.1160 codes=900 3.13s rss=3.70GB
+[gan step 2560] loss=3.2643 rec=0.0905 vq=0.8226 perc=2.1501 adv=0.4023 codes=871 3.10s rss=4.30GB
+[gan step 2580] loss=3.5797 rec=0.1023 vq=0.9059 perc=2.5925 adv=-0.0420 codes=875 3.31s rss=4.82GB
+[gan step 2600] loss=3.2837 rec=0.0922 vq=0.8754 perc=2.2433 adv=0.1457 codes=901 3.29s rss=5.37GB
+[gan step 2620] loss=2.9702 rec=0.0934 vq=0.7706 perc=2.1079 adv=-0.0033 codes=833 3.20s rss=5.88GB
+[gan step 2640] loss=3.6480 rec=0.1020 vq=0.9688 perc=2.5500 adv=0.0544 codes=907 3.26s rss=6.39GB
+[gan step 2660] loss=3.3981 rec=0.0956 vq=0.9224 perc=2.5000 adv=-0.2400 codes=924 3.49s rss=6.79GB
+[gan step 2680] loss=3.4935 rec=0.0889 vq=0.8902 perc=2.3245 adv=0.3798 codes=861 3.48s rss=7.40GB
+[gan step 2700] loss=3.3558 rec=0.0818 vq=0.9323 perc=2.2386 adv=0.2061 codes=939 3.64s rss=8.01GB
+[gan] RSS 8.01GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 2703）
+[gan] 分段保存完毕，正常退出
+[2026/10/08 ���� 23:44:39.73] round 8 ended rc=0 
+[2026/10/08 ���� 23:44:54.12] round 9 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 2703
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 2720] loss=3.4065 rec=0.0991 vq=0.9697 perc=2.3212 adv=0.0331 codes=900 3.13s rss=0.91GB
+[gan step 2740] loss=3.8355 rec=0.1070 vq=1.0082 perc=2.6799 adv=0.0808 codes=925 3.12s rss=1.61GB
+[gan step 2760] loss=2.9423 rec=0.0876 vq=0.7790 perc=2.0775 adv=-0.0035 codes=877 3.05s rss=2.14GB
+[gan step 2780] loss=3.2249 rec=0.0844 vq=0.7799 perc=2.3115 adv=0.0982 codes=888 3.09s rss=2.61GB
+[gan step 2800] loss=3.7969 rec=0.1231 vq=1.0035 perc=2.6168 adv=0.1069 codes=896 3.20s rss=3.22GB
+[gan step 2820] loss=3.2684 rec=0.0926 vq=0.8182 perc=2.3420 adv=0.0311 codes=892 3.03s rss=3.78GB
+[gan step 2840] loss=3.1303 rec=0.0823 vq=0.8958 perc=2.1514 adv=0.0017 codes=927 3.06s rss=4.26GB
+[gan step 2860] loss=2.7593 rec=0.0832 vq=0.7625 perc=1.8591 adv=0.1089 codes=889 3.31s rss=4.81GB
+[gan step 2880] loss=2.9868 rec=0.0739 vq=0.7709 perc=1.9854 adv=0.3134 codes=882 3.07s rss=5.47GB
+[gan step 2900] loss=3.6670 rec=0.1039 vq=1.0932 perc=2.6603 adv=-0.3809 codes=930 3.14s rss=6.03GB
+[gan step 2920] loss=3.1101 rec=0.0716 vq=0.8152 perc=2.0511 adv=0.3443 codes=905 3.35s rss=6.60GB
+[gan step 2940] loss=3.7199 rec=0.0957 vq=1.0382 perc=2.4877 adv=0.1966 codes=929 3.25s rss=7.09GB
+[gan step 2960] loss=2.6519 rec=0.0713 vq=0.7012 perc=1.9647 adv=-0.1705 codes=837 3.35s rss=7.54GB
+[gan step 2980] loss=3.0693 rec=0.0762 vq=0.7680 perc=1.9409 adv=0.5685 codes=871 3.49s rss=8.00GB
+[gan] RSS 8.01GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 2982）
+[gan] 分段保存完毕，正常退出
+[2026/10/09 ����  0:00:00.31] round 9 ended rc=0 
+[2026/10/09 ����  0:00:15.12] round 10 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 2982
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 3000] loss=3.0055 rec=0.0832 vq=0.8426 perc=2.1907 adv=-0.2222 codes=882 3.11s rss=1.10GB
+[gan step 3020] loss=3.8676 rec=0.1076 vq=1.0938 perc=2.5927 adv=0.1470 codes=923 3.21s rss=1.63GB
+[gan step 3040] loss=3.6514 rec=0.0907 vq=1.0068 perc=2.4543 adv=0.1992 codes=930 3.24s rss=2.15GB
+[gan step 3060] loss=3.7081 rec=0.0863 vq=1.0492 perc=2.3695 adv=0.4062 codes=939 3.05s rss=2.73GB
+[gan step 3080] loss=2.9409 rec=0.0700 vq=0.7274 perc=2.0853 adv=0.1165 codes=870 3.03s rss=3.22GB
+[gan step 3100] loss=3.8313 rec=0.0920 vq=1.0852 perc=2.5409 adv=0.2264 codes=941 3.26s rss=3.79GB
+[gan step 3120] loss=2.9549 rec=0.0789 vq=0.8584 perc=2.1416 adv=-0.2480 codes=872 3.05s rss=4.25GB
+[gan step 3140] loss=4.3123 rec=0.1064 vq=1.3235 perc=2.8658 adv=0.0330 codes=937 3.14s rss=4.78GB
+[gan step 3160] loss=4.4198 rec=0.1257 vq=1.2721 perc=3.0924 adv=-0.1407 codes=918 3.05s rss=5.33GB
+[gan step 3180] loss=2.3749 rec=0.0691 vq=0.7109 perc=1.8040 adv=-0.4182 codes=854 3.17s rss=5.85GB
+[gan step 3200] loss=3.6341 rec=0.0920 vq=0.9619 perc=2.5748 adv=0.0107 codes=902 3.36s rss=6.44GB
+[gan step 3220] loss=3.3441 rec=0.1138 vq=0.8525 perc=2.1872 adv=0.3812 codes=904 3.40s rss=7.00GB
+[gan step 3240] loss=3.5972 rec=0.0907 vq=0.9182 perc=2.3251 adv=0.5266 codes=918 3.35s rss=7.60GB
+[gan] RSS 8.03GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 3258）
+[gan] 分段保存完毕，正常退出
+[2026/10/09 ����  0:15:05.36] round 10 ended rc=0 
+[2026/10/09 ����  0:15:20.18] round 11 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 3258
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 3260] loss=3.3151 rec=0.0916 vq=0.8030 perc=2.3199 adv=0.2013 codes=829 2.89s rss=0.71GB
+[gan step 3280] loss=3.0677 rec=0.0869 vq=0.8112 perc=2.0035 adv=0.3322 codes=888 3.12s rss=1.26GB
+[gan step 3300] loss=3.2642 rec=0.0835 vq=0.8985 perc=2.2246 adv=0.1152 codes=864 3.21s rss=1.62GB
+[gan step 3320] loss=3.2943 rec=0.0841 vq=0.9766 perc=2.2455 adv=-0.0238 codes=915 3.11s rss=2.22GB
+[gan step 3340] loss=2.9472 rec=0.0852 vq=0.8025 perc=2.1276 adv=-0.1362 codes=823 3.14s rss=2.77GB
+[gan step 3360] loss=3.4088 rec=0.0828 vq=0.9149 perc=2.0803 adv=0.6615 codes=894 3.14s rss=3.42GB
+[gan step 3380] loss=2.7894 rec=0.0845 vq=0.7574 perc=1.9199 adv=0.0550 codes=862 3.16s rss=3.98GB
+[gan step 3400] loss=3.2364 rec=0.0979 vq=0.9034 perc=2.3332 adv=-0.1963 codes=894 3.15s rss=4.56GB
+[gan step 3420] loss=3.1826 rec=0.0819 vq=0.8457 perc=2.2001 adv=0.1096 codes=922 3.16s rss=4.92GB
+[gan step 3440] loss=3.6426 rec=0.0946 vq=1.0338 perc=2.4251 adv=0.1781 codes=903 3.10s rss=5.46GB
+[gan step 3460] loss=3.0394 rec=0.0749 vq=0.8059 perc=1.9540 adv=0.4090 codes=851 3.05s rss=6.06GB
+[gan step 3480] loss=2.8002 rec=0.0693 vq=0.6667 perc=1.7861 adv=0.5561 codes=800 3.16s rss=6.57GB
+[gan step 3500] loss=3.4945 rec=0.0858 vq=0.9877 perc=2.2875 adv=0.2671 codes=912 3.62s rss=7.11GB
+[gan step 3520] loss=3.0235 rec=0.0802 vq=0.8279 perc=2.0781 adv=0.0746 codes=867 3.30s rss=7.75GB
+[gan] RSS 8.03GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 3532）
+[gan] 分段保存完毕，正常退出
+[2026/10/09 ����  0:30:02.28] round 11 ended rc=0 
+[2026/10/09 ����  0:30:17.19] round 12 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 3532
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 3540] loss=3.2877 rec=0.0735 vq=0.8466 perc=2.0474 adv=0.6403 codes=860 2.92s rss=0.80GB
+[gan step 3560] loss=3.5854 rec=0.0840 vq=0.9486 perc=2.3783 adv=0.3489 codes=945 3.08s rss=1.35GB
+[gan step 3580] loss=3.3743 rec=0.0817 vq=0.9926 perc=2.2881 adv=0.0239 codes=911 3.18s rss=1.90GB
+[gan step 3600] loss=3.1977 rec=0.0697 vq=0.8303 perc=1.9485 adv=0.6985 codes=833 3.19s rss=2.40GB
+[gan step 3620] loss=2.4116 rec=0.0775 vq=0.6312 perc=1.6845 adv=0.0367 codes=818 3.14s rss=2.99GB
+[gan step 3640] loss=3.6152 rec=0.0753 vq=1.0549 perc=2.3432 adv=0.2838 codes=903 3.07s rss=3.57GB
+[gan step 3660] loss=2.9587 rec=0.0867 vq=0.8894 perc=2.1096 adv=-0.2541 codes=898 3.10s rss=4.18GB
+[gan step 3680] loss=3.2253 rec=0.0771 vq=0.8847 perc=2.1485 adv=0.2298 codes=878 3.09s rss=4.66GB
+[gan step 3700] loss=3.3057 rec=0.0815 vq=0.8669 perc=2.1047 adv=0.5052 codes=884 3.19s rss=5.07GB
+[gan step 3720] loss=3.3013 rec=0.0857 vq=0.9387 perc=2.1684 adv=0.2170 codes=868 3.04s rss=5.64GB
+[gan step 3740] loss=3.6288 rec=0.0854 vq=0.9920 perc=2.3569 adv=0.3890 codes=918 3.09s rss=6.24GB
+[gan step 3760] loss=2.8588 rec=0.0805 vq=0.7836 perc=1.9331 adv=0.1232 codes=811 3.31s rss=6.74GB
+[gan step 3780] loss=3.1965 rec=0.0844 vq=0.8878 perc=2.1595 adv=0.1297 codes=884 3.34s rss=7.28GB
+[gan step 3800] loss=3.8695 rec=0.0966 vq=1.0932 perc=2.5528 adv=0.2538 codes=911 3.64s rss=7.89GB
+[gan] RSS 8.03GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 3806）
+[gan] 分段保存完毕，正常退出
+[2026/10/09 ����  0:44:58.59] round 12 ended rc=0 
+[2026/10/09 ����  0:45:13.18] round 13 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 3806
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 3820] loss=3.5905 rec=0.0915 vq=0.9787 perc=2.4949 adv=0.0508 codes=921 3.08s rss=0.85GB
+[gan step 3840] loss=3.3958 rec=0.0903 vq=0.9525 perc=2.2048 adv=0.2964 codes=904 3.05s rss=1.58GB
+[gan step 3860] loss=3.5856 rec=0.0847 vq=1.0190 perc=2.4741 adv=0.0156 codes=922 3.02s rss=2.08GB
+[gan step 3880] loss=2.7583 rec=0.0747 vq=0.7105 perc=1.7845 adv=0.3773 codes=846 3.12s rss=2.52GB
+[gan step 3900] loss=3.4928 rec=0.1089 vq=1.0639 perc=2.4868 adv=-0.3336 codes=913 3.25s rss=2.79GB
+[gan step 3920] loss=2.9397 rec=0.0714 vq=0.6997 perc=1.8635 adv=0.6102 codes=853 3.16s rss=3.46GB
+[gan step 3940] loss=3.3718 rec=0.0826 vq=0.9773 perc=2.4256 adv=-0.2275 codes=947 3.08s rss=4.00GB
+[gan step 3960] loss=3.5331 rec=0.0937 vq=1.0128 perc=2.5594 adv=-0.2657 codes=947 3.06s rss=4.48GB
+[gan step 3980] loss=3.5658 rec=0.0848 vq=1.0377 perc=2.4039 adv=0.0787 codes=907 3.14s rss=5.00GB
+[gan step 4000] loss=3.8951 rec=0.1016 vq=1.0547 perc=2.5200 adv=0.4377 codes=920 3.19s rss=5.57GB
+[gan step 4020] loss=3.1600 rec=0.0788 vq=0.9289 perc=2.1893 adv=-0.0740 codes=886 3.07s rss=6.08GB
+[gan step 4040] loss=3.5511 rec=0.0828 vq=0.9227 perc=2.2139 adv=0.6634 codes=904 3.14s rss=6.64GB
+[gan step 4060] loss=3.3286 rec=0.0981 vq=0.9370 perc=2.1929 adv=0.2009 codes=870 3.80s rss=7.09GB
+[gan step 4080] loss=3.4933 rec=0.0838 vq=0.9462 perc=2.3025 adv=0.3215 codes=888 3.50s rss=7.70GB
+[gan] RSS 8.02GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 4094）
+[gan] 分段保存完毕，正常退出
+[2026/10/09 ����  1:00:40.00] round 13 ended rc=0 
+[2026/10/09 ����  1:00:55.17] round 14 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 4094
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 4100] loss=3.2944 rec=0.0862 vq=0.9235 perc=2.3817 adv=-0.1937 codes=905 2.95s rss=0.79GB
+[gan step 4120] loss=2.7600 rec=0.0614 vq=0.7788 perc=1.8181 adv=0.2034 codes=850 3.03s rss=1.39GB
+[gan step 4140] loss=3.0689 rec=0.0807 vq=0.8295 perc=2.1199 adv=0.0776 codes=799 3.05s rss=1.87GB
+[gan step 4160] loss=2.9262 rec=0.0744 vq=0.8836 perc=2.1105 adv=-0.2846 codes=890 3.06s rss=2.38GB
+[gan step 4180] loss=4.0971 rec=0.1022 vq=1.1874 perc=2.6711 adv=0.2728 codes=910 3.08s rss=2.98GB
+[gan step 4200] loss=3.5689 rec=0.0814 vq=0.9576 perc=2.3258 adv=0.4080 codes=920 3.20s rss=3.48GB
+[gan step 4220] loss=3.0852 rec=0.0862 vq=0.8699 perc=2.0428 adv=0.1725 codes=873 3.15s rss=4.06GB
+[gan step 4240] loss=3.6474 rec=0.0850 vq=1.0576 perc=2.5793 adv=-0.1489 codes=897 3.07s rss=4.57GB
+[gan step 4260] loss=3.7341 rec=0.0968 vq=1.0770 perc=2.4337 adv=0.2533 codes=933 3.06s rss=5.09GB
+[gan step 4280] loss=3.4725 rec=0.0788 vq=0.9412 perc=2.2312 adv=0.4425 codes=859 3.38s rss=5.71GB
+[gan step 4300] loss=3.1143 rec=0.0822 vq=0.8992 perc=2.2255 adv=-0.1852 codes=904 3.52s rss=6.35GB
+[gan step 4320] loss=2.9367 rec=0.0665 vq=0.8557 perc=1.9655 adv=0.0980 codes=885 3.47s rss=7.01GB
+[gan step 4340] loss=2.9378 rec=0.0665 vq=0.8294 perc=1.9030 adv=0.2777 codes=856 3.33s rss=7.49GB
+[gan step 4360] loss=4.3177 rec=0.1083 vq=1.2430 perc=2.8744 adv=0.1841 codes=914 3.49s rss=7.96GB
+[gan] RSS 8.03GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 4363）
+[gan] 分段保存完毕，正常退出
+[2026/10/09 ����  1:15:29.12] round 14 ended rc=0 
+[2026/10/09 ����  1:15:44.18] round 15 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 4363
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 4380] loss=2.8369 rec=0.0679 vq=0.8603 perc=1.9480 adv=-0.0786 codes=846 3.08s rss=0.87GB
+[gan step 4400] loss=3.2101 rec=0.0746 vq=0.9360 perc=2.2044 adv=-0.0096 codes=879 3.22s rss=1.43GB
+[gan step 4420] loss=2.7067 rec=0.0659 vq=0.7193 perc=1.6640 adv=0.5148 codes=837 3.10s rss=2.05GB
+[gan step 4440] loss=2.8013 rec=0.0656 vq=0.7125 perc=1.7920 adv=0.4623 codes=819 3.14s rss=2.46GB
+[gan step 4460] loss=2.9423 rec=0.0845 vq=0.8160 perc=1.9486 adv=0.1863 codes=862 3.03s rss=3.14GB
+[gan step 4480] loss=3.9943 rec=0.1034 vq=1.2256 perc=2.7454 adv=-0.1602 codes=951 3.14s rss=3.62GB
+[gan step 4500] loss=3.6042 rec=0.0788 vq=1.0150 perc=2.3066 adv=0.4075 codes=911 3.15s rss=4.26GB
+[gan step 4520] loss=3.0529 rec=0.0723 vq=0.8635 perc=2.0269 adv=0.1803 codes=891 3.21s rss=4.80GB
+[gan step 4540] loss=3.2874 rec=0.0632 vq=0.8891 perc=2.0295 adv=0.6111 codes=889 3.05s rss=5.34GB
+[gan step 4560] loss=3.5994 rec=0.0912 vq=0.9982 perc=2.2851 adv=0.4497 codes=918 3.11s rss=5.83GB
+[gan step 4580] loss=3.9845 rec=0.1005 vq=1.1979 perc=2.7499 adv=-0.1275 codes=918 3.16s rss=6.32GB
+[gan step 4600] loss=3.6422 rec=0.0956 vq=1.0344 perc=2.4325 adv=0.1594 codes=928 3.42s rss=6.97GB
+[gan step 4620] loss=2.8629 rec=0.0689 vq=0.7860 perc=1.9954 adv=0.0253 codes=846 3.28s rss=7.44GB
+[gan] RSS 8.00GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 4640）
+[gan] 分段保存完毕，正常退出
+[2026/10/09 ����  1:30:38.60] round 15 ended rc=0 
+[2026/10/09 ����  1:30:53.14] round 16 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 4640
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 4660] loss=2.7694 rec=0.0679 vq=0.7323 perc=1.7393 adv=0.4598 codes=727 3.12s rss=1.06GB
+[gan step 4680] loss=2.8090 rec=0.0496 vq=0.7204 perc=1.6991 adv=0.6797 codes=729 3.12s rss=1.55GB
+[gan step 4700] loss=4.1289 rec=0.0989 vq=1.2326 perc=2.6821 adv=0.2308 codes=949 3.21s rss=1.97GB
+[gan step 4720] loss=3.6763 rec=0.0955 vq=1.1176 perc=2.5889 adv=-0.2511 codes=856 3.13s rss=2.55GB
+[gan step 4740] loss=2.9318 rec=0.0811 vq=0.8441 perc=1.9541 adv=0.1050 codes=848 3.04s rss=3.15GB
+[gan step 4760] loss=3.7979 rec=0.0956 vq=1.0716 perc=2.4433 adv=0.3750 codes=932 3.10s rss=3.72GB
+[gan step 4780] loss=3.1239 rec=0.0679 vq=0.8501 perc=2.0274 adv=0.3569 codes=886 3.11s rss=4.34GB
+[gan step 4800] loss=3.9762 rec=0.0837 vq=1.1336 perc=2.5661 adv=0.3855 codes=924 3.17s rss=4.82GB
+[gan step 4820] loss=3.4249 rec=0.0810 vq=0.9165 perc=2.3345 adv=0.1860 codes=890 3.07s rss=5.30GB
+[gan step 4840] loss=3.8667 rec=0.0933 vq=1.0771 perc=2.5119 adv=0.3689 codes=916 3.15s rss=5.83GB
+[gan step 4860] loss=2.9262 rec=0.0585 vq=0.7313 perc=1.7959 adv=0.6811 codes=853 3.05s rss=6.34GB
+[gan step 4880] loss=3.3583 rec=0.0837 vq=0.9801 perc=2.2754 adv=0.0383 codes=892 3.38s rss=6.80GB
+[gan step 4900] loss=3.4022 rec=0.0750 vq=0.9149 perc=2.2668 adv=0.2910 codes=905 3.53s rss=7.37GB
+[gan step 4920] loss=2.5188 rec=0.0558 vq=0.7235 perc=1.7632 adv=-0.0476 codes=846 3.43s rss=7.98GB
+[gan] RSS 8.03GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 4922）
+[gan] 分段保存完毕，正常退出
+[2026/10/09 ����  1:45:55.75] round 16 ended rc=0 
+[2026/10/09 ����  1:46:10.18] round 17 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 4922
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 4940] loss=3.3184 rec=0.0728 vq=0.8949 perc=2.1621 adv=0.3773 codes=864 3.06s rss=1.00GB
+[gan step 4960] loss=3.2380 rec=0.0737 vq=0.9038 perc=2.1463 adv=0.2285 codes=920 3.06s rss=1.48GB
+[gan step 4980] loss=3.8230 rec=0.0862 vq=1.1278 perc=2.4461 adv=0.3259 codes=907 3.10s rss=2.01GB
+[gan step 5000] loss=3.1056 rec=0.0727 vq=0.8336 perc=2.0577 adv=0.2832 codes=853 3.18s rss=2.49GB
+[gan step 5020] loss=3.4152 rec=0.0745 vq=0.9736 perc=2.2102 adv=0.3139 codes=865 3.10s rss=3.14GB
+[gan step 5040] loss=2.7078 rec=0.0660 vq=0.7068 perc=1.7402 adv=0.3897 codes=824 3.10s rss=3.64GB
+[gan step 5060] loss=3.3021 rec=0.0752 vq=0.9069 perc=2.1494 adv=0.3413 codes=931 3.10s rss=4.21GB
+[gan step 5080] loss=3.6201 rec=0.0816 vq=1.0333 perc=2.3783 adv=0.2535 codes=930 3.11s rss=4.80GB
+[gan step 5100] loss=3.3335 rec=0.0727 vq=0.9146 perc=2.1832 adv=0.3259 codes=905 3.29s rss=5.31GB
+[gan step 5120] loss=3.6053 rec=0.0780 vq=0.9567 perc=2.3630 adv=0.4153 codes=932 3.16s rss=5.82GB
+[gan step 5140] loss=3.3017 rec=0.0678 vq=0.8881 perc=2.1373 adv=0.4169 codes=894 3.08s rss=6.32GB
+[gan step 5160] loss=2.6447 rec=0.0690 vq=0.6668 perc=1.8057 adv=0.2064 codes=832 3.41s rss=6.78GB
+[gan step 5180] loss=2.6810 rec=0.0596 vq=0.7584 perc=1.8211 adv=0.0839 codes=758 3.46s rss=7.37GB
+[gan step 5200] loss=3.0522 rec=0.0597 vq=0.7889 perc=1.9217 adv=0.5637 codes=823 3.82s rss=7.92GB
+[gan] RSS 8.02GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 5204）
+[gan] 分段保存完毕，正常退出
+[2026/10/09 ����  2:01:17.23] round 17 ended rc=0 
+[2026/10/09 ����  2:01:32.15] round 18 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 5204
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 5220] loss=3.3053 rec=0.0756 vq=0.9687 perc=2.2142 adv=0.0936 codes=889 3.04s rss=0.90GB
+[gan step 5240] loss=3.1193 rec=0.0686 vq=0.9003 perc=2.0015 adv=0.2979 codes=860 2.99s rss=1.43GB
+[gan step 5260] loss=3.6808 rec=0.0799 vq=1.0039 perc=2.4705 adv=0.2532 codes=917 3.17s rss=2.00GB
+[gan step 5280] loss=2.9653 rec=0.0624 vq=0.8132 perc=1.8744 adv=0.4306 codes=843 3.04s rss=2.49GB
+[gan step 5300] loss=2.9812 rec=0.0642 vq=0.8009 perc=1.8711 adv=0.4900 codes=870 3.23s rss=3.05GB
+[gan step 5320] loss=2.2375 rec=0.0545 vq=0.5979 perc=1.5081 adv=0.1540 codes=775 3.12s rss=3.61GB
+[gan step 5340] loss=2.6827 rec=0.0609 vq=0.7440 perc=1.7395 adv=0.2766 codes=828 3.18s rss=4.18GB
+[gan step 5360] loss=3.1324 rec=0.0661 vq=0.8621 perc=1.9955 adv=0.4174 codes=870 3.08s rss=4.77GB
+[gan step 5380] loss=3.0960 rec=0.0726 vq=0.8355 perc=2.0373 adv=0.3013 codes=863 3.13s rss=5.32GB
+[gan step 5400] loss=3.8237 rec=0.0875 vq=1.0987 perc=2.5427 adv=0.1896 codes=883 3.18s rss=5.79GB
+[gan step 5420] loss=3.4474 rec=0.0792 vq=1.0809 perc=2.4309 adv=-0.2873 codes=899 3.13s rss=6.29GB
+[gan step 5440] loss=3.8193 rec=0.0975 vq=1.1132 perc=2.6537 adv=-0.0902 codes=935 3.36s rss=6.92GB
+[gan step 5460] loss=2.9552 rec=0.0620 vq=0.8361 perc=1.9054 adv=0.3034 codes=867 3.40s rss=7.44GB
+[gan step 5480] loss=3.8278 rec=0.0897 vq=1.0865 perc=2.5039 adv=0.2954 codes=882 3.50s rss=8.00GB
+[gan] RSS 8.00GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 5481）
+[gan] 分段保存完毕，正常退出
+[2026/10/09 ����  2:16:20.58] round 18 ended rc=0 
+[2026/10/09 ����  2:16:35.17] round 19 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 5481
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 5500] loss=2.9312 rec=0.0726 vq=0.8459 perc=2.0462 adv=-0.0669 codes=890 3.20s rss=1.14GB
+[gan step 5520] loss=3.4601 rec=0.0692 vq=0.9230 perc=2.1592 adv=0.6172 codes=887 3.06s rss=1.71GB
+[gan step 5540] loss=3.0723 rec=0.0708 vq=0.8918 perc=2.1489 adv=-0.0784 codes=874 3.22s rss=2.23GB
+[gan step 5560] loss=3.2319 rec=0.0693 vq=0.8848 perc=2.0717 adv=0.4123 codes=871 3.04s rss=2.75GB
+[gan step 5580] loss=3.6301 rec=0.0953 vq=1.0772 perc=2.6530 adv=-0.3909 codes=885 3.18s rss=3.26GB
+[gan step 5600] loss=3.0584 rec=0.0603 vq=0.7888 perc=1.8935 adv=0.6317 codes=830 3.24s rss=3.80GB
+[gan step 5620] loss=3.4268 rec=0.0831 vq=1.0858 perc=2.4870 adv=-0.4583 codes=839 3.05s rss=4.32GB
+[gan step 5640] loss=4.4656 rec=0.1045 vq=1.2538 perc=2.9566 adv=0.3015 codes=968 3.03s rss=4.87GB
+[gan step 5660] loss=3.5174 rec=0.0798 vq=1.0126 perc=2.3497 adv=0.1506 codes=865 3.13s rss=5.37GB
+[gan step 5680] loss=3.2830 rec=0.0719 vq=0.9139 perc=2.0802 adv=0.4339 codes=881 3.33s rss=5.92GB
+[gan step 5700] loss=3.5520 rec=0.0763 vq=0.9954 perc=2.3053 adv=0.3499 codes=884 3.45s rss=6.46GB
+[gan step 5720] loss=3.1195 rec=0.0675 vq=0.8706 perc=2.0357 adv=0.2914 codes=868 3.39s rss=6.92GB
+[gan step 5740] loss=2.4997 rec=0.0625 vq=0.7054 perc=1.6487 adv=0.1662 codes=830 3.40s rss=7.48GB
+[gan step 5760] loss=3.1619 rec=0.0637 vq=0.8800 perc=2.0599 adv=0.3164 codes=866 3.58s rss=7.99GB
+[gan] RSS 8.01GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 5762）
+[gan] 分段保存完毕，正常退出
+[2026/10/09 ����  2:31:51.26] round 19 ended rc=0 
+[2026/10/09 ����  2:32:06.22] round 20 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 5762
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 5780] loss=3.4607 rec=0.0747 vq=1.0030 perc=2.2277 adv=0.3105 codes=871 3.03s rss=1.01GB
+[gan step 5800] loss=3.3516 rec=0.0744 vq=0.9225 perc=2.2489 adv=0.2114 codes=853 3.41s rss=1.48GB
+[gan step 5820] loss=2.7938 rec=0.0601 vq=0.7448 perc=1.7751 adv=0.4276 codes=871 3.09s rss=2.03GB
+[gan step 5840] loss=3.4354 rec=0.0745 vq=0.9099 perc=2.2120 adv=0.4780 codes=888 3.11s rss=2.51GB
+[gan step 5860] loss=2.6690 rec=0.0590 vq=0.8271 perc=1.8354 adv=-0.1050 codes=839 3.07s rss=3.17GB
+[gan step 5880] loss=3.2694 rec=0.0797 vq=0.9119 perc=2.0664 adv=0.4230 codes=858 3.07s rss=3.66GB
+[gan step 5900] loss=3.3152 rec=0.0718 vq=0.9216 perc=2.1966 adv=0.2506 codes=919 3.27s rss=4.24GB
+[gan step 5920] loss=3.2766 rec=0.0657 vq=0.9226 perc=2.1336 adv=0.3093 codes=895 3.02s rss=4.82GB
+[gan step 5940] loss=3.6902 rec=0.0797 vq=1.0467 perc=2.4673 adv=0.1930 codes=941 3.12s rss=5.31GB
+[gan step 5960] loss=3.7030 rec=0.0838 vq=1.0365 perc=2.5027 adv=0.1599 codes=927 3.10s rss=5.83GB
+[gan step 5980] loss=3.1760 rec=0.0684 vq=0.8399 perc=2.0498 adv=0.4357 codes=874 3.22s rss=6.32GB
+[gan step 6000] loss=2.7131 rec=0.0622 vq=0.7705 perc=1.8251 adv=0.1106 codes=842 3.68s rss=6.78GB
+[gan step 6020] loss=2.4511 rec=0.0448 vq=0.6260 perc=1.5220 adv=0.5167 codes=789 3.44s rss=7.35GB
+[gan step 6040] loss=3.3461 rec=0.0710 vq=0.9517 perc=2.1793 adv=0.2883 codes=904 3.39s rss=7.92GB
+[gan] RSS 8.02GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 6044）
+[gan] 分段保存完毕，正常退出
+[2026/10/09 ����  2:47:14.81] round 20 ended rc=0 
+[2026/10/09 ����  2:47:29.17] round 21 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 6044
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 6060] loss=2.9232 rec=0.0654 vq=0.8116 perc=1.8875 adv=0.3174 codes=824 2.96s rss=1.06GB
+[gan step 6080] loss=2.7239 rec=0.0556 vq=0.7701 perc=1.7393 adv=0.3177 codes=845 3.07s rss=1.58GB
+[gan step 6100] loss=3.8919 rec=0.0869 vq=1.1238 perc=2.5761 adv=0.2101 codes=911 3.17s rss=2.15GB
+[gan step 6120] loss=3.3880 rec=0.0786 vq=1.0331 perc=2.3522 adv=-0.1517 codes=956 3.18s rss=2.53GB
+[gan step 6140] loss=3.0765 rec=0.0618 vq=0.8656 perc=1.9478 adv=0.4027 codes=889 3.20s rss=2.97GB
+[gan step 6160] loss=3.3131 rec=0.0824 vq=0.9496 perc=2.2095 adv=0.1435 codes=869 3.01s rss=3.50GB
+[gan step 6180] loss=3.6653 rec=0.0752 vq=1.0279 perc=2.3563 adv=0.4119 codes=946 3.04s rss=3.96GB
+[gan step 6200] loss=3.0681 rec=0.0625 vq=0.8666 perc=2.0099 adv=0.2581 codes=870 3.25s rss=4.55GB
+[gan step 6220] loss=2.8640 rec=0.0603 vq=0.7836 perc=1.8310 adv=0.3784 codes=836 3.08s rss=5.04GB
+[gan step 6240] loss=2.5924 rec=0.0544 vq=0.6864 perc=1.6750 adv=0.3533 codes=813 3.04s rss=5.54GB
+[gan step 6260] loss=2.7048 rec=0.0492 vq=0.7018 perc=1.6566 adv=0.5946 codes=804 3.04s rss=6.04GB
+[gan step 6280] loss=2.7759 rec=0.0573 vq=0.7771 perc=1.7952 adv=0.2926 codes=819 3.42s rss=6.69GB
+[gan step 6300] loss=3.4067 rec=0.0726 vq=0.9397 perc=2.1756 adv=0.4377 codes=874 3.43s rss=7.28GB
+[gan step 6320] loss=3.9213 rec=0.0973 vq=1.1963 perc=2.7078 adv=-0.1602 codes=917 3.37s rss=7.82GB
+[gan] RSS 8.01GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 6328）
+[gan] 分段保存完毕，正常退出
+[2026/10/09 ����  3:02:37.74] round 21 ended rc=0 
+[2026/10/09 ����  3:02:52.13] round 22 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 6328
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 6340] loss=3.6023 rec=0.0927 vq=1.0465 perc=2.4819 adv=-0.0376 codes=930 3.01s rss=0.94GB
+[gan step 6360] loss=3.3566 rec=0.0645 vq=0.9115 perc=2.1164 adv=0.5282 codes=899 3.05s rss=1.35GB
+[gan step 6380] loss=3.7368 rec=0.0882 vq=1.1342 perc=2.6155 adv=-0.2024 codes=936 3.09s rss=1.93GB
+[gan step 6400] loss=3.8338 rec=0.0882 vq=1.1686 perc=2.5460 adv=0.0621 codes=945 3.20s rss=2.39GB
+[gan step 6420] loss=3.5817 rec=0.0781 vq=1.0432 perc=2.3351 adv=0.2503 codes=912 3.11s rss=2.94GB
+[gan step 6440] loss=3.4969 rec=0.0840 vq=1.0248 perc=2.3845 adv=0.0071 codes=922 3.07s rss=3.54GB
+[gan step 6460] loss=3.1528 rec=0.0619 vq=0.8912 perc=2.0093 adv=0.3807 codes=856 3.17s rss=4.05GB
+[gan step 6480] loss=3.2892 rec=0.0716 vq=0.9115 perc=2.1700 adv=0.2721 codes=911 3.04s rss=4.56GB
+[gan step 6500] loss=3.3829 rec=0.0757 vq=0.9820 perc=2.2105 adv=0.2293 codes=880 3.22s rss=5.09GB
+[gan step 6520] loss=3.8060 rec=0.0726 vq=1.0899 perc=2.5150 adv=0.2570 codes=942 3.08s rss=5.69GB
+[gan step 6540] loss=3.1256 rec=0.0536 vq=0.8574 perc=1.9290 adv=0.5713 codes=847 3.21s rss=6.20GB
+[gan step 6560] loss=4.2135 rec=0.1083 vq=1.3491 perc=2.8696 adv=-0.2269 codes=910 3.32s rss=6.80GB
+[gan step 6580] loss=3.7139 rec=0.0786 vq=1.0544 perc=2.4507 adv=0.2601 codes=912 3.49s rss=7.36GB
+[gan step 6600] loss=3.7527 rec=0.0804 vq=1.0986 perc=2.5218 adv=0.1041 codes=915 3.58s rss=7.86GB
+[gan] RSS 8.01GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 6607）
+[gan] 分段保存完毕，正常退出
+[2026/10/09 ����  3:17:46.96] round 22 ended rc=0 
+[2026/10/09 ����  3:18:02.19] round 23 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 6607
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 6620] loss=3.6883 rec=0.0756 vq=1.0947 perc=2.4346 adv=0.1667 codes=891 2.99s rss=0.97GB
+[gan step 6640] loss=3.3728 rec=0.0656 vq=0.9448 perc=2.1580 adv=0.4088 codes=907 3.09s rss=1.38GB
+[gan step 6660] loss=3.0251 rec=0.0623 vq=0.8404 perc=1.9386 adv=0.3676 codes=892 3.09s rss=1.88GB
+[gan step 6680] loss=2.7709 rec=0.0597 vq=0.7020 perc=1.7988 adv=0.4206 codes=779 3.07s rss=2.39GB
+[gan step 6700] loss=3.2575 rec=0.0709 vq=0.9174 perc=2.0856 adv=0.3672 codes=880 3.16s rss=2.96GB
+[gan step 6720] loss=3.6801 rec=0.0832 vq=1.1041 perc=2.4387 adv=0.1083 codes=918 3.02s rss=3.56GB
+[gan step 6740] loss=2.9390 rec=0.0552 vq=0.7934 perc=1.8510 adv=0.4788 codes=867 3.10s rss=4.02GB
+[gan step 6760] loss=2.8803 rec=0.0557 vq=0.7897 perc=1.8116 adv=0.4465 codes=814 3.09s rss=4.59GB
+[gan step 6780] loss=3.4349 rec=0.0654 vq=0.9736 perc=2.2410 adv=0.3098 codes=898 3.08s rss=5.12GB
+[gan step 6800] loss=3.4804 rec=0.0847 vq=1.0211 perc=2.3275 adv=0.0942 codes=916 3.19s rss=5.73GB
+[gan step 6820] loss=3.1097 rec=0.0606 vq=0.8846 perc=1.9768 adv=0.3753 codes=881 3.13s rss=6.20GB
+[gan step 6840] loss=2.9543 rec=0.0590 vq=0.8065 perc=1.8457 adv=0.4863 codes=855 3.33s rss=6.80GB
+[gan step 6860] loss=3.5236 rec=0.0699 vq=1.0061 perc=2.2722 adv=0.3508 codes=930 3.40s rss=7.29GB
+[gan step 6880] loss=3.9213 rec=0.0947 vq=1.1895 perc=2.6894 adv=-0.1046 codes=909 3.36s rss=7.89GB
+[gan] RSS 8.01GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 6886）
+[gan] 分段保存完毕，正常退出
+[2026/10/09 ����  3:33:01.25] round 23 ended rc=0 
+[2026/10/09 ����  3:33:16.10] round 24 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 6886
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 6900] loss=3.0249 rec=0.0578 vq=0.8275 perc=1.9257 adv=0.4276 codes=847 3.14s rss=0.96GB
+[gan step 6920] loss=3.1718 rec=0.0733 vq=0.8883 perc=2.1197 adv=0.1811 codes=880 3.06s rss=1.39GB
+[gan step 6940] loss=3.2528 rec=0.0695 vq=0.9319 perc=2.1121 adv=0.2787 codes=885 2.99s rss=1.95GB
+[gan step 6960] loss=3.3586 rec=0.0714 vq=0.9803 perc=2.2484 adv=0.1168 codes=860 3.08s rss=2.45GB
+[gan step 6980] loss=2.7126 rec=0.0581 vq=0.7541 perc=1.7622 adv=0.2764 codes=837 3.05s rss=2.99GB
+[gan step 7000] loss=2.7801 rec=0.0594 vq=0.7403 perc=1.8139 adv=0.3329 codes=836 3.20s rss=3.55GB
+[gan step 7020] loss=3.2970 rec=0.0762 vq=0.9433 perc=2.1515 adv=0.2519 codes=870 3.01s rss=4.09GB
+[gan step 7040] loss=2.7000 rec=0.0519 vq=0.7226 perc=1.6521 adv=0.5469 codes=840 3.11s rss=4.59GB
+[gan step 7060] loss=3.0890 rec=0.0621 vq=0.8633 perc=1.9712 adv=0.3848 codes=877 3.06s rss=5.02GB
+[gan step 7080] loss=3.2967 rec=0.0702 vq=0.9547 perc=2.1480 adv=0.2478 codes=904 3.09s rss=5.60GB
+[gan step 7100] loss=3.9696 rec=0.0953 vq=1.1954 perc=2.7152 adv=-0.0727 codes=946 3.25s rss=6.26GB
+[gan step 7120] loss=2.9499 rec=0.0544 vq=0.8252 perc=1.8638 adv=0.4127 codes=869 3.42s rss=6.82GB
+[gan step 7140] loss=3.5637 rec=0.0662 vq=1.0094 perc=2.3657 adv=0.2448 codes=917 3.43s rss=7.39GB
+[gan step 7160] loss=3.1685 rec=0.0565 vq=0.8757 perc=2.0413 adv=0.3900 codes=900 3.38s rss=7.92GB
+[gan] RSS 8.01GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 7165）
+[gan] 分段保存完毕，正常退出
+[2026/10/09 ����  3:48:14.48] round 24 ended rc=0 
+[2026/10/09 ����  3:48:29.20] round 25 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 7165
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 7180] loss=3.6156 rec=0.0737 vq=1.0095 perc=2.4111 adv=0.2423 codes=931 3.23s rss=1.03GB
+[gan step 7200] loss=3.1433 rec=0.0684 vq=0.8672 perc=2.0554 adv=0.3047 codes=872 3.13s rss=1.59GB
+[gan step 7220] loss=3.3358 rec=0.0689 vq=0.9846 perc=2.1791 adv=0.2063 codes=885 3.07s rss=2.09GB
+[gan step 7240] loss=3.4264 rec=0.0707 vq=0.9625 perc=2.2457 adv=0.2950 codes=899 3.03s rss=2.55GB
+[gan step 7260] loss=2.3006 rec=0.0477 vq=0.5643 perc=1.3946 adv=0.5881 codes=720 3.10s rss=2.95GB
+[gan step 7280] loss=2.9936 rec=0.0580 vq=0.8237 perc=1.9148 adv=0.3941 codes=866 3.19s rss=3.48GB
+[gan step 7300] loss=3.3622 rec=0.0702 vq=0.9814 perc=2.1723 adv=0.2768 codes=912 3.16s rss=4.00GB
+[gan step 7320] loss=3.2441 rec=0.0630 vq=0.9790 perc=2.0639 adv=0.2764 codes=867 3.08s rss=4.51GB
+[gan step 7340] loss=3.4711 rec=0.0748 vq=1.0234 perc=2.3327 adv=0.0806 codes=927 3.08s rss=5.07GB
+[gan step 7360] loss=2.4250 rec=0.0396 vq=0.6338 perc=1.4418 adv=0.6195 codes=780 3.05s rss=5.60GB
+[gan step 7380] loss=3.4113 rec=0.0710 vq=1.0121 perc=2.2315 adv=0.1932 codes=925 3.09s rss=6.16GB
+[gan step 7400] loss=3.5421 rec=0.0680 vq=1.0338 perc=2.3237 adv=0.2332 codes=930 3.51s rss=6.71GB
+[gan step 7420] loss=2.7009 rec=0.0501 vq=0.7075 perc=1.6769 adv=0.5325 codes=831 3.36s rss=7.01GB
+[gan step 7440] loss=3.5945 rec=0.0859 vq=1.0633 perc=2.4675 adv=-0.0444 codes=892 3.46s rss=7.73GB
+[gan] RSS 8.02GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 7453）
+[gan] 分段保存完毕，正常退出
+[2026/10/09 ����  4:03:56.22] round 25 ended rc=0 
+[2026/10/09 ����  4:04:11.21] round 26 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 7453
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 7460] loss=3.3494 rec=0.0729 vq=0.9571 perc=2.2493 adv=0.1402 codes=886 2.88s rss=0.86GB
+[gan step 7480] loss=3.2401 rec=0.0666 vq=0.9535 perc=2.1097 adv=0.2206 codes=823 3.04s rss=1.28GB
+[gan step 7500] loss=3.1459 rec=0.0638 vq=0.8745 perc=2.0319 adv=0.3515 codes=841 3.20s rss=1.72GB
+[gan step 7520] loss=3.0942 rec=0.0624 vq=0.8741 perc=1.9506 adv=0.4140 codes=902 3.09s rss=2.35GB
+[gan step 7540] loss=3.5343 rec=0.0780 vq=1.0107 perc=2.3716 adv=0.1481 codes=908 3.06s rss=2.88GB
+[gan step 7560] loss=3.5615 rec=0.0712 vq=1.0223 perc=2.3733 adv=0.1893 codes=873 3.06s rss=3.54GB
+[gan step 7580] loss=2.6764 rec=0.0517 vq=0.7233 perc=1.6450 adv=0.5126 codes=851 3.14s rss=4.00GB
+[gan step 7600] loss=3.3011 rec=0.0650 vq=0.9269 perc=2.1221 adv=0.3742 codes=888 3.26s rss=4.42GB
+[gan step 7620] loss=3.6500 rec=0.0800 vq=1.0620 perc=2.4589 adv=0.0981 codes=944 3.14s rss=4.93GB
+[gan step 7640] loss=2.6815 rec=0.0502 vq=0.7148 perc=1.6681 adv=0.4968 codes=830 3.09s rss=5.45GB
+[gan step 7660] loss=3.4775 rec=0.0723 vq=1.0025 perc=2.3200 adv=0.1655 codes=907 3.26s rss=6.03GB
+[gan step 7680] loss=2.9956 rec=0.0681 vq=0.8408 perc=1.9368 adv=0.2995 codes=838 3.22s rss=6.56GB
+[gan step 7700] loss=2.9056 rec=0.0588 vq=0.7804 perc=1.8688 adv=0.3950 codes=872 3.49s rss=7.08GB
+[gan step 7720] loss=3.0700 rec=0.0636 vq=0.8506 perc=1.9777 adv=0.3561 codes=884 3.45s rss=7.55GB
+[gan] RSS 8.03GB >= --max_rss_gb 8.00GB，主动退出交给驱动重启（step 7739）
+[gan] 分段保存完毕，正常退出
+[2026/10/09 ����  4:19:31.91] round 26 ended rc=0 
+[2026/10/09 ����  4:19:46.20] round 27 starting 
+[gan] images=14432 params=3.67M batch=4 size=256
+[gan] 下采样 8x -> 网格 32x32 = 1024 token/图   ch=(64, 128, 256)  embed_dim=64
+[gan] 结构: 瓶颈注意力=开  ResBlock=3x3+1x1
+[gan] 量化: 单尺度 VQ
+[gan] 感知损失: VGG16 relu1_2/2_2/3_3, w=1.00
+[gan] 判别器: PatchGAN ndf=32, 0.69M 参数, w_adv=0.50
+[gan] resume: ckpt_last.pt -> step 7739
+[gan] 学习率: lr=2.0e-04 warmup=1000 lr_min=0.0e+00 （线性 warmup + 余弦退火）
+[gan step 7740] loss=3.6842 rec=0.0834 vq=1.1096 perc=2.4711 adv=0.0404 codes=948 2.97s rss=0.76GB
+[gan step 7760] loss=3.5747 rec=0.0783 vq=1.0269 perc=2.4062 adv=0.1267 codes=907 3.04s rss=1.15GB
+[gan step 7780] loss=3.5141 rec=0.0835 vq=1.0034 perc=2.3813 adv=0.0919 codes=909 3.04s rss=1.74GB
+[gan step 7800] loss=3.6373 rec=0.0848 vq=1.1153 perc=2.4236 adv=0.0272 codes=917 3.19s rss=2.25GB
+[gan step 7820] loss=3.2940 rec=0.0769 vq=0.9318 perc=2.1766 adv=0.2173 codes=876 3.11s rss=2.74GB
+[gan step 7840] loss=3.4612 rec=0.0686 vq=0.9939 perc=2.2680 adv=0.2615 codes=901 3.08s rss=3.24GB
+[gan step 7860] loss=3.3676 rec=0.0626 vq=0.9892 perc=2.1505 adv=0.3304 codes=900 3.07s rss=3.78GB
+[gan step 7880] loss=2.7547 rec=0.0614 vq=0.7558 perc=1.7992 adv=0.2766 codes=853 2.99s rss=4.34GB
+[gan step 7900] loss=3.4139 rec=0.0730 vq=0.9823 perc=2.2391 adv=0.2389 codes=899 3.25s rss=4.90GB
+[gan step 7920] loss=3.1676 rec=0.0664 vq=0.8862 perc=2.1035 adv=0.2231 codes=874 3.08s rss=5.43GB
+[gan step 7940] loss=3.2382 rec=0.0728 vq=0.9103 perc=2.1602 adv=0.1901 codes=851 3.06s rss=6.10GB
+[gan step 7960] loss=3.8967 rec=0.1024 vq=1.1175 perc=2.7000 adv=-0.0464 codes=939 3.47s rss=6.60GB
+[gan step 7980] loss=3.7393 rec=0.0844 vq=1.1271 perc=2.4944 adv=0.0667 codes=932 3.42s rss=7.07GB
+[gan step 8000] loss=2.7816 rec=0.0518 vq=0.7405 perc=1.7649 adv=0.4488 codes=863 3.50s rss=7.66GB
+[gan] done steps=8000 peak_rss=8.74GB
+[gan] 全部完成: 8000 步
+[2026/10/09 ����  4:33:44.18] round 27 ended rc=0 
+[2026/10/09 ����  4:33:44.22] budget reached, driver stopping 
+[2026/10/09 ����  4:33:44.22] driver done after 27 rounds 

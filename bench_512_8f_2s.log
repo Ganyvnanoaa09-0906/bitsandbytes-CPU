@@ -1,0 +1,4 @@
+[bench] threads=6 scheduler=dpm res=512 frames=8 steps=2 adapter=animatediff-motion-adapter-v1-5
+[bench] load 25.7s
+[bench] RESULT 512x512x8f x2step = 277.07s (per-frame 34.63s, per-frame-step 17.317s) RSS_peak 11.08GB
+[bench] saved bench_dpm_512_8f_2s.gif

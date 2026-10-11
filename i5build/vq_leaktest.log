@@ -1,0 +1,14 @@
+[vqvae] ch=(64, 128, 256, 256) => downsample 16x => grid 24x24 for size 384
+[vqvae] images=14432 params=6.55M batch=4 size=384
+[vqvae step 20] loss=0.4445 rec=0.3995 vq=0.0450 2.48s rss=0.93GB
+[vqvae step 40] loss=0.2926 rec=0.2442 vq=0.0484 2.39s rss=1.22GB
+[vqvae step 60] loss=0.3269 rec=0.2713 vq=0.0555 2.40s rss=1.38GB
+[vqvae step 80] loss=0.2804 rec=0.2649 vq=0.0156 2.81s rss=1.58GB
+[vqvae step 100] loss=0.2006 rec=0.1877 vq=0.0130 2.96s rss=1.72GB
+[vqvae step 120] loss=0.1860 rec=0.1743 vq=0.0117 2.66s rss=1.97GB
+[vqvae step 140] loss=0.1892 rec=0.1695 vq=0.0197 2.42s rss=2.15GB
+[vqvae step 160] loss=0.1556 rec=0.1389 vq=0.0167 2.52s rss=2.36GB
+[vqvae step 180] loss=0.1947 rec=0.1680 vq=0.0267 2.46s rss=2.57GB
+[vqvae step 200] loss=0.2451 rec=0.2009 vq=0.0442 2.73s rss=2.74GB
+[vqvae step 220] loss=0.1579 rec=0.1396 vq=0.0183 2.46s rss=2.95GB
+[vqvae step 240] loss=0.1953 rec=0.1579 vq=0.0374 2.65s rss=3.12GB

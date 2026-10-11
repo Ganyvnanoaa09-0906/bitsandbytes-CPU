@@ -1,0 +1,30 @@
+﻿[eval] ==== 判读驱动启动 ====  2026-10-07 15:46:55
+[eval] 等待中... 10 分钟  2026-10-07 15:55:56
+[eval] 等待中... 20 分钟  2026-10-07 16:05:57
+[eval] random 臂已收尾，等 20 秒落盘  2026-10-07 16:13:58
+[eval] 采样 L1 L=1 ...  2026-10-07 16:14:18
+[eval] 完成 L1 L=1 rc=0  2026-10-07 16:14:50
+[eval] 采样 L1 L=2 ...  2026-10-07 16:14:50
+[eval] 完成 L1 L=2 rc=0  2026-10-07 16:15:21
+[eval] 采样 L1 L=3 ...  2026-10-07 16:15:21
+[eval] 完成 L1 L=3 rc=0  2026-10-07 16:15:52
+[eval] 采样 random L=1 ...  2026-10-07 16:15:52
+[eval] 完成 random L=1 rc=0  2026-10-07 16:16:14
+[eval] 采样 random L=2 ...  2026-10-07 16:16:14
+[eval] 完成 random L=2 rc=0  2026-10-07 16:16:40
+[eval] 采样 random L=3 ...  2026-10-07 16:16:40
+[eval] 完成 random L=3 rc=0  2026-10-07 16:17:10
+[eval] 采样完成，拼对照图...  2026-10-07 16:17:10
+[eval] 对照图 rc=0  2026-10-07 16:17:11
+[eval] ==== 判读素材全部就绪 ====  2026-10-07 16:17:11
+[eval] ==== 判读驱动启动 ====  2026-10-07 23:57:02
+[eval] random 臂已收尾，等 20 秒落盘  2026-10-07 23:57:02
+[eval] 跳过已存在: D:\work\bitsandbytes-CPU\i5build\loop_ab_eval\L1_L1.png  2026-10-07 23:57:22
+[eval] 跳过已存在: D:\work\bitsandbytes-CPU\i5build\loop_ab_eval\L1_L2.png  2026-10-07 23:57:22
+[eval] 跳过已存在: D:\work\bitsandbytes-CPU\i5build\loop_ab_eval\L1_L3.png  2026-10-07 23:57:22
+[eval] 跳过已存在: D:\work\bitsandbytes-CPU\i5build\loop_ab_eval\random_L1.png  2026-10-07 23:57:22
+[eval] 跳过已存在: D:\work\bitsandbytes-CPU\i5build\loop_ab_eval\random_L2.png  2026-10-07 23:57:22
+[eval] 跳过已存在: D:\work\bitsandbytes-CPU\i5build\loop_ab_eval\random_L3.png  2026-10-07 23:57:22
+[eval] 采样完成，拼对照图...  2026-10-07 23:57:22
+[eval] 对照图 rc=1  2026-10-07 23:57:27
+[eval] ==== 判读素材全部就绪 ====  2026-10-07 23:57:27

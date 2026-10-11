@@ -1,0 +1,435 @@
+﻿
+7-Zip 25.01 (x64) : Copyright (c) 1999-2025 Igor Pavlov : 2025-08-03
+
+Scanning the drive for archives:
+1 file, 41639508840 bytes (39 GiB)
+
+Listing archive: D:\deepsleep\models.7z
+
+--
+Path = D:\deepsleep\models.7z
+Type = 7z
+Physical Size = 41639508840
+Headers Size = 6444
+Method = LZMA2:25 BCJ
+Solid = +
+Blocks = 9
+
+   Date      Time    Attr         Size   Compressed  Name
+------------------- ----- ------------ ------------  ------------------------
+2026-08-25 14:05:52 D....            0            0  Godot_v4.7.1-stable_win64.exe
+2026-08-26 08:48:02 D....            0            0  models
+2026-08-28 20:56:53 D....            0            0  models\bk-sdm-small
+2026-08-28 20:32:22 D....            0            0  models\bk-sdm-small\.cache
+2026-08-28 20:32:22 D....            0            0  models\bk-sdm-small\.cache\huggingface
+2026-08-28 20:56:53 D....            0            0  models\bk-sdm-small\.cache\huggingface\download
+2026-08-28 20:32:23 D....            0            0  models\bk-sdm-small\.cache\huggingface\download\feature_extractor
+2026-08-28 20:46:13 D....            0            0  models\bk-sdm-small\.cache\huggingface\download\safety_checker
+2026-08-28 20:40:34 D....            0            0  models\bk-sdm-small\.cache\huggingface\download\scheduler
+2026-08-28 20:40:34 D....            0            0  models\bk-sdm-small\.cache\huggingface\download\scheduler\.ipynb_checkpoints
+2026-08-28 20:47:25 D....            0            0  models\bk-sdm-small\.cache\huggingface\download\text_encoder
+2026-08-28 20:46:03 D....            0            0  models\bk-sdm-small\.cache\huggingface\download\tokenizer
+2026-08-28 21:10:09 D....            0            0  models\bk-sdm-small\.cache\huggingface\download\unet
+2026-08-28 21:05:17 D....            0            0  models\bk-sdm-small\.cache\huggingface\download\vae
+2026-08-28 20:32:22 D....            0            0  models\bk-sdm-small\.cache\huggingface\trees
+2026-08-28 20:32:23 D....            0            0  models\bk-sdm-small\feature_extractor
+2026-08-28 20:46:13 D....            0            0  models\bk-sdm-small\safety_checker
+2026-08-28 20:40:34 D....            0            0  models\bk-sdm-small\scheduler
+2026-08-28 20:40:34 D....            0            0  models\bk-sdm-small\scheduler\.ipynb_checkpoints
+2026-08-28 20:47:25 D....            0            0  models\bk-sdm-small\text_encoder
+2026-08-28 20:46:03 D....            0            0  models\bk-sdm-small\tokenizer
+2026-08-28 21:10:09 D....            0            0  models\bk-sdm-small\unet
+2026-08-28 21:05:17 D....            0            0  models\bk-sdm-small\vae
+2026-08-28 19:06:02 D....            0            0  models\bk-sdm-tiny
+2026-08-28 18:53:17 D....            0            0  models\bk-sdm-tiny\.cache
+2026-08-28 18:53:17 D....            0            0  models\bk-sdm-tiny\.cache\huggingface
+2026-08-28 19:25:41 D....            0            0  models\bk-sdm-tiny\.cache\huggingface\download
+2026-08-28 19:25:41 D....            0            0  models\bk-sdm-tiny\.cache\huggingface\download\feature_extractor
+2026-08-28 19:25:41 D....            0            0  models\bk-sdm-tiny\.cache\huggingface\download\safety_checker
+2026-08-28 19:25:41 D....            0            0  models\bk-sdm-tiny\.cache\huggingface\download\scheduler
+2026-08-28 19:25:41 D....            0            0  models\bk-sdm-tiny\.cache\huggingface\download\scheduler\.ipynb_checkpoints
+2026-08-28 19:25:41 D....            0            0  models\bk-sdm-tiny\.cache\huggingface\download\text_encoder
+2026-08-28 19:25:41 D....            0            0  models\bk-sdm-tiny\.cache\huggingface\download\tokenizer
+2026-08-28 19:25:41 D....            0            0  models\bk-sdm-tiny\.cache\huggingface\download\unet
+2026-08-28 19:27:07 D....            0            0  models\bk-sdm-tiny\.cache\huggingface\download\vae
+2026-08-28 18:53:17 D....            0            0  models\bk-sdm-tiny\.cache\huggingface\trees
+2026-08-28 18:53:29 D....            0            0  models\bk-sdm-tiny\feature_extractor
+2026-08-28 19:05:07 D....            0            0  models\bk-sdm-tiny\safety_checker
+2026-08-28 18:53:20 D....            0            0  models\bk-sdm-tiny\scheduler
+2026-08-28 18:53:19 D....            0            0  models\bk-sdm-tiny\scheduler\.ipynb_checkpoints
+2026-08-28 19:19:31 D....            0            0  models\bk-sdm-tiny\text_encoder
+2026-08-28 19:00:58 D....            0            0  models\bk-sdm-tiny\tokenizer
+2026-08-28 19:21:22 D....            0            0  models\bk-sdm-tiny\unet
+2026-08-28 19:27:07 D....            0            0  models\bk-sdm-tiny\vae
+2026-08-25 14:05:50 D....            0            0  models\deepseek-coder-1.3b-base
+2026-08-28 20:43:57 D....            0            0  models\qwen3-1.7B-nf4
+2026-08-28 22:16:48 D....            0            0  models\Qwen3-8B
+2026-08-28 21:12:40 D....            0            0  models\Qwen3-8B\.cache
+2026-08-28 21:12:40 D....            0            0  models\Qwen3-8B\.cache\huggingface
+2026-08-28 22:16:48 D....            0            0  models\Qwen3-8B\.cache\huggingface\download
+2026-08-28 21:12:40 D....            0            0  models\Qwen3-8B\.cache\huggingface\trees
+2026-08-28 22:33:59 D....            0            0  models\Qwen3-8B-nf4
+2026-08-25 19:51:59 D....            0            0  models\qwen3.5-0.8B
+2026-08-25 19:46:02 D....            0            0  models\qwen3.5-0.8B\.cache
+2026-08-25 19:46:02 D....            0            0  models\qwen3.5-0.8B\.cache\huggingface
+2026-08-25 19:51:59 D....            0            0  models\qwen3.5-0.8B\.cache\huggingface\download
+2026-08-25 19:46:02 D....            0            0  models\qwen3.5-0.8B\.cache\huggingface\trees
+2026-08-28 23:23:17 D....            0            0  models\sd-v1-5
+2026-08-28 22:58:17 D....            0            0  models\sd-v1-5\.cache
+2026-08-28 22:58:17 D....            0            0  models\sd-v1-5\.cache\huggingface
+2026-08-28 23:04:37 D....            0            0  models\sd-v1-5\.cache\huggingface\download
+2026-08-28 23:04:37 D....            0            0  models\sd-v1-5\.cache\huggingface\download\feature_extractor
+2026-08-28 23:04:37 D....            0            0  models\sd-v1-5\.cache\huggingface\download\safety_checker
+2026-08-28 23:04:37 D....            0            0  models\sd-v1-5\.cache\huggingface\download\scheduler
+2026-08-28 23:04:40 D....            0            0  models\sd-v1-5\.cache\huggingface\download\text_encoder
+2026-08-28 23:04:37 D....            0            0  models\sd-v1-5\.cache\huggingface\download\tokenizer
+2026-08-28 23:04:40 D....            0            0  models\sd-v1-5\.cache\huggingface\download\unet
+2026-08-28 22:58:17 D....            0            0  models\sd-v1-5\.cache\huggingface\trees
+2026-08-28 22:58:24 D....            0            0  models\sd-v1-5\feature_extractor
+2026-08-28 22:58:23 D....            0            0  models\sd-v1-5\safety_checker
+2026-08-28 22:58:25 D....            0            0  models\sd-v1-5\scheduler
+2026-08-28 23:23:22 D....            0            0  models\sd-v1-5\text_encoder
+2026-08-28 23:02:20 D....            0            0  models\sd-v1-5\tokenizer
+2026-08-28 23:23:22 D....            0            0  models\sd-v1-5\unet
+2026-08-28 23:23:20 D....            0            0  models\sd-v1-5\vae
+2026-08-28 19:28:47 D....            0            0  models\tiny-sd
+2026-08-28 19:28:41 D....            0            0  models\tiny-sd\.cache
+2026-08-28 19:28:41 D....            0            0  models\tiny-sd\.cache\huggingface
+2026-08-28 19:32:34 D....            0            0  models\tiny-sd\.cache\huggingface\download
+2026-08-28 19:32:34 D....            0            0  models\tiny-sd\.cache\huggingface\download\scheduler
+2026-08-28 19:32:34 D....            0            0  models\tiny-sd\.cache\huggingface\download\text_encoder
+2026-08-28 19:32:34 D....            0            0  models\tiny-sd\.cache\huggingface\download\tokenizer
+2026-08-28 19:32:34 D....            0            0  models\tiny-sd\.cache\huggingface\download\unet
+2026-08-28 19:32:34 D....            0            0  models\tiny-sd\.cache\huggingface\download\vae
+2026-08-28 19:28:41 D....            0            0  models\tiny-sd\.cache\huggingface\trees
+2026-08-28 19:28:43 D....            0            0  models\tiny-sd\scheduler
+2026-08-28 19:30:46 D....            0            0  models\tiny-sd\text_encoder
+2026-08-28 19:28:45 D....            0            0  models\tiny-sd\tokenizer
+2026-08-28 19:32:09 D....            0            0  models\tiny-sd\unet
+2026-08-28 19:31:46 D....            0            0  models\tiny-sd\vae
+2026-08-28 22:58:22 ....A            0            0  models\sd-v1-5\.cache\huggingface\download\safety_checker\model.fp16.safetensors.lock
+2026-08-28 22:58:19 ....A            0            0  models\sd-v1-5\.cache\huggingface\download\safety_checker\model.safetensors.lock
+2026-08-28 22:58:22 ....A            0            0  models\sd-v1-5\.cache\huggingface\download\safety_checker\pytorch_model.bin.lock
+2026-08-28 22:58:19 ....A            0            0  models\sd-v1-5\.cache\huggingface\download\safety_checker\pytorch_model.fp16.bin.lock
+2026-08-28 23:04:37 ....A            0            0  models\sd-v1-5\.cache\huggingface\download\text_encoder\model.fp16.safetensors.lock
+2026-08-28 23:04:39 ....A            0            0  models\sd-v1-5\.cache\huggingface\download\text_encoder\model.safetensors.lock
+2026-08-28 23:04:40 ....A            0            0  models\sd-v1-5\.cache\huggingface\download\text_encoder\pytorch_model.bin.lock
+2026-08-28 23:04:38 ....A            0            0  models\sd-v1-5\.cache\huggingface\download\text_encoder\pytorch_model.fp16.bin.lock
+2026-08-28 23:04:40 ....A            0            0  models\sd-v1-5\.cache\huggingface\download\unet\diffusion_pytorch_model.bin.lock
+2026-08-28 23:04:40 ....A            0            0  models\sd-v1-5\.cache\huggingface\download\unet\diffusion_pytorch_model.fp16.bin.lock
+2026-08-28 23:04:38 ....A            0            0  models\sd-v1-5\.cache\huggingface\download\unet\diffusion_pytorch_model.fp16.safetensors.lock
+2026-08-28 23:04:39 ....A            0            0  models\sd-v1-5\.cache\huggingface\download\unet\diffusion_pytorch_model.non_ema.bin.lock
+2026-08-10 15:55:16 ....A          498   1893189768  models\deepseek-coder-1.3b-base\79.py
+2026-07-24 19:52:12 ....A          631               models\deepseek-coder-1.3b-base\config.json
+2026-07-25 14:19:24 ....A          191               models\deepseek-coder-1.3b-base\dataset_info.json
+2026-07-24 20:09:32 ....A   2692969128               models\deepseek-coder-1.3b-base\model.safetensors
+2026-08-10 09:07:48 ....A         2225               models\deepseek-coder-1.3b-base\Test.py
+2026-07-25 14:16:56 ....A         1436               models\deepseek-coder-1.3b-base\test_5.json
+2026-07-25 11:00:50 ....A      1367962               models\deepseek-coder-1.3b-base\tokenizer.json
+2026-07-25 11:00:46 ....A         1868               models\deepseek-coder-1.3b-base\tokenizer_config.json
+2026-08-28 20:32:22 ....A            1   5881828043  models\bk-sdm-small\.cache\huggingface\.gitignore
+2026-08-28 20:32:22 ....A          195               models\bk-sdm-small\.cache\huggingface\CACHEDIR.TAG
+2026-08-28 20:32:23 ....A          104               models\bk-sdm-small\.cache\huggingface\download\.gitattributes.metadata
+2026-08-28 20:32:23 ....A          104               models\bk-sdm-small\.cache\huggingface\download\feature_extractor\preprocessor_config.json.metadata
+2026-08-28 20:32:23 ....A          104               models\bk-sdm-small\.cache\huggingface\download\model_index.json.metadata
+2026-08-28 20:32:23 ....A          104               models\bk-sdm-small\.cache\huggingface\download\README.md.metadata
+2026-08-28 20:32:23 ....A          104               models\bk-sdm-small\.cache\huggingface\download\safety_checker\config.json.metadata
+2026-08-28 20:40:32 ....A          128               models\bk-sdm-small\.cache\huggingface\download\safety_checker\model.fp16.safetensors.metadata
+2026-08-28 20:46:13 ....A          128               models\bk-sdm-small\.cache\huggingface\download\safety_checker\model.safetensors.metadata
+2026-08-28 20:42:05 ....A          128               models\bk-sdm-small\.cache\huggingface\download\safety_checker\pytorch_model.bin.metadata
+2026-08-28 20:41:01 ....A          128               models\bk-sdm-small\.cache\huggingface\download\safety_checker\pytorch_model.fp16.bin.metadata
+2026-08-28 20:40:34 ....A          104               models\bk-sdm-small\.cache\huggingface\download\scheduler\.ipynb_checkpoints\scheduler_config-checkpoint.json.metadata
+2026-08-28 20:40:34 ....A          104               models\bk-sdm-small\.cache\huggingface\download\scheduler\scheduler_config.json.metadata
+2026-08-28 20:40:35 ....A          104               models\bk-sdm-small\.cache\huggingface\download\text_encoder\config.json.metadata
+2026-08-28 20:42:54 ....A          128               models\bk-sdm-small\.cache\huggingface\download\text_encoder\model.fp16.safetensors.metadata
+2026-08-28 20:46:03 ....A          128               models\bk-sdm-small\.cache\huggingface\download\text_encoder\model.safetensors.metadata
+2026-08-28 20:47:25 ....A          128               models\bk-sdm-small\.cache\huggingface\download\text_encoder\pytorch_model.bin.metadata
+2026-08-28 20:45:53 ....A          128               models\bk-sdm-small\.cache\huggingface\download\text_encoder\pytorch_model.fp16.bin.metadata
+2026-08-28 20:45:58 ....A          103               models\bk-sdm-small\.cache\huggingface\download\tokenizer\merges.txt.metadata
+2026-08-28 20:45:59 ....A          104               models\bk-sdm-small\.cache\huggingface\download\tokenizer\special_tokens_map.json.metadata
+2026-08-28 20:45:59 ....A          104               models\bk-sdm-small\.cache\huggingface\download\tokenizer\tokenizer_config.json.metadata
+2026-08-28 20:46:03 ....A          104               models\bk-sdm-small\.cache\huggingface\download\tokenizer\vocab.json.metadata
+2026-08-28 20:46:04 ....A          103               models\bk-sdm-small\.cache\huggingface\download\unet\config.json.metadata
+2026-08-28 21:10:09 ....A          128               models\bk-sdm-small\.cache\huggingface\download\unet\diffusion_pytorch_model.bin.metadata
+2026-08-28 21:04:00 ....A          128               models\bk-sdm-small\.cache\huggingface\download\unet\diffusion_pytorch_model.fp16.bin.metadata
+2026-08-28 20:56:53 ....A          128               models\bk-sdm-small\.cache\huggingface\download\unet\diffusion_pytorch_model.fp16.safetensors.metadata
+2026-08-28 21:02:22 ....A          128               models\bk-sdm-small\.cache\huggingface\download\unet\diffusion_pytorch_model.safetensors.metadata
+2026-08-28 20:56:54 ....A          102               models\bk-sdm-small\.cache\huggingface\download\vae\config.json.metadata
+2026-08-28 21:02:20 ....A          128               models\bk-sdm-small\.cache\huggingface\download\vae\diffusion_pytorch_model.bin.metadata
+2026-08-28 21:03:57 ....A          128               models\bk-sdm-small\.cache\huggingface\download\vae\diffusion_pytorch_model.fp16.bin.metadata
+2026-08-28 21:03:47 ....A          128               models\bk-sdm-small\.cache\huggingface\download\vae\diffusion_pytorch_model.fp16.safetensors.metadata
+2026-08-28 21:05:17 ....A          128               models\bk-sdm-small\.cache\huggingface\download\vae\diffusion_pytorch_model.safetensors.metadata
+2026-08-28 20:32:22 ....A         6941               models\bk-sdm-small\.cache\huggingface\trees\572238db7ed3a10858900803f3fc8cca53e893e0.json
+2026-08-28 20:32:23 ....A         1519               models\bk-sdm-small\.gitattributes
+2026-08-28 20:32:23 ....A          342               models\bk-sdm-small\feature_extractor\preprocessor_config.json
+2026-08-28 20:32:23 ....A          541               models\bk-sdm-small\model_index.json
+2026-08-28 20:32:23 ....A        11961               models\bk-sdm-small\README.md
+2026-08-28 20:32:23 ....A         4556               models\bk-sdm-small\safety_checker\config.json
+2026-08-28 20:40:32 ....A    608018440               models\bk-sdm-small\safety_checker\model.fp16.safetensors
+2026-08-28 20:46:13 ....A   1215981830               models\bk-sdm-small\safety_checker\model.safetensors
+2026-08-28 20:42:05 ....A   1216061799               models\bk-sdm-small\safety_checker\pytorch_model.bin
+2026-08-28 20:41:01 ....A    608103564               models\bk-sdm-small\safety_checker\pytorch_model.fp16.bin
+2026-08-28 20:40:34 ....A          209               models\bk-sdm-small\scheduler\.ipynb_checkpoints\scheduler_config-checkpoint.json
+2026-08-28 20:40:34 ....A          313               models\bk-sdm-small\scheduler\scheduler_config.json
+2026-08-28 20:40:35 ....A          592               models\bk-sdm-small\text_encoder\config.json
+2026-08-28 20:42:54 ....A    246144864               models\bk-sdm-small\text_encoder\model.fp16.safetensors
+2026-08-28 20:46:03 ....A    492265879               models\bk-sdm-small\text_encoder\model.safetensors
+2026-08-28 20:47:25 ....A    492305335               models\bk-sdm-small\text_encoder\pytorch_model.bin
+2026-08-28 20:45:53 ....A    246187076               models\bk-sdm-small\text_encoder\pytorch_model.fp16.bin
+2026-08-28 20:45:58 ....A       524619               models\bk-sdm-small\tokenizer\merges.txt
+2026-08-28 20:45:59 ....A          472               models\bk-sdm-small\tokenizer\special_tokens_map.json
+2026-08-28 20:45:59 ....A          806               models\bk-sdm-small\tokenizer\tokenizer_config.json
+2026-08-28 20:46:03 ....A      1059962               models\bk-sdm-small\tokenizer\vocab.json
+2026-08-28 20:46:04 ....A         1512               models\bk-sdm-small\unet\config.json
+2026-08-28 21:10:09 ....A   1929556169               models\bk-sdm-small\unet\diffusion_pytorch_model.bin
+2026-08-28 21:04:00 ....A    964858831               models\bk-sdm-small\unet\diffusion_pytorch_model.fp16.bin
+2026-08-28 20:56:52 ....A    964741320   6279000558  models\bk-sdm-small\unet\diffusion_pytorch_model.fp16.safetensors
+2026-08-28 21:02:22 ....A   1929435608               models\bk-sdm-small\unet\diffusion_pytorch_model.safetensors
+2026-08-28 20:56:54 ....A          551               models\bk-sdm-small\vae\config.json
+2026-08-28 21:02:20 ....A    334707217               models\bk-sdm-small\vae\diffusion_pytorch_model.bin
+2026-08-28 21:03:57 ....A    167405651               models\bk-sdm-small\vae\diffusion_pytorch_model.fp16.bin
+2026-08-28 21:03:47 ....A    167335342               models\bk-sdm-small\vae\diffusion_pytorch_model.fp16.safetensors
+2026-08-28 21:05:17 ....A    334643276               models\bk-sdm-small\vae\diffusion_pytorch_model.safetensors
+2026-08-28 18:53:17 ....A            1               models\bk-sdm-tiny\.cache\huggingface\.gitignore
+2026-08-28 18:53:17 ....A          195               models\bk-sdm-tiny\.cache\huggingface\CACHEDIR.TAG
+2026-08-28 18:53:18 ....A          103               models\bk-sdm-tiny\.cache\huggingface\download\.gitattributes.metadata
+2026-08-28 18:53:29 ....A          104               models\bk-sdm-tiny\.cache\huggingface\download\feature_extractor\preprocessor_config.json.metadata
+2026-08-28 18:53:18 ....A          103               models\bk-sdm-tiny\.cache\huggingface\download\model_index.json.metadata
+2026-08-28 18:53:29 ....A          104               models\bk-sdm-tiny\.cache\huggingface\download\README.md.metadata
+2026-08-28 18:53:29 ....A          104               models\bk-sdm-tiny\.cache\huggingface\download\safety_checker\config.json.metadata
+2026-08-28 19:00:52 ....A          128               models\bk-sdm-tiny\.cache\huggingface\download\safety_checker\model.fp16.safetensors.metadata
+2026-08-28 19:05:07 ....A          128               models\bk-sdm-tiny\.cache\huggingface\download\safety_checker\model.safetensors.metadata
+2026-08-28 19:02:30 ....A          128               models\bk-sdm-tiny\.cache\huggingface\download\safety_checker\pytorch_model.bin.metadata
+2026-08-28 19:04:54 ....A          128               models\bk-sdm-tiny\.cache\huggingface\download\safety_checker\pytorch_model.fp16.bin.metadata
+2026-08-28 18:53:19 ....A          104               models\bk-sdm-tiny\.cache\huggingface\download\scheduler\.ipynb_checkpoints\scheduler_config-checkpoint.json.metadata
+2026-08-28 18:53:20 ....A          103               models\bk-sdm-tiny\.cache\huggingface\download\scheduler\scheduler_config.json.metadata
+2026-08-28 18:53:21 ....A          104               models\bk-sdm-tiny\.cache\huggingface\download\text_encoder\config.json.metadata
+2026-08-28 19:06:02 ....A          127               models\bk-sdm-tiny\.cache\huggingface\download\text_encoder\model.fp16.safetensors.metadata
+2026-08-28 19:19:31 ....A          128               models\bk-sdm-tiny\.cache\huggingface\download\text_encoder\model.safetensors.metadata
+2026-08-28 19:06:07 ....A          128               models\bk-sdm-tiny\.cache\huggingface\download\text_encoder\pytorch_model.bin.metadata
+2026-08-28 19:06:21 ....A          127               models\bk-sdm-tiny\.cache\huggingface\download\text_encoder\pytorch_model.fp16.bin.metadata
+2026-08-28 19:00:53 ....A          104               models\bk-sdm-tiny\.cache\huggingface\download\tokenizer\merges.txt.metadata
+2026-08-28 19:00:54 ....A          104               models\bk-sdm-tiny\.cache\huggingface\download\tokenizer\special_tokens_map.json.metadata
+2026-08-28 19:00:55 ....A          104               models\bk-sdm-tiny\.cache\huggingface\download\tokenizer\tokenizer_config.json.metadata
+2026-08-28 19:00:58 ....A          104               models\bk-sdm-tiny\.cache\huggingface\download\tokenizer\vocab.json.metadata
+2026-08-28 19:00:59 ....A          104               models\bk-sdm-tiny\.cache\huggingface\download\unet\config.json.metadata
+2026-08-28 19:20:09 ....A          128               models\bk-sdm-tiny\.cache\huggingface\download\unet\diffusion_pytorch_model.bin.metadata
+2026-08-28 19:19:58 ....A          128               models\bk-sdm-tiny\.cache\huggingface\download\unet\diffusion_pytorch_model.fp16.bin.metadata
+2026-08-28 19:19:39 ....A          128               models\bk-sdm-tiny\.cache\huggingface\download\unet\diffusion_pytorch_model.fp16.safetensors.metadata
+2026-08-28 19:21:22 ....A          128               models\bk-sdm-tiny\.cache\huggingface\download\unet\diffusion_pytorch_model.safetensors.metadata
+2026-08-28 19:06:04 ....A          104               models\bk-sdm-tiny\.cache\huggingface\download\vae\config.json.metadata
+2026-08-28 19:22:50 ....A          127               models\bk-sdm-tiny\.cache\huggingface\download\vae\diffusion_pytorch_model.bin.metadata
+2026-08-28 19:23:23 ....A          127               models\bk-sdm-tiny\.cache\huggingface\download\vae\diffusion_pytorch_model.fp16.bin.metadata
+2026-08-28 19:23:00 ....A          128               models\bk-sdm-tiny\.cache\huggingface\download\vae\diffusion_pytorch_model.fp16.safetensors.metadata
+2026-08-28 19:27:07 ....A          128               models\bk-sdm-tiny\.cache\huggingface\download\vae\diffusion_pytorch_model.safetensors.metadata
+2026-08-28 18:53:17 ....A         6941               models\bk-sdm-tiny\.cache\huggingface\trees\0364108e53b7f7f4d2585e817a0b7a83dc261cfa.json
+2026-08-28 18:53:18 ....A         1519               models\bk-sdm-tiny\.gitattributes
+2026-08-28 18:53:29 ....A          342               models\bk-sdm-tiny\feature_extractor\preprocessor_config.json
+2026-08-28 18:53:18 ....A          541               models\bk-sdm-tiny\model_index.json
+2026-08-28 18:53:29 ....A        11954               models\bk-sdm-tiny\README.md
+2026-08-28 18:53:29 ....A         4556               models\bk-sdm-tiny\safety_checker\config.json
+2026-08-28 19:00:51 ....A    608018440               models\bk-sdm-tiny\safety_checker\model.fp16.safetensors
+2026-08-28 19:05:07 ....A   1215981830               models\bk-sdm-tiny\safety_checker\model.safetensors
+2026-08-28 19:02:30 ....A   1216061799               models\bk-sdm-tiny\safety_checker\pytorch_model.bin
+2026-08-28 19:04:54 ....A    608103564               models\bk-sdm-tiny\safety_checker\pytorch_model.fp16.bin
+2026-08-28 18:53:19 ....A          209               models\bk-sdm-tiny\scheduler\.ipynb_checkpoints\scheduler_config-checkpoint.json
+2026-08-28 18:53:20 ....A          313               models\bk-sdm-tiny\scheduler\scheduler_config.json
+2026-08-28 18:53:21 ....A          592               models\bk-sdm-tiny\text_encoder\config.json
+2026-08-28 19:06:02 ....A    246144864               models\bk-sdm-tiny\text_encoder\model.fp16.safetensors
+2026-08-28 19:19:31 ....A    492265879               models\bk-sdm-tiny\text_encoder\model.safetensors
+2026-08-28 19:06:07 ....A    492305335   6265873780  models\bk-sdm-tiny\text_encoder\pytorch_model.bin
+2026-08-28 19:06:21 ....A    246187076               models\bk-sdm-tiny\text_encoder\pytorch_model.fp16.bin
+2026-08-28 19:00:53 ....A       524619               models\bk-sdm-tiny\tokenizer\merges.txt
+2026-08-28 19:00:54 ....A          472               models\bk-sdm-tiny\tokenizer\special_tokens_map.json
+2026-08-28 19:00:55 ....A          806               models\bk-sdm-tiny\tokenizer\tokenizer_config.json
+2026-08-28 19:00:58 ....A      1059962               models\bk-sdm-tiny\tokenizer\vocab.json
+2026-08-28 19:00:59 ....A         1465               models\bk-sdm-tiny\unet\config.json
+2026-08-28 19:20:09 ....A   1293693493               models\bk-sdm-tiny\unet\diffusion_pytorch_model.bin
+2026-08-28 19:19:58 ....A    646920381               models\bk-sdm-tiny\unet\diffusion_pytorch_model.fp16.bin
+2026-08-28 19:19:39 ....A    646813304               models\bk-sdm-tiny\unet\diffusion_pytorch_model.fp16.safetensors
+2026-08-28 19:21:22 ....A   1293583616               models\bk-sdm-tiny\unet\diffusion_pytorch_model.safetensors
+2026-08-28 19:06:04 ....A          551               models\bk-sdm-tiny\vae\config.json
+2026-08-28 19:22:50 ....A    334707217               models\bk-sdm-tiny\vae\diffusion_pytorch_model.bin
+2026-08-28 19:23:23 ....A    167405651               models\bk-sdm-tiny\vae\diffusion_pytorch_model.fp16.bin
+2026-08-28 19:23:00 ....A    167335342               models\bk-sdm-tiny\vae\diffusion_pytorch_model.fp16.safetensors
+2026-08-28 19:27:07 ....A    334643276               models\bk-sdm-tiny\vae\diffusion_pytorch_model.safetensors
+2026-08-10 20:08:20 ....A          726               models\qwen3-1.7B-nf4\config.json
+2026-08-10 20:08:20 ....A          239               models\qwen3-1.7B-nf4\generation_config.json
+2026-08-10 20:09:12 ....A      1671853               models\qwen3-1.7B-nf4\merges.txt
+2026-08-28 20:43:57 ....A   1590389672               models\qwen3-1.7B-nf4\model.safetensors
+2026-08-28 20:43:57 ....A        35712               models\qwen3-1.7B-nf4\quant_meta.json
+2026-08-10 20:08:42 ....A     11422654               models\qwen3-1.7B-nf4\tokenizer.json
+2026-08-10 20:08:26 ....A         9732               models\qwen3-1.7B-nf4\tokenizer_config.json
+2026-08-10 20:09:38 ....A      2776833               models\qwen3-1.7B-nf4\vocab.json
+2026-08-28 21:12:40 ....A            1               models\Qwen3-8B\.cache\huggingface\.gitignore
+2026-08-28 21:12:40 ....A          195               models\Qwen3-8B\.cache\huggingface\CACHEDIR.TAG
+2026-08-28 21:12:41 ....A          104               models\Qwen3-8B\.cache\huggingface\download\.gitattributes.metadata
+2026-08-28 21:12:40 ....A          104               models\Qwen3-8B\.cache\huggingface\download\config.json.metadata
+2026-08-28 21:12:41 ....A          103               models\Qwen3-8B\.cache\huggingface\download\generation_config.json.metadata
+2026-08-28 21:12:40 ....A          103               models\Qwen3-8B\.cache\huggingface\download\LICENSE.metadata
+2026-08-28 21:12:42 ....A          104               models\Qwen3-8B\.cache\huggingface\download\merges.txt.metadata
+2026-08-28 22:16:48 ....A          128               models\Qwen3-8B\.cache\huggingface\download\model-00001-of-00005.safetensors.metadata
+2026-08-28 22:10:59 ....A          128               models\Qwen3-8B\.cache\huggingface\download\model-00002-of-00005.safetensors.metadata
+2026-08-28 22:03:16 ....A          128               models\Qwen3-8B\.cache\huggingface\download\model-00003-of-00005.safetensors.metadata
+2026-08-28 22:06:45 ....A          127               models\Qwen3-8B\.cache\huggingface\download\model-00004-of-00005.safetensors.metadata
+2026-08-28 22:14:14 ....A          128               models\Qwen3-8B\.cache\huggingface\download\model-00005-of-00005.safetensors.metadata
+2026-08-28 22:06:46 ....A          103               models\Qwen3-8B\.cache\huggingface\download\model.safetensors.index.json.metadata
+2026-08-28 21:12:41 ....A          104               models\Qwen3-8B\.cache\huggingface\download\README.md.metadata
+2026-08-28 22:06:53 ....A          128               models\Qwen3-8B\.cache\huggingface\download\tokenizer.json.metadata
+2026-08-28 22:06:55 ....A          104               models\Qwen3-8B\.cache\huggingface\download\tokenizer_config.json.metadata
+2026-08-28 22:07:02 ....A          102               models\Qwen3-8B\.cache\huggingface\download\vocab.json.metadata
+2026-08-28 21:12:40 ....A         2941               models\Qwen3-8B\.cache\huggingface\trees\b968826d9c46dd6066d109eabc6255188de91218.json
+2026-08-28 21:12:41 ....A         1570               models\Qwen3-8B\.gitattributes
+2026-08-28 21:12:40 ....A          728               models\Qwen3-8B\config.json
+2026-08-28 21:12:41 ....A          239               models\Qwen3-8B\generation_config.json
+2026-08-28 21:12:40 ....A        11343               models\Qwen3-8B\LICENSE
+2026-08-28 21:12:42 ....A      1671853               models\Qwen3-8B\merges.txt
+2026-08-28 22:16:48 ....A   3996250744   5643933626  models\Qwen3-8B\model-00001-of-00005.safetensors
+2026-08-28 22:10:59 ....A   3993160032               models\Qwen3-8B\model-00002-of-00005.safetensors
+2026-08-28 22:03:16 ....A   3959604768   5891089935  models\Qwen3-8B\model-00003-of-00005.safetensors
+2026-08-28 22:06:45 ....A   3187841392               models\Qwen3-8B\model-00004-of-00005.safetensors
+2026-08-28 22:14:14 ....A   1244659840               models\Qwen3-8B\model-00005-of-00005.safetensors
+2026-08-28 22:06:46 ....A        32878               models\Qwen3-8B\model.safetensors.index.json
+2026-08-28 21:12:41 ....A        16660               models\Qwen3-8B\README.md
+2026-08-28 22:06:53 ....A     11422654               models\Qwen3-8B\tokenizer.json
+2026-08-28 22:06:55 ....A         9732               models\Qwen3-8B\tokenizer_config.json
+2026-08-28 22:07:02 ....A      2776833               models\Qwen3-8B\vocab.json
+2026-08-28 21:12:40 ....A          728               models\Qwen3-8B-nf4\config.json
+2026-08-28 21:12:41 ....A          239               models\Qwen3-8B-nf4\generation_config.json
+2026-08-28 21:12:42 ....A      1671853               models\Qwen3-8B-nf4\merges.txt
+2026-08-28 22:33:59 ....A        45980               models\Qwen3-8B-nf4\quant_meta.json
+2026-08-28 22:32:52 ....A   2018642360   6970395474  models\Qwen3-8B-nf4\shard-00000.safetensors
+2026-08-28 22:33:13 ....A   1123215712               models\Qwen3-8B-nf4\shard-00001.safetensors
+2026-08-28 22:33:33 ....A   1113777616               models\Qwen3-8B-nf4\shard-00002.safetensors
+2026-08-28 22:33:49 ....A    896709224               models\Qwen3-8B-nf4\shard-00003.safetensors
+2026-08-28 22:33:59 ....A    350060736               models\Qwen3-8B-nf4\shard-00004.safetensors
+2026-08-28 22:06:53 ....A     11422654               models\Qwen3-8B-nf4\tokenizer.json
+2026-08-28 22:06:55 ....A         9732               models\Qwen3-8B-nf4\tokenizer_config.json
+2026-08-28 22:07:02 ....A      2776833               models\Qwen3-8B-nf4\vocab.json
+2026-08-25 19:46:02 ....A            1               models\qwen3.5-0.8B\.cache\huggingface\.gitignore
+2026-08-25 19:46:02 ....A          195               models\qwen3.5-0.8B\.cache\huggingface\CACHEDIR.TAG
+2026-08-25 19:46:03 ....A          104               models\qwen3.5-0.8B\.cache\huggingface\download\.gitattributes.metadata
+2026-08-25 19:46:03 ....A          104               models\qwen3.5-0.8B\.cache\huggingface\download\chat_template.jinja.metadata
+2026-08-25 19:46:03 ....A          104               models\qwen3.5-0.8B\.cache\huggingface\download\config.json.metadata
+2026-08-25 19:46:03 ....A          103               models\qwen3.5-0.8B\.cache\huggingface\download\LICENSE.metadata
+2026-08-25 19:46:05 ....A          104               models\qwen3.5-0.8B\.cache\huggingface\download\merges.txt.metadata
+2026-08-25 19:51:59 ....A          128               models\qwen3.5-0.8B\.cache\huggingface\download\model.safetensors-00001-of-00001.safetensors.metadata
+2026-08-25 19:46:03 ....A          104               models\qwen3.5-0.8B\.cache\huggingface\download\model.safetensors.index.json.metadata
+2026-08-25 19:46:03 ....A          104               models\qwen3.5-0.8B\.cache\huggingface\download\preprocessor_config.json.metadata
+2026-08-25 19:46:03 ....A          104               models\qwen3.5-0.8B\.cache\huggingface\download\README.md.metadata
+2026-08-25 19:46:04 ....A          104               models\qwen3.5-0.8B\.cache\huggingface\download\tokenizer_config.json.metadata
+2026-08-25 19:46:04 ....A          104               models\qwen3.5-0.8B\.cache\huggingface\download\video_preprocessor_config.json.metadata
+2026-08-25 19:46:10 ....A          104               models\qwen3.5-0.8B\.cache\huggingface\download\vocab.json.metadata
+2026-08-25 19:46:02 ....A         1879               models\qwen3.5-0.8B\.cache\huggingface\trees\2fc06364715b967f1860aea9cf38778875588b17.json
+2026-08-25 19:46:03 ....A         1570               models\qwen3.5-0.8B\.gitattributes
+2026-08-25 19:46:03 ....A         7755               models\qwen3.5-0.8B\chat_template.jinja
+2026-08-25 19:46:03 ....A         2907               models\qwen3.5-0.8B\config.json
+2026-08-25 19:46:03 ....A        11544               models\qwen3.5-0.8B\LICENSE
+2026-08-25 19:46:05 ....A      3353259               models\qwen3.5-0.8B\merges.txt
+2026-08-25 19:51:59 ....A   1746942600               models\qwen3.5-0.8B\model.safetensors-00001-of-00001.safetensors
+2026-08-25 19:46:03 ....A        50900               models\qwen3.5-0.8B\model.safetensors.index.json
+2026-08-25 19:46:03 ....A          390               models\qwen3.5-0.8B\preprocessor_config.json
+2026-08-25 19:46:03 ....A        61705               models\qwen3.5-0.8B\README.md
+2026-08-25 19:46:04 ....A        16709               models\qwen3.5-0.8B\tokenizer_config.json
+2026-08-25 19:46:04 ....A          385               models\qwen3.5-0.8B\video_preprocessor_config.json
+2026-08-25 19:46:10 ....A      6722759               models\qwen3.5-0.8B\vocab.json
+2026-08-28 22:58:17 ....A            1               models\sd-v1-5\.cache\huggingface\.gitignore
+2026-08-28 22:58:17 ....A          195               models\sd-v1-5\.cache\huggingface\CACHEDIR.TAG
+2026-08-28 22:58:20 ....A          103               models\sd-v1-5\.cache\huggingface\download\.gitattributes.metadata
+2026-08-28 22:58:24 ....A          104               models\sd-v1-5\.cache\huggingface\download\feature_extractor\preprocessor_config.json.metadata
+2026-08-28 22:58:23 ....A          104               models\sd-v1-5\.cache\huggingface\download\model_index.json.metadata
+2026-08-28 22:58:19 ....A          103               models\sd-v1-5\.cache\huggingface\download\README.md.metadata
+2026-08-28 22:58:23 ....A          103               models\sd-v1-5\.cache\huggingface\download\safety_checker\config.json.metadata
+2026-08-28 23:01:48 ....A    230686720               models\sd-v1-5\.cache\huggingface\download\safety_checker\lfMPmZgGzWzGO2RkvfCHsLAIMUk=.08902f19b1cfebd7c989f152fc0507bef6898c706a91d666509383122324b511.f67a7d98.incomplete
+2026-08-28 23:01:04 ....A     52428800               models\sd-v1-5\.cache\huggingface\download\safety_checker\PuFtItD5ItMVETwBpmQ1yUNiC8Y=.22ba87205445ad5def13e54919b038dcfb7321ec1c3f4b12487d4fba6036125f.fe1fb825.incomplete
+2026-08-28 23:01:54 ....A    104857600               models\sd-v1-5\.cache\huggingface\download\safety_checker\Q1p2l2BzM1m6P5jKvr8WTq1TUio=.193490b58ef62739077262e833bf091c66c29488058681ac25cf7df3d8190974.5902104d.incomplete
+2026-08-28 23:01:31 ....A     83886080               models\sd-v1-5\.cache\huggingface\download\safety_checker\xGOKKLRSlIhH692hSVvI1-gpoa8=.9d6a233ff6fd5ccb9f76fd99618d73369c52dd3d8222376384d0e601911089e8.fb19f33f.incomplete
+2026-08-28 22:58:25 ....A          104               models\sd-v1-5\.cache\huggingface\download\scheduler\scheduler_config.json.metadata
+2026-08-28 22:58:24 ....A          104               models\sd-v1-5\.cache\huggingface\download\text_encoder\config.json.metadata
+2026-08-28 23:07:36 ....A     41943040               models\sd-v1-5\.cache\huggingface\download\text_encoder\lfMPmZgGzWzGO2RkvfCHsLAIMUk=.77795e2023adcf39bc29a884661950380bd093cf0750a966d473d1718dc9ef4e.4b262631.incomplete
+2026-08-28 23:04:11 ....A     41943040               models\sd-v1-5\.cache\huggingface\download\text_encoder\lfMPmZgGzWzGO2RkvfCHsLAIMUk=.77795e2023adcf39bc29a884661950380bd093cf0750a966d473d1718dc9ef4e.9f617deb.incomplete
+2026-08-28 23:01:49 ....A    167772160               models\sd-v1-5\.cache\huggingface\download\text_encoder\lfMPmZgGzWzGO2RkvfCHsLAIMUk=.77795e2023adcf39bc29a884661950380bd093cf0750a966d473d1718dc9ef4e.ff6f0e6c.incomplete
+2026-08-28 23:01:52 ....A     41943040               models\sd-v1-5\.cache\huggingface\download\text_encoder\PuFtItD5ItMVETwBpmQ1yUNiC8Y=.05eee911f195625deeab86f0b22b115d7d8bc3adbfc1404f03557f7e4e6a8fd7.3aa32462.incomplete
+2026-08-28 23:04:15 ....A     41943040               models\sd-v1-5\.cache\huggingface\download\text_encoder\PuFtItD5ItMVETwBpmQ1yUNiC8Y=.05eee911f195625deeab86f0b22b115d7d8bc3adbfc1404f03557f7e4e6a8fd7.d90e405f.incomplete
+2026-08-28 23:07:40 ....A     62914560               models\sd-v1-5\.cache\huggingface\download\text_encoder\PuFtItD5ItMVETwBpmQ1yUNiC8Y=.05eee911f195625deeab86f0b22b115d7d8bc3adbfc1404f03557f7e4e6a8fd7.e30e6080.incomplete
+2026-08-28 23:04:26 ....A     52428800               models\sd-v1-5\.cache\huggingface\download\text_encoder\Q1p2l2BzM1m6P5jKvr8WTq1TUio=.770a47a9ffdcfda0b05506a7888ed714d06131d60267e6cf52765d61cf59fd67.097bbc99.incomplete
+2026-08-28 23:01:57 ....A     73400320               models\sd-v1-5\.cache\huggingface\download\text_encoder\Q1p2l2BzM1m6P5jKvr8WTq1TUio=.770a47a9ffdcfda0b05506a7888ed714d06131d60267e6cf52765d61cf59fd67.34b5ff63.incomplete
+2026-08-28 23:07:26 ....A     62914560               models\sd-v1-5\.cache\huggingface\download\text_encoder\Q1p2l2BzM1m6P5jKvr8WTq1TUio=.770a47a9ffdcfda0b05506a7888ed714d06131d60267e6cf52765d61cf59fd67.9e04047e.incomplete
+2026-08-28 23:04:20 ....A     62914560               models\sd-v1-5\.cache\huggingface\download\text_encoder\xGOKKLRSlIhH692hSVvI1-gpoa8=.d008943c017f0092921106440254dbbe00b6a285f7883ec8ba160c3faad88334.41065733.incomplete
+2026-08-28 23:01:35 ....A    104857600               models\sd-v1-5\.cache\huggingface\download\text_encoder\xGOKKLRSlIhH692hSVvI1-gpoa8=.d008943c017f0092921106440254dbbe00b6a285f7883ec8ba160c3faad88334.70c6bcef.incomplete
+2026-08-28 23:07:40 ....A     83886080               models\sd-v1-5\.cache\huggingface\download\text_encoder\xGOKKLRSlIhH692hSVvI1-gpoa8=.d008943c017f0092921106440254dbbe00b6a285f7883ec8ba160c3faad88334.bca03992.incomplete
+2026-08-28 23:02:20 ....A          104               models\sd-v1-5\.cache\huggingface\download\tokenizer\merges.txt.metadata
+2026-08-28 23:02:18 ....A          104               models\sd-v1-5\.cache\huggingface\download\tokenizer\special_tokens_map.json.metadata
+2026-08-28 23:02:18 ....A          104               models\sd-v1-5\.cache\huggingface\download\tokenizer\tokenizer_config.json.metadata
+2026-08-28 23:02:20 ....A          104               models\sd-v1-5\.cache\huggingface\download\tokenizer\vocab.json.metadata
+2026-08-28 23:02:19 ....A          104               models\sd-v1-5\.cache\huggingface\download\unet\config.json.metadata
+2026-08-28 23:04:16 ....A    115343360   2746334702  models\sd-v1-5\.cache\huggingface\download\unet\QGKUr3yaD9JD-RaWEuvjvgKhPHs=.c7da0e21ba7ea50637bee26e81c220844defdf01aafca02b2c42ecdadb813de4.4fe9c75b.incomplete
+2026-08-28 23:07:42 ....A     83886080               models\sd-v1-5\.cache\huggingface\download\unet\QGKUr3yaD9JD-RaWEuvjvgKhPHs=.c7da0e21ba7ea50637bee26e81c220844defdf01aafca02b2c42ecdadb813de4.d8f235ae.incomplete
+2026-08-28 23:04:07 ....A     31457280               models\sd-v1-5\.cache\huggingface\download\unet\qvL24ak4oZi668_a9cUr1J0xW-w=.42bc8b8f3af32866db3c7bb5bcf591ab04438296c2712246d7a640bde5a5ddc1.3336a648.incomplete
+2026-08-28 23:07:31 ....A     62914560               models\sd-v1-5\.cache\huggingface\download\unet\qvL24ak4oZi668_a9cUr1J0xW-w=.42bc8b8f3af32866db3c7bb5bcf591ab04438296c2712246d7a640bde5a5ddc1.f4b921cd.incomplete
+2026-08-28 23:04:04 ....A     20971520               models\sd-v1-5\.cache\huggingface\download\unet\ubm5m3bnxno3jFS723tbWO9jMbk=.c83908253f9a64d08c25fc90874c9c8aef9a329ce1ca5fb909d73b0c83d1ea21.352f22e4.incomplete
+2026-08-28 23:07:46 ....A     94371840               models\sd-v1-5\.cache\huggingface\download\unet\ubm5m3bnxno3jFS723tbWO9jMbk=.c83908253f9a64d08c25fc90874c9c8aef9a329ce1ca5fb909d73b0c83d1ea21.b18b6617.incomplete
+2026-08-28 23:03:52 ....A     41943040               models\sd-v1-5\.cache\huggingface\download\unet\XvpF6D3IOdMzSRYQ9R6x9V0lSjo=.30eb3dc47c90e4a55476332b284b2331774c530edbbb83b70cacdd9e7b91af92.2836737a.incomplete
+2026-08-28 23:07:39 ....A    157286400               models\sd-v1-5\.cache\huggingface\download\unet\XvpF6D3IOdMzSRYQ9R6x9V0lSjo=.30eb3dc47c90e4a55476332b284b2331774c530edbbb83b70cacdd9e7b91af92.503081f8.incomplete
+2026-08-28 22:58:17 ....A         8853               models\sd-v1-5\.cache\huggingface\trees\451f4fe16113bff5a5d2269ed5ad43b0592e9a14.json
+2026-08-28 22:58:20 ....A         1548               models\sd-v1-5\.gitattributes
+2026-08-28 22:58:24 ....A          342               models\sd-v1-5\feature_extractor\preprocessor_config.json
+2026-08-28 22:58:23 ....A          541               models\sd-v1-5\model_index.json
+2026-08-28 22:58:19 ....A        14461               models\sd-v1-5\README.md
+2026-08-28 22:58:23 ....A         4723               models\sd-v1-5\safety_checker\config.json
+2026-08-28 22:58:25 ....A          308               models\sd-v1-5\scheduler\scheduler_config.json
+2026-08-28 22:58:24 ....A          617               models\sd-v1-5\text_encoder\config.json
+2026-08-28 23:32:58 ....A    192471040               models\sd-v1-5\text_encoder\model.fp16.safetensors.part
+2026-08-28 23:32:58 ....A    194760704               models\sd-v1-5\text_encoder\model.safetensors.part
+2026-08-28 23:02:20 ....A       524619               models\sd-v1-5\tokenizer\merges.txt
+2026-08-28 23:02:18 ....A          472               models\sd-v1-5\tokenizer\special_tokens_map.json
+2026-08-28 23:02:18 ....A          806               models\sd-v1-5\tokenizer\tokenizer_config.json
+2026-08-28 23:02:20 ....A      1059962               models\sd-v1-5\tokenizer\vocab.json
+2026-08-28 23:02:19 ....A          743               models\sd-v1-5\unet\config.json
+2026-08-28 23:32:58 ....A    244334592               models\sd-v1-5\unet\diffusion_pytorch_model.fp16.safetensors.part
+2026-08-28 23:32:58 ....A    364941312               models\sd-v1-5\unet\diffusion_pytorch_model.safetensors.part
+2026-08-28 23:27:57 ....A    167335342               models\sd-v1-5\vae\diffusion_pytorch_model.fp16.safetensors.part
+2026-08-28 23:32:58 ....A    270258176               models\sd-v1-5\vae\diffusion_pytorch_model.safetensors.part
+2026-08-28 19:28:41 ....A            1               models\tiny-sd\.cache\huggingface\.gitignore
+2026-08-28 19:28:41 ....A          195               models\tiny-sd\.cache\huggingface\CACHEDIR.TAG
+2026-08-28 19:28:42 ....A          104               models\tiny-sd\.cache\huggingface\download\.gitattributes.metadata
+2026-08-28 19:28:42 ....A          104               models\tiny-sd\.cache\huggingface\download\comparision1.png.metadata
+2026-08-28 19:28:42 ....A          104               models\tiny-sd\.cache\huggingface\download\graph.png.metadata
+2026-08-28 19:28:44 ....A          104               models\tiny-sd\.cache\huggingface\download\grid_tiny.png.metadata
+2026-08-28 19:28:43 ....A          104               models\tiny-sd\.cache\huggingface\download\model_index.json.metadata
+2026-08-28 19:28:42 ....A          104               models\tiny-sd\.cache\huggingface\download\README.md.metadata
+2026-08-28 19:28:43 ....A          104               models\tiny-sd\.cache\huggingface\download\scheduler\scheduler_config.json.metadata
+2026-08-28 19:28:43 ....A          104               models\tiny-sd\.cache\huggingface\download\text_encoder\config.json.metadata
+2026-08-28 19:30:46 ....A          128               models\tiny-sd\.cache\huggingface\download\text_encoder\pytorch_model.bin.metadata
+2026-08-28 19:28:44 ....A          104               models\tiny-sd\.cache\huggingface\download\tokenizer\merges.txt.metadata
+2026-08-28 19:28:44 ....A          103               models\tiny-sd\.cache\huggingface\download\tokenizer\special_tokens_map.json.metadata
+2026-08-28 19:28:45 ....A          104               models\tiny-sd\.cache\huggingface\download\tokenizer\tokenizer_config.json.metadata
+2026-08-28 19:28:45 ....A          103               models\tiny-sd\.cache\huggingface\download\tokenizer\vocab.json.metadata
+2026-08-28 19:28:45 ....A          104               models\tiny-sd\.cache\huggingface\download\unet\config.json.metadata
+2026-08-28 19:32:09 ....A          128               models\tiny-sd\.cache\huggingface\download\unet\diffusion_pytorch_model.bin.metadata
+2026-08-28 19:28:46 ....A          103               models\tiny-sd\.cache\huggingface\download\vae\config.json.metadata
+2026-08-28 19:31:46 ....A          128               models\tiny-sd\.cache\huggingface\download\vae\diffusion_pytorch_model.bin.metadata
+2026-08-28 19:28:47 ....A          104               models\tiny-sd\.cache\huggingface\download\val_imgs_grid.png.metadata
+2026-08-28 19:28:41 ....A         2669               models\tiny-sd\.cache\huggingface\trees\cad0bd7495fa6c4bcca01b19a723dc91627fe84f.json
+2026-08-28 19:28:42 ....A         1519               models\tiny-sd\.gitattributes
+2026-08-28 19:28:42 ....A       117118               models\tiny-sd\comparision1.png
+2026-08-28 19:28:42 ....A        20184               models\tiny-sd\graph.png
+2026-08-28 19:28:44 ....A       534777               models\tiny-sd\grid_tiny.png
+2026-08-28 19:28:43 ....A          584               models\tiny-sd\model_index.json
+2026-08-28 19:28:42 ....A         1512               models\tiny-sd\README.md
+2026-08-28 19:28:43 ....A          691               models\tiny-sd\scheduler\scheduler_config.json
+2026-08-28 19:28:43 ....A          722               models\tiny-sd\text_encoder\config.json
+2026-08-28 19:30:46 ....A    246187869               models\tiny-sd\text_encoder\pytorch_model.bin
+2026-08-28 19:28:44 ....A       524619               models\tiny-sd\tokenizer\merges.txt
+2026-08-28 19:28:44 ....A          472               models\tiny-sd\tokenizer\special_tokens_map.json
+2026-08-28 19:28:45 ....A          737               models\tiny-sd\tokenizer\tokenizer_config.json
+2026-08-28 19:28:45 ....A      1059962               models\tiny-sd\tokenizer\vocab.json
+2026-08-28 19:28:45 ....A          755               models\tiny-sd\unet\config.json
+2026-08-28 19:32:09 ....A    646923637               models\tiny-sd\unet\diffusion_pytorch_model.bin
+2026-08-28 19:28:46 ....A          759               models\tiny-sd\vae\config.json
+2026-08-28 19:31:46 ....A    167407857               models\tiny-sd\vae\diffusion_pytorch_model.bin
+2026-08-28 19:28:47 ....A       378774               models\tiny-sd\val_imgs_grid.png
+2026-07-31 12:05:40 ....A    178997256     67856510  Godot_v4.7.1-stable_win64.exe\Godot_v4.7.1-stable_win64.exe
+2026-07-31 12:05:40 ....A       198152               Godot_v4.7.1-stable_win64.exe\Godot_v4.7.1-stable_win64_console.exe
+------------------- ----- ------------ ------------  ------------------------
+2026-08-28 23:32:58        54501764796  41639502396  324 files, 90 folders

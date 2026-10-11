@@ -1,0 +1,15 @@
+1.81s x97  aten::mkldnn_convolution
+1.05s x88  aten::addmm
+0.73s x32  aten::_scaled_dot_product_flash_attention_for_cpu
+0.26s x96  aten::mm
+0.14s x188  aten::copy_
+0.06s x108  aten::add
+0.04s x16  aten::gelu
+0.04s x19  aten::mul
+0.03s x61  aten::native_group_norm
+0.02s x55  aten::div
+0.02s x68  aten::silu
+0.02s x48  aten::native_layer_norm
+0.01s x14  aten::cat
+0.01s x658  aten::empty
+0.00s x184  aten::linear

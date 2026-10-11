@@ -31,9 +31,22 @@ from bitsandbytes.functional import (
 # 每 64 个权重一个 fp32 absmax ⇒ 2.5 bit/权重 ⇒ 对 fp32 是 12.8x。
 from dataclasses import dataclass  # noqa: E402
 
+import quantnbit as _qn  # noqa: E402
 from quant2bit import NF2 as _NF2_TABLE  # noqa: E402
 from quant2bit import dequantize as _q2_dequantize  # noqa: E402
 from quant2bit import quantize as _q2_quantize  # noqa: E402
+
+# Generic narrow-width path: 'uniN' uses uniform levels, 'nfN' normal mid-quantiles.
+# quantnbit packs any width with one code path and self-tests the round trip at 2, 3, 4
+# and 5 bits, including the byte-spanning layout that 3 bits needs.
+_NARROW = {}
+for _bits in (2, 3, 4, 5):
+    _NARROW['uni%d' % _bits] = (_bits, _qn.uniform_table(_bits))
+    _NARROW['nf%d' % _bits] = (_bits, _qn.nf_table(_bits))
+
+
+def _is_narrow(name: str) -> bool:
+    return name in _NARROW
 
 
 @dataclass
@@ -89,6 +102,11 @@ class _QuantLinearFn(torch.autograd.Function):
 
 
 def _dequant_w(wq, stats, quant_dtype, blocksize, out_f, in_f) -> torch.Tensor:
+    if quant_dtype in _NARROW:
+        bits, table = _NARROW[quant_dtype]
+        return _qn.dequantize(wq, stats.absmax,
+                              dict(n=stats.n, bits=bits, block=blocksize,
+                                   table=table, shape=(out_f, in_f)))
     if quant_dtype == "nf2":
         return _q2_dequantize(wq, stats.absmax, stats.n, stats.pad,
                               (out_f, in_f), stats.table, blocksize)
@@ -112,7 +130,18 @@ class QuantLinearLora(nn.Module):
         super().__init__()
         self.out_features, self.in_features = weight.shape
         self.quant_dtype = quant_dtype
-        if quant_dtype == "nf2":
+        if quant_dtype in _NARROW and quant_dtype != "nf2":
+            self.blocksize = blocksize or 64
+            bits, table = _NARROW[quant_dtype]
+            w = weight.detach().float()
+            packed, absmax, meta = _qn.quantize(w, bits, table=table,
+                                                block=self.blocksize)
+            self.register_buffer("wq", packed)
+            self.stats = type("NarrowState", (), {})()
+            self.stats.absmax = absmax
+            self.stats.n = meta['n']
+            self.stats.blocksize = self.blocksize
+        elif quant_dtype == "nf2":
             self.blocksize = blocksize or 64
             w = weight.detach().float()
             packed, absmax, n, pad, _shape = _q2_quantize(w, _NF2_TABLE, self.blocksize)

@@ -1,0 +1,11 @@
+[v2] token 文件: 29113 张 x 256 token -> 网格 16x16   VQ ch=(64, 128, 256, 256)
+[v2] 码本簇划分: 32 簇 x 32 码 (vocab=1024)
+[v2] params=30.49M tokens=(29113, 256)
+[v2] n_layer=10 loop=[4..7]x1 -> 实际 10 个 block pass/前向
+[v2] use_bos=True  (True 时 logits[:,i] 直接预测 tokens[:,i]，损失不移位)
+Traceback (most recent call last):
+  File "D:\work\bitsandbytes-CPU\train_ar_v2.py", line 1220, in <module>
+    main()
+  File "D:\work\bitsandbytes-CPU\train_ar_v2.py", line 548, in main
+    print('[v2] \u26a0\ufe0f resume 键不匹配: missing=%s unexpected=%s'
+UnicodeEncodeError: 'gbk' codec can't encode character '\u26a0' in position 5: illegal multibyte sequence

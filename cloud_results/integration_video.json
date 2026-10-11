@@ -1,0 +1,58 @@
+{
+  "results": [
+    {
+      "check": "I1 识别出有意义的冷参数",
+      "pass": true,
+      "detail": "532 个张量 / 5004.4MB"
+    },
+    {
+      "check": "I1b 前置条件：内存压力判定为真",
+      "pass": true,
+      "detail": "used=0.993 thr=0.943"
+    },
+    {
+      "check": "I1c update_step 一次迁移完全部冷参数",
+      "pass": true,
+      "detail": "迁移 532 / 532"
+    },
+    {
+      "check": "I2 迁移后全部源 storage 已释放",
+      "pass": true,
+      "detail": "仍存活 0/532；迁移期间峰值 +1MB （冷参数共 5004MB），RSS 终值变化 -551MB"
+    },
+    {
+      "check": "I3 盘上字节 == 冷参数理论字节",
+      "pass": true,
+      "detail": "5247467520 vs 5247467520"
+    },
+    {
+      "check": "I4 回读逐字节一致",
+      "pass": true,
+      "detail": "532/532 一致"
+    },
+    {
+      "check": "I5 装回后前向输出与基线逐位一致",
+      "pass": true,
+      "detail": "max|Δ|=0.000e+00 finite=True"
+    },
+    {
+      "check": "I6 负控制：不装回参数则前向异常或不同",
+      "pass": true,
+      "detail": "err=RuntimeError: mat2 must be a matrix, got 1-D tensor"
+    }
+  ],
+  "passed": 8,
+  "total": 8,
+  "structure": {
+    "params": 1312730244,
+    "params_M": 1312.730244,
+    "motion_named_modules": 639,
+    "temporal_named_modules": 0,
+    "motion_injected": true
+  },
+  "cold_params": 532,
+  "cold_MB": 5004.375,
+  "cold_bytes": 5247467520,
+  "source_storages_released": 532,
+  "migration_peak_rss_delta_MB": 0.625
+}

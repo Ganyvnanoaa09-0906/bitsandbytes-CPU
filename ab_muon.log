@@ -1,0 +1,7 @@
+T=1024 batch=2，AdamW lr=1e-04 vs Muon lr=0.02（2D 权重）+ AdamW（其余）
+步数 2000；这是【曲线形状】的比较，绝对值不与 T=1024 的运行对应
+
+[loop] 循环 Transformer 已挂载: L=1 L_max=3 random=False step_enc=True cross_res=True  新增参数 4608
+  adamw  跑完 2000 步，用时 6631.6 s（优化器 2257.6 ms/步）；结果已落盘
+[loop] 循环 Transformer 已挂载: L=1 L_max=3 random=False step_enc=True cross_res=True  新增参数 4608
+    Muon 覆盖 74 个 2D 权重，AdamW 覆盖 76 个其余参数

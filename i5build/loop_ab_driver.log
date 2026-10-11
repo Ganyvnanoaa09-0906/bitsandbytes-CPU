@@ -1,0 +1,9 @@
+[ab] ��ʼ L1  2026-10-06 21:19:30  p='1,0,0'
+[ab] ==== 驱动启动 ====  2026-10-07 14:16:11
+[ab] 开始 L1  p='1,0,0'  （python=C:\Users\Gan\AppData\Local\Programs\Python\Python311\python.exe）  2026-10-07 14:16:11
+[ab] L1 结束 rc=0 done=False  2026-10-07 15:03:09
+[ab] 开始 random  p=''  （python=C:\Users\Gan\AppData\Local\Programs\Python\Python311\python.exe）  2026-10-07 15:03:09
+[ab] random 结束 rc=0 done=False  2026-10-07 16:13:01
+[ab] ==== 全部完成 ====  2026-10-07 16:13:01
+[ab] ==== 驱动启动 ====  2026-10-07 23:59:02
+[ab] 开始 L1  p='1,0,0'  （python=C:\Users\Gan\AppData\Local\Programs\Python\Python311\python.exe）  2026-10-07 23:59:02

@@ -1,0 +1,89 @@
+[v2] token 文件: 29113 张 x 256 token -> 网格 16x16   VQ ch=(64, 128, 256, 256)
+[v2] 码本簇划分: 32 簇 x 32 码 (vocab=1024)
+[loop] 循环 Transformer 已挂载: L=1 L_max=3 random=True step_enc=True cross_res=True  新增参数 4608
+[v2] params=34.52M tokens=(29113, 256)
+[v2] n_layer=10 loop=[4..7]x1 -> 实际 10 个 block pass/前向
+[v2] use_bos=True  (True 时 logits[:,i] 直接预测 tokens[:,i]，损失不移位)
+[v2] ⚠️ resume 键不匹配: missing=['cond_proj.0.weight', 'cond_proj.0.bias', 'blocks.0.ada.weight', 'blocks.0.ada.bias', 'blocks.1.ada.weight', 'blocks.1.ada.bias'] unexpected=[]
+[v2] resume: ckpt_last.pt -> 全局步 22000
+[v2] 条件就绪(预计算张量): (29113, 512)  dim=2  范数均值 1.0000
+[v2] 训练/验证划分: train=28531 val=582 (验证取固定 512 张)
+[v2] stage T=256 steps=24500 batch=8 (跳过前 22000 步)
+[v2 T=256] step 22001  train=5.3537  val=5.4588  gap=+0.1051
+[v2 T=256] step 22261  train=5.4437  val=5.4723  gap=+0.0286
+[v2 T=256] step 22521  train=5.2210  val=5.4628  gap=+0.2418
+[v2 T=256] step 22781  train=5.1759  val=5.4516  gap=+0.2757
+[v2 T=256] step 23041  train=5.7177  val=5.4510  gap=-0.2667
+[v2 T=256] step 23301  train=5.5160  val=5.4369  gap=-0.0791
+[v2 T=256] step 23561  train=5.5251  val=5.4329  gap=-0.0921
+[v2 T=256] step 23821  train=5.6131  val=5.4283  gap=-0.1848
+[v2 T=256] step 24081  train=5.1775  val=5.4185  gap=+0.2410
+[v2 T=256] step 24341  train=5.4219  val=5.4108  gap=-0.0111
+[v2 T=256] 24500/24500 loss=5.7684 6.830s
+{"T": 256, "steps": 24500, "batch": 8, "mean_step_s": 4.784046932320157, "first_loss": 5.353699207305908, "last_loss": 5.768427848815918, "elapsed_s": 12878.072032213211, "tokens_per_s": 428.0894458129334, "corrupt": {"token_dropout": 0.0, "sched_sample_max": 0.0, "repl_token_dropout": 0.0, "repl_sched": 0.0, "ss_rate_end": 0.0, "n_steps_counted": 2500}}
+{
+  "kind": "ar_v2",
+  "params": 34521984,
+  "cfg": {
+    "vocab_size": 1024,
+    "d_model": 512,
+    "n_layer": 10,
+    "n_head": 8,
+    "n_kv_head": 4,
+    "ffn_dim": 2048,
+    "total_tokens": 256,
+    "grid": 16,
+    "think_tokens": 16,
+    "text_dim": 512,
+    "ada_dim": 128,
+    "cond_mode": "adaln",
+    "cond_dropout": 0.1,
+    "pos_mode": "2d",
+    "token_order": "raster",
+    "head_mode": "flat",
+    "n_cluster": 32,
+    "hier": false,
+    "coarse_grid": 4,
+    "loop_start": 4,
+    "loop_end": 7,
+    "loop_times": 1,
+    "fuse_qkv": false,
+    "use_bos": true,
+    "use_l3": false,
+    "mask_mode": "causal",
+    "patch_nums": [],
+    "msa_groups": "",
+    "msa_local": 0,
+    "nbr_fuse": false,
+    "nbr_window": 0,
+    "l3_v": 1024,
+    "l3_k": 8,
+    "l3_d_emb": 128,
+    "l3_d_up": 128,
+    "l3_key_mode": "1gram",
+    "l3_from": 0,
+    "l3_sparse": false
+  },
+  "stages": [
+    {
+      "T": 256,
+      "steps": 24500,
+      "batch": 8,
+      "mean_step_s": 4.784046932320157,
+      "first_loss": 5.353699207305908,
+      "last_loss": 5.768427848815918,
+      "elapsed_s": 12878.072032213211,
+      "tokens_per_s": 428.0894458129334,
+      "corrupt": {
+        "token_dropout": 0.0,
+        "sched_sample_max": 0.0,
+        "repl_token_dropout": 0.0,
+        "repl_sched": 0.0,
+        "ss_rate_end": 0.0,
+        "n_steps_counted": 2500
+      }
+    }
+  ],
+  "peak_rss_gb": 3.392380928,
+  "cond_used": true
+}

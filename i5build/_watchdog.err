@@ -1,0 +1,7 @@
+所在位置 D:\work\bitsandbytes-CPU\i5build\shutdown_when_done.ps1:32 字符: 24
++         Write-Output "[watchdog] 璇绘棩蹇楀け璐ワ紙$($_.Exception.Message)锛夛紝缁 ...
++                        ~
+数组索引表达式丢失或无效。
+    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
+    + FullyQualifiedErrorId : MissingArrayIndexExpression
+ 

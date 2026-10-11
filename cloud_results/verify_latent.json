@@ -1,0 +1,66 @@
+{
+  "results": [
+    {
+      "check": "L1a put 返回字节数正确 [float32]",
+      "pass": true,
+      "detail": "bytes=262201 载荷=262144"
+    },
+    {
+      "check": "L2 get 可读回 [float32]",
+      "pass": true,
+      "detail": "shape=(1, 4, 16, 32, 32) dtype=torch.float32"
+    },
+    {
+      "check": "L1b 逐字节一致 [float32]",
+      "pass": true,
+      "detail": "262144B vs 262144B  shape=(1, 4, 16, 32, 32)"
+    },
+    {
+      "check": "L1a put 返回字节数正确 [float16]",
+      "pass": true,
+      "detail": "bytes=131129 载荷=131072"
+    },
+    {
+      "check": "L2 get 可读回 [float16]",
+      "pass": true,
+      "detail": "shape=(1, 4, 16, 32, 32) dtype=torch.float16"
+    },
+    {
+      "check": "L1b 逐字节一致 [float16]",
+      "pass": true,
+      "detail": "131072B vs 131072B  shape=(1, 4, 16, 32, 32)"
+    },
+    {
+      "check": "L1a put 返回字节数正确 [bfloat16]",
+      "pass": true,
+      "detail": "bytes=131130 载荷=131072"
+    },
+    {
+      "check": "L2 get 可读回 [bfloat16]",
+      "pass": true,
+      "detail": "shape=(1, 4, 16, 32, 32) dtype=torch.bfloat16"
+    },
+    {
+      "check": "L1b 逐字节一致 [bfloat16]",
+      "pass": true,
+      "detail": "131072B vs 131072B  shape=(1, 4, 16, 32, 32)"
+    },
+    {
+      "check": "L3 非连续输入逐字节一致",
+      "pass": true,
+      "detail": "shape=(16, 32)"
+    },
+    {
+      "check": "L4 篡改 1 字节后读回不同（负控制）",
+      "pass": true,
+      "detail": "比对方法确实能发现差异"
+    },
+    {
+      "check": "L5 零拷贝：峰值增量远小于张量本身",
+      "pass": true,
+      "detail": "张量 64MB，峰值增量 0.0MB"
+    }
+  ],
+  "passed": 12,
+  "total": 12
+}
