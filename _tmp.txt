@@ -1,4 +1,0 @@
-﻿chore: drop the temporary commit-message file that was committed by accident
-
-_cmsg.txt is a scratch file used to pass a multi-line commit message; it has no
-business in the tree.
