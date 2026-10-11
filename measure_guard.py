@@ -43,7 +43,10 @@ except ImportError:
 # matters is whether some *other* substantial job is running.
 ALLOWLIST = ('deepseek harness', 'dsh', 'node', 'pwsh', 'powershell', 'conhost',
              'windowsterminal', 'explorer', 'code', 'taskmgr', 'systemsettings',
-             'snippingtool', 'screenclip', 'searchhost', 'startmenuexperiencehost')
+             'snippingtool', 'screenclip', 'searchhost', 'startmenuexperiencehost',
+             # System Idle Process reports the *idle* percentage, so an idle machine
+             # shows it at 400%; pid 0 must never count as load
+             'system idle process', 'idle')
 # taskmgr and friends sit at a few percent just by being open; they are not load
 DEFAULT_THRESHOLD = 50.0     # percent of one core, for the busiest non-allowlisted job
 DEFAULT_SAMPLES = 6
@@ -89,7 +92,7 @@ def _busiest_other():
     import os
     me = os.getpid()
     for c, pid, name in _top_processes(10, interval=0.5):
-        if pid == me:
+        if pid == me or pid == 0:
             continue
         low = (name or '').lower()
         if any(a in low for a in ALLOWLIST):

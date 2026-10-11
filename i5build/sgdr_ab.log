@@ -1,0 +1,15 @@
+SGDR A/B: 1500 步 × 2 臂，batch 2，T=1024，验证 loss 每 250 步
+判据（先声明）: 若 B 在 750 步之后出现【第二次大幅下降】（−0.2 量级），
+                而不是延续 −0.25 → −0.10 → −0.05 的减半衰减 ⇒ SGDR 有效。
+
+=== 臂 sgdrA: 单次余弦退火（现状） ===
+  train_ar_v2.py --tokens D:\work\cloud_salvage\ScPeP7\tokens_32x32_full.pt --vqvae i5build\vqgan32\ckpt_last.pt --stages 1024:1500 --batch 1024:2 --lr 1e-4 --warmup 100 --lr-min 1e-5 --n_layer 10 --n_cluster 32 --head-mode flat --mask-mode causal --threads 6 --ckpt_every 1500 --loop_times 1 --loop_L 1 --loop_L_max 3 --cond-mode none --val_frac 0.02 --val_every 250 --out i5build\sgdrA --lr-restarts 1
+  退出码 0，用时 102.5 分钟
+
+=== 臂 sgdrB: 两周期（750 步一个，lr 会跳回峰值） ===
+  train_ar_v2.py --tokens D:\work\cloud_salvage\ScPeP7\tokens_32x32_full.pt --vqvae i5build\vqgan32\ckpt_last.pt --stages 1024:1500 --batch 1024:2 --lr 1e-4 --warmup 100 --lr-min 1e-5 --n_layer 10 --n_cluster 32 --head-mode flat --mask-mode causal --threads 6 --ckpt_every 1500 --loop_times 1 --loop_L 1 --loop_L_max 3 --cond-mode none --val_frac 0.02 --val_every 250 --out i5build\sgdrB --lr-restarts 2
+  退出码 0，用时 103.9 分钟
+
+=== 两臂的验证曲线对比 ===
+  sgdrA: 0 个验证点
+  sgdrB: 0 个验证点

@@ -37,14 +37,14 @@ with open(P, encoding='utf-8') as f:
     res = json.load(f)
 
 # seconds per step, measured in the same run (from the log)
-SPEED = {'adamw': 6631.6 / 2000, 'muon': None}
+SPEED = {'adamw': 6631.6 / 2000, 'muon': 11883.8 / 2000}
 # Muon's per-step cost comes from its own arm once it finishes; use the 600-step
 # measurement as a provisional value so a partial curve is still interpretable.
 MUON_PROVISIONAL = 3056.6 / 600
 if 'muon' in res and len(res['muon']) > 0:
     # if the log line exists it will have been filled in by the caller
     pass
-SPEED['muon'] = SPEED['muon'] or MUON_PROVISIONAL
+pass
 
 print('每步成本: AdamW %.3f s' % SPEED['adamw'], end='')
 print('   Muon %.3f s%s' % (SPEED['muon'],

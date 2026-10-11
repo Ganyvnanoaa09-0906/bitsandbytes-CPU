@@ -98,6 +98,17 @@ def main():
     ap.add_argument('--lr', type=float, default=1e-4)
     ap.add_argument('--warmup', type=int, default=0,
                     help='线性 warmup 步数：前 N 步学习率从 0 线性升到 --lr。长跑建议设 500~1000。')
+    # ★ 带重启的余弦退火（SGDR, Loshchilov & Hutter 2016, arXiv:1608.03983）。
+    # 动机来自本项目自己的曲线：验证 loss 每 500 步的改善是 −0.256 → −0.105 → −0.051
+    # → −0.028 → −0.014，正好减半——单次余弦退火下 lr 降下来后步长变小，模型停在
+    # 它恰好落进的盆地里。重启把 lr 拉回峰值，让它有机会换一个盆地。
+    # ★ 默认 lr_restarts=1 与改动前【逐位相同】，因此不传这两个参数的长跑不受影响。
+    ap.add_argument('--lr-restarts', type=int, default=1,
+                    help='余弦退火的周期数。1 = 单次退火（原行为，默认）；'
+                         '2~4 为 SGDR 式重启。直接决定总步数里出现几次 lr 峰值。')
+    ap.add_argument('--lr-restart-decay', type=float, default=1.0,
+                    help='每个周期的峰值 lr 乘数（默认 1.0 = 原文形式，每周期回到同一峰值；'
+                         '0.5~0.8 则逐周期压低，更保守）。')
     ap.add_argument('--lr-min', type=float, default=0.0,
                     help='余弦退火的终点学习率。默认 0 = 退到 0；设成 --lr 的 10%% 更稳。')
     ap.add_argument('--d_model', type=int, default=512)
@@ -802,12 +813,28 @@ def main():
     _total_steps = sum(int(s.split(':')[1]) for s in a.stages.split(','))
     _warm = max(0, a.warmup)
 
+    _cycles = max(1, int(getattr(a, 'lr_restarts', 1) or 1))
+    _decay = float(getattr(a, 'lr_restart_decay', 1.0) or 1.0)
+
     def lr_at(step):
         if _warm > 0 and step < _warm:
             return a.lr * float(step + 1) / float(_warm)
         span = max(1, _total_steps - _warm)
         prog = min(1.0, max(0.0, (step - _warm) / float(span)))
-        return a.lr_min + (a.lr - a.lr_min) * 0.5 * (1.0 + math.cos(math.pi * prog))
+        if _cycles > 1:
+            # 锯齿：把整段进度折进 _cycles 个周期。prog 会在每个周期边界从 1 回到 0，
+            # 于是 lr 从 lr_min 跳回峰值——这就是"重启"。
+            cyc = prog * _cycles
+            idx = min(_cycles - 1, int(cyc))
+            prog = cyc - idx
+            peak = a.lr * (_decay ** idx)
+        else:
+            peak = a.lr
+        return a.lr_min + (peak - a.lr_min) * 0.5 * (1.0 + math.cos(math.pi * prog))
+
+    _lr_schedule = ('cos' if _cycles == 1 else
+                    'cos_restart%d%s' % (_cycles,
+                                         '' if _decay == 1.0 else '_d%g' % _decay))
 
     def set_lr(step):
         v = lr_at(step)
