@@ -118,6 +118,11 @@ def main():
                     help='一个 token 占几个坐标格（1=原行为；2 配 16x16 的 token 文件）')
     # ★ total_tokens 覆盖：课程的【两个阶段必须是同一个模型】，因此第二阶段要沿用第一
     # 阶段的 total_tokens/grid，而不能从 token 文件的行宽推。默认 0 = 从文件推（原行为）。
+    # ★ H3 实验用：Muon 的 Newton-Schulz 迭代次数。默认 5（原文与基线）。
+    # 第二轮微基准：5→3 每步省 763 ms（优化器 2562→1799 ms），但 512×512 更新的条件数
+    # 从 27 涨到 320。是否可接受只能在训练里测，见 research/ns_iterations.md。
+    ap.add_argument('--ns-iters', type=int, default=5,
+                    help='Muon 的 NS 迭代次数（默认 5；H3 实验用 3 或 4）')
     ap.add_argument('--total_tokens', type=int, default=0,
                     help='覆盖模型的总 token 数（0 = 从 token 文件的行宽推）')
     # ★ 每步实际喂给模型的序列长度（0 = 用 token 文件的行宽）。课程的第一阶段用 16x16

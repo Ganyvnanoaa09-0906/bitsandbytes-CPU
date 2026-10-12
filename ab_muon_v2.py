@@ -48,7 +48,10 @@ BATCH = 2         # the batch the real training uses
 LR_ADAM = 1e-4
 LR_MUON = 0.02
 MOM = 0.95
-NS_STEPS = 5
+# NS_ITERS lets the H3 experiment vary the Newton-Schulz iteration count without touching
+# the default. os is imported later in this file, so import it inline here (the first attempt
+# used a bare os.environ and died with NameError at import time).
+NS_STEPS = int(__import__("os").environ.get("NS_ITERS", "5"))
 
 
 def zeropower_via_newtonschulz5(G, steps=NS_STEPS, eps=1e-7):
@@ -174,7 +177,7 @@ if os.path.exists(RESULT_JSON):
     except Exception:
         res = {}
 
-for name in ('adamw', 'muon'):
+for name in ('adamw', 'muon', 'muon3'):
     if name in res and len(res[name]) >= STEPS:
         print('  %-6s 已有 %d 步结果，跳过' % (name, len(res[name])))
         continue
