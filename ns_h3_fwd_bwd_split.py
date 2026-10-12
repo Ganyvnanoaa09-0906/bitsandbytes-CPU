@@ -100,11 +100,15 @@ for label, ns_iters in (('NS=5', 5), ('NS=3', 3)):
         aopt.zero_grad(set_to_none=True)
         loss.backward()
         t2 = time.perf_counter()
-        for k, p in enumerate(mp):
-            buf[k].mul_(0.95).add_(p.grad)
-            d = p.grad.add(buf[k], alpha=0.95)
-            d = ns(d, ns_iters) * max(1.0, d.size(0) / d.size(1)) ** 0.5
-            p.add_(d, alpha=-0.02)
+        # p.add_ needs no_grad: p is a leaf requiring grad, so an in-place update outside
+        # no_grad raises. The first version of this script died here and the 2000-step run
+        # finished before anyone noticed -- the guard had never let it run before.
+        with torch.no_grad():
+            for k, p in enumerate(mp):
+                buf[k].mul_(0.95).add_(p.grad)
+                d = p.grad.add(buf[k], alpha=0.95)
+                d = ns(d, ns_iters) * max(1.0, d.size(0) / d.size(1)) ** 0.5
+                p.add_(d, alpha=-0.02)
         aopt.step()
         t3 = time.perf_counter()
         fw.append(t1 - t0)
