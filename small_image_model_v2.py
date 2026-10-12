@@ -608,6 +608,9 @@ class SmallImageConfigV2:
     cond_mode: str = 'adaln'
     cond_dropout: float = 0.1
     pos_mode: str = '2d'
+    # 1 = 一个 token 占一个坐标格（原行为）；2 = 占 2x2（配合 16x16 的 token 文件，
+    # 让同一个模型在更粗的分辨率上训练，位置编码与词表都不变）。
+    token_scale: int = 1
     token_order: str = 'raster'
     head_mode: str = 'factorized'
     n_cluster: int = 32
@@ -868,7 +871,24 @@ class SmallARImageModelV2(nn.Module):
     def coords(self, start, T, device):
         g = self.cfg.grid
         p = self.order[start:start + T]
-        return (p // g).to(device), (p % g).to(device)
+        # token_scale: a coarser image reuses the same position embeddings by letting each
+        # token occupy an s x s block of the coordinate grid. A 16x16 input needs only even
+        # coordinates of a grid-32 table, so vocabulary and position tables are unchanged --
+        # only the input resolution differs. Default 1 keeps existing runs bit-identical.
+        _ts = int(getattr(self.cfg, 'token_scale', 1) or 1)
+        if _ts > 1:
+            # A coarser image has its own, smaller grid: g//_ts per side. self.order is a
+            # permutation over the FULL grid, so taking its first T entries would still
+            # span the whole image -- the earlier version of this did exactly that and the
+            # coordinates came out at 62 and 124 for a grid of 32. Index the small grid
+            # directly instead, then scale up so the shared position table is addressed.
+            gs = g // _ts
+            i = torch.arange(start, start + T, device=self.order.device)
+            i = i % (gs * gs)
+            r, c = (i // gs) * _ts, (i % gs) * _ts
+        else:
+            r, c = (p // g), (p % g)
+        return r.to(device), c.to(device)
 
     def embed(self, tokens, pos_offset=0, nbr_buf=None):
         B, T = tokens.shape

@@ -111,6 +111,20 @@ def main():
                          '0.5~0.8 则逐周期压低，更保守）。')
     ap.add_argument('--lr-min', type=float, default=0.0,
                     help='余弦退火的终点学习率。默认 0 = 退到 0；设成 --lr 的 10%% 更稳。')
+    # ★ 多分辨率课程用。token_scale：一个 token 占 s x s 个坐标格，于是 16x16 的图
+    # （256 token）能复用 grid=32 的位置表与词表 —— 同一个模型、同一个任务，只是分辨率不同。
+    # 见 small_image_model_v2.py 的 coords()。默认 1，不传则与原行为逐位相同。
+    ap.add_argument('--token_scale', type=int, default=1,
+                    help='一个 token 占几个坐标格（1=原行为；2 配 16x16 的 token 文件）')
+    # ★ total_tokens 覆盖：课程的【两个阶段必须是同一个模型】，因此第二阶段要沿用第一
+    # 阶段的 total_tokens/grid，而不能从 token 文件的行宽推。默认 0 = 从文件推（原行为）。
+    ap.add_argument('--total_tokens', type=int, default=0,
+                    help='覆盖模型的总 token 数（0 = 从 token 文件的行宽推）')
+    # ★ 每步实际喂给模型的序列长度（0 = 用 token 文件的行宽）。课程的第一阶段用 16x16
+    # 的 token 文件（256 宽）配 --token_scale 2 与 --total_tokens 1024，于是模型与第二
+    # 阶段完全一致，只是输入分辨率更粗。
+    ap.add_argument('--seq_len', type=int, default=0,
+                    help='每步的序列长度（0 = 用 token 文件的行宽）')
     ap.add_argument('--d_model', type=int, default=512)
     ap.add_argument('--n_layer', type=int, default=10)
     ap.add_argument('--n_head', type=int, default=8)
@@ -470,6 +484,14 @@ def main():
         if a.head_mode != 'flat':
             raise SystemExit('--maskgit 目前只支持 --head-mode flat')
 
+    # ★ 课程的两个阶段必须【同一个模型】：total_tokens/grid 由 --total_tokens 覆盖，
+    # 不能从 token 文件的行宽推（16x16 的文件是 256 宽，会建出 grid=16 的模型）。
+    _tt = int(getattr(a, 'total_tokens', 0) or 0)
+    if _tt:
+        T_tok = _tt
+        grid = int(round(_tt ** 0.5))
+        print('[curriculum] total_tokens 覆盖为 %d ⇒ grid %d' % (T_tok, grid), flush=True)
+
     cfg = SmallImageConfigV2(d_model=a.d_model, n_layer=a.n_layer, n_head=a.n_head,
                              n_kv_head=a.n_kv_head, ffn_dim=a.ffn_dim,
                              vocab_size=(local_vocab + 1) if a.maskgit else local_vocab,
@@ -489,7 +511,8 @@ def main():
                              l3_d_emb=a.l3_d_emb, l3_d_up=a.l3_d_up,
                              l3_key_mode=a.l3_key_mode, l3_from=a.l3_from,
                              l3_sparse=a.l3_sparse,
-                             text_dim=a.text_dim)
+                             text_dim=a.text_dim,
+                               token_scale=int(getattr(a, 'token_scale', 1) or 1))
     model = SmallARImageModelV2(cfg)
     # ---- 循环 Transformer（可选，默认关闭）----
     if a.loop_L > 1 or a.loop_random:
