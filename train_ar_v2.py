@@ -29,6 +29,113 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "bit
 import bitsandbytes as bnb
 
 
+
+# ============================================================================
+# Muon + Newton-Schulz, lifted verbatim from ab_muon_v2.py.
+#
+# Both were measured before being brought here: Muon reaches the same loss in 3.19x fewer
+# steps and 1.96x less wall clock than AdamW8bit (7.27), and dropping Newton-Schulz from 5
+# iterations to 3 takes another 20.4% off the optimiser stage at a 0.9% loss difference over
+# 2000 steps (7.31.4). Neither was in the real training path, which is what this does.
+#
+# Muon applies only to 2-D weight matrices; embeddings, the head and every 1-D parameter stay
+# on AdamW, which is what the A/B harness did and therefore what the numbers describe.
+_MUON_WIRED = True
+
+
+def zeropower_via_newtonschulz5(G, steps=5, eps=1e-7):
+    """Newton-Schulz quintic orthogonalisation, exactly as measured in 7.31.4."""
+    a, b, c = (3.4445, -4.7750, 2.0315)
+    X = G.float()
+    X = X / (X.norm() + eps)
+    tr = False
+    if X.size(0) > X.size(1):
+        X = X.T
+        tr = True
+    for _ in range(steps):
+        A = X @ X.T
+        Bm = b * A + c * (A @ A)
+        X = a * X + Bm @ X
+    return X.T if tr else X
+
+
+class Muon(torch.optim.Optimizer):
+    """Muon on 2-D weights. The NS iteration count is the H3 variable."""
+
+    def __init__(self, params, lr=0.02, momentum=0.95, ns_iters=5):
+        super().__init__(params, dict(lr=lr, momentum=momentum, ns_iters=ns_iters))
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        for g in self.param_groups:
+            for p in g['params']:
+                if p.grad is None:
+                    continue
+                buf = self.state[p].get('buf')
+                if buf is None:
+                    buf = torch.zeros_like(p)
+                    self.state[p]['buf'] = buf
+                buf.mul_(g['momentum']).add_(p.grad)
+                d = p.grad.add(buf, alpha=g['momentum'])
+                if d.ndim == 2:
+                    d = zeropower_via_newtonschulz5(d, g['ns_iters'])
+                    d = d * max(1.0, d.size(0) / d.size(1)) ** 0.5
+                p.add_(d, alpha=-g['lr'])
+
+
+def build_optimizers(a, model):
+    """AdamW8bit on everything, or Muon on 2-D weights plus AdamW8bit on the rest.
+
+    Returns a list, so the training loop can iterate without caring which case it is. The
+    split mirrors ab_muon_v2.py: 2-D parameters whose names contain neither 'emb' nor 'head'
+    go to Muon, everything else to AdamW8bit.
+    """
+    import bitsandbytes as bnb
+    name = (getattr(a, 'optimizer', 'adamw') or 'adamw').lower()
+    if name != 'muon':
+        return [bnb.optim.AdamW8bit(model.parameters(), lr=a.lr)]
+    muon_p, adam_p = [], []
+    for n, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if p.ndim == 2 and 'emb' not in n and 'head' not in n:
+            muon_p.append(p)
+        else:
+            adam_p.append(p)
+    ns_it = int(getattr(a, 'ns_iters', 5) or 5)
+    print('[muon] %d 个 2D 权重走 Muon（NS=%d）· %d 个其余走 AdamW8bit'
+          % (len(muon_p), ns_it, len(adam_p)), flush=True)
+    return [Muon(muon_p, lr=float(getattr(a, 'muon_lr', 0.02)), ns_iters=ns_it),
+            bnb.optim.AdamW8bit(adam_p, lr=a.lr)]
+
+
+
+
+def opt_zero_grad(opts):
+    """zero_grad on one optimiser or a list of them (Muon mode holds two)."""
+    for o in (opts if isinstance(opts, (list, tuple)) else [opts]):
+        o.zero_grad(set_to_none=True)
+
+
+def opt_step(opts):
+    """step on one optimiser or a list of them."""
+    for o in (opts if isinstance(opts, (list, tuple)) else [opts]):
+        o.step()
+
+
+def opt_lr(opts):
+    """The learning rate to report. In Muon mode the first is Muon."""
+    o = opts[0] if isinstance(opts, (list, tuple)) else opts
+    return o.param_groups[0]['lr']
+
+
+def opt_groups(opts):
+    """Flatten param_groups so the LR schedule writes to every optimiser."""
+    out = []
+    for o in (opts if isinstance(opts, (list, tuple)) else [opts]):
+        out.extend(o.param_groups)
+    return out
+
 def rss():
     return psutil.Process().memory_info().rss / 1e9
 
@@ -121,6 +228,10 @@ def main():
     # ★ H3 实验用：Muon 的 Newton-Schulz 迭代次数。默认 5（原文与基线）。
     # 第二轮微基准：5→3 每步省 763 ms（优化器 2562→1799 ms），但 512×512 更新的条件数
     # 从 27 涨到 320。是否可接受只能在训练里测，见 research/ns_iterations.md。
+    ap.add_argument('--optimizer', default='adamw', choices=['adamw', 'muon'],
+                    help='adamw = 现有行为（默认）；muon = 2D 权重走 Muon，其余走 AdamW8bit')
+    ap.add_argument('--muon-lr', type=float, default=0.02,
+                    help='Muon 的学习率（A/B 用的是 0.02，未调优）')
     ap.add_argument('--ns-iters', type=int, default=5,
                     help='Muon 的 NS 迭代次数（默认 5；H3 实验用 3 或 4）')
     ap.add_argument('--total_tokens', type=int, default=0,
@@ -697,7 +808,9 @@ def main():
         print('[repa]   iREPA 两个修正：投影=Conv2d(3x3)  +  教师特征【空间】归一化',
               flush=True)
 
-    opt = bnb.optim.AdamW8bit(model.parameters(), lr=a.lr)
+    _OPTS = build_optimizers(a, model)
+
+    opt = _OPTS[0] if len(_OPTS) == 1 else _OPTS
     if repa is not None:
         opt.add_param_group({'params': list(repa['proj'].parameters()), 'lr': a.lr})
 
@@ -866,7 +979,7 @@ def main():
 
     def set_lr(step):
         v = lr_at(step)
-        for g in opt.param_groups:
+        for g in opt_groups(opt):
             g['lr'] = v
         return v
 
@@ -968,10 +1081,10 @@ def main():
                 # REPA 不在这里做：REPA 对齐的是"干净图过编码器的表征"，
                 # 掩码输入的表征与教师特征不同源，硬加会变成噪声项。
                 loss = loss_gen
-                opt.zero_grad(set_to_none=True)
+                opt_zero_grad(opt)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                opt.step()
+                opt_step(opt)
                 ts.append(time.perf_counter() - t1)
                 losses.append(float(loss.detach()))
                 gstep += 1
@@ -988,7 +1101,7 @@ def main():
                         print('[v2 T=%d] step %d  train=%.4f  val=%.4f  gap=%+.4f'
                               % (T, gstep, losses[-1], vl, vl - losses[-1]), flush=True)
                     log.write(json.dumps(dict(step=gstep, T=T, stage_step=i + 1, batch=B,
-                                              lr=opt.param_groups[0]['lr'],
+                                              lr=opt_lr(opt),
                                               loss=losses[-1], gen=float(loss_gen.detach()),
                                               think=0.0, repa=0.0, val=vl,
                                               mask_frac=float(mk.float().mean()),
@@ -1031,17 +1144,17 @@ def main():
                         if _rl is not None:
                             loss = loss + a.repa_weight * _rl
                             l_repa = float(_rl.detach())
-                opt.zero_grad(set_to_none=True)
+                opt_zero_grad(opt)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                opt.step()
+                opt_step(opt)
                 ts.append(time.perf_counter() - t1)
                 losses.append(float(loss.detach()))
                 gstep += 1
                 set_lr(gstep)
                 if i % a.log_every == 0 or i == steps - 1:
                     log.write(json.dumps(dict(step=gstep, T=T, stage_step=i + 1, batch=B,
-                                              lr=opt.param_groups[0]['lr'],
+                                              lr=opt_lr(opt),
                                               loss=losses[-1], gen=float(loss_gen.detach()),
                                               think=float(loss_think.detach()),
                                               step_s=ts[-1], tokens_per_s=B * T / max(ts[-1], 1e-9),
@@ -1211,10 +1324,10 @@ def main():
                 if _rl is not None:
                     loss = loss + a.repa_weight * _rl
                     l_repa = float(_rl.detach())
-            opt.zero_grad(set_to_none=True)
+            opt_zero_grad(opt)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            opt.step()
+            opt_step(opt)
             ts.append(time.perf_counter() - t1)
             losses.append(float(loss.detach()))
             gstep += 1
@@ -1228,7 +1341,7 @@ def main():
                     print('[v2 T=%d] step %d  train=%.4f  val=%.4f  gap=%+.4f'
                           % (T, gstep, losses[-1], vl, vl - losses[-1]), flush=True)
                 log.write(json.dumps(dict(step=gstep, T=T, stage_step=i + 1, batch=B,
-                                          lr=opt.param_groups[0]['lr'],
+                                          lr=opt_lr(opt),
                                           loss=losses[-1], gen=float(loss_gen.detach()),
                                           think=float(loss_think.detach()),
                                           repa=l_repa,
