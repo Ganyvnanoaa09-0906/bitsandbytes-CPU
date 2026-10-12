@@ -1,2 +1,11 @@
 ﻿curriculum data prep 2026-10-12 07:56:27
 07:56:27  size 128 -> 16x16 = 256 tokens
+08:12:57    閫€鍑虹爜 0
+08:12:57  size 64 -> 8x8 = 64 tokens
+08:17:00    閫€鍑虹爜 0
+08:17:00  results:
+  tokens_16x16_full.pt  28.2 MB
+  tokens_32x32_full.pt  112.8 MB
+  tokens_8x8_full.pt  7 MB
+  tokens_V32.pt  227.4 MB
+08:17:00  done
