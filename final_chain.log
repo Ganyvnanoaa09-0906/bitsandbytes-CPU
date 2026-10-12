@@ -1,0 +1,15 @@
+﻿final chain start 2026-10-12 23:53:40
+23:53:40  step 1: smoke 3 steps with the LR patch
+23:54:06    smoke exit 0
+23:54:06    smoke produced losses: True
+23:54:06  step 2: 1500 steps, Muon + NS=3, LR pinned
+02:09:18    run exit 0
+02:09:18  step 3: compare against the AdamW baseline
+02:09:19    compare exit 0
+----- trainer_compare2.txt -----
+  AdamW 鑷?        5 涓獙璇佺偣
+  Muon 閫€鐏?lr:    5 涓獙璇佺偣
+  Muon 鍥哄畾 lr:    0 涓獙璇佺偣
+
+  鍥哄畾 lr 鐨勯偅娆¤繕娌℃湁楠岃瘉鐐?鈥斺€?1500 姝ヤ粛鍦ㄨ窇銆?
+02:09:19  step 4: commit and push

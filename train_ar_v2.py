@@ -41,6 +41,7 @@ import bitsandbytes as bnb
 # Muon applies only to 2-D weight matrices; embeddings, the head and every 1-D parameter stay
 # on AdamW, which is what the A/B harness did and therefore what the numbers describe.
 _MUON_WIRED = True
+_MUON_LR_FIXED = True
 
 
 def zeropower_via_newtonschulz5(G, steps=5, eps=1e-7):
@@ -64,6 +65,11 @@ class Muon(torch.optim.Optimizer):
 
     def __init__(self, params, lr=0.02, momentum=0.95, ns_iters=5):
         super().__init__(params, dict(lr=lr, momentum=momentum, ns_iters=ns_iters))
+        # Marked so the LR schedule skips it. The measured configuration (7.27) used a
+        # constant 0.02; letting the AdamW-tuned cosine drive it to 1e-5 made Muon lose
+        # to AdamW at every checkpoint, which is what the first trainer comparison found.
+        for g in self.param_groups:
+            g['is_muon'] = True
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -980,7 +986,10 @@ def main():
     def set_lr(step):
         v = lr_at(step)
         for g in opt_groups(opt):
-            g['lr'] = v
+            # Muon keeps its own constant LR (_MUON_LR_FIXED); only AdamW anneals.
+            if g.get('is_muon'):
+                continue
+            g['lr'] = lr_at(step)
         return v
 
     set_lr(start_gstep)
