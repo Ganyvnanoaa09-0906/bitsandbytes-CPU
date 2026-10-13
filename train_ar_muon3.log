@@ -1,2 +1,15 @@
 ﻿AR 3000-step muon3 run 2026-10-13 07:55:47
 07:55:47  training: 3000 steps, Muon + NS=3, LR pinned
+12:28:54    exit 0  鐢ㄦ椂 273.1 鍒嗛挓
+      "mean_step_s": 4.54397826650001,
+12:28:54  sampling 16 images with the causal sampler
+12:29:58    sample exit 0
+AR 妯″瀷: arch=v2 params=30.50M
+  cfg=SmallImageConfigV2(vocab_size=1024, d_model=512, n_layer=10, n_head=8, n_kv_head=4, ffn_dim=2048, total_tokens=1024, grid=32, think_tokens=16, text_dim=512, ada_dim=128, cond_mode='none', cond_dropout=0.1, pos_mode='2d', token_scale=1, token_order='raster', head_mode='flat', n_cluster=32, hier=False, coarse_grid=4, loop_start=4, loop_end=7, loop_times=1, fuse_qkv=False, use_bos=False, use_l3=False, mask_mode='causal', patch_nums=(), msa_groups='', msa_local=0, nbr_fuse=False, nbr_window=0, l3_v=1024, l3_k=8, l3_d_emb=128, l3_d_up=128, l3_key_mode='1gram', l3_from=0, l3_sparse=False)
+鐢熸垚 16 寮?(16, 1024) 鐢ㄦ椂 51.2s (3.20 s/寮?
+鐢熸垚 token: 浣跨敤 498/1024 涓爜 (48.6%), 鐔?3.550/6.931 (51.2%)
+  鏈€楂橀鐮佸崰姣?16.88%
+tokens -> i5build\ar_muon3_3000\samples16.tokens.pt  (16, 1024)
+-> i5build\ar_muon3_3000\samples16.png  (1024x1024, 16 寮?
+12:29:59  copying raw logs
+12:29:59  committing
