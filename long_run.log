@@ -24,3 +24,28 @@
     [v2 T=1024] step 5001  train=4.6114  val=5.3692  gap=+0.7577
     [v2 T=1024] step 5501  train=5.3826  val=5.3865  gap=+0.0039
 21:08:51  segment 5/8  -> global step 7500  (resuming)
+23:24:53    train exit 0
+23:24:53  sampling 8 images at step 7500
+23:25:44    sample exit 0
+    [v2 T=1024] step 6501  train=4.4451  val=5.4538  gap=+1.0087
+    [v2 T=1024] step 7001  train=5.1995  val=5.4900  gap=+0.2904
+23:25:44  segment 6/8  -> global step 9000  (resuming)
+01:32:19    train exit 0
+01:32:19  sampling 8 images at step 9000
+01:33:09    sample exit 0
+    [v2 T=1024] step 8001  train=4.2558  val=5.5960  gap=+1.3402
+    [v2 T=1024] step 8501  train=4.9930  val=5.6536  gap=+0.6607
+01:33:09  segment 7/8  -> global step 10500  (resuming)
+03:39:24    train exit 0
+03:39:24  sampling 8 images at step 10500
+03:40:13    sample exit 0
+    [v2 T=1024] step 9501  train=4.0506  val=5.7515  gap=+1.7010
+    [v2 T=1024] step 10001  train=4.8137  val=5.8355  gap=+1.0218
+03:40:13  segment 8/8  -> global step 12000  (resuming)
+05:45:53    train exit 0
+05:45:53  sampling 8 images at step 12000
+05:46:42    sample exit 0
+    [v2 T=1024] step 11001  train=3.8349  val=5.9143  gap=+2.0794
+    [v2 T=1024] step 11501  train=4.5971  val=6.0113  gap=+1.4142
+05:46:42  all segments done
+05:46:42  committing

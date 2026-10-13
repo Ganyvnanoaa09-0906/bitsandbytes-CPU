@@ -45,13 +45,13 @@
   "stages": [
     {
       "T": 1024,
-      "steps": 6000,
+      "steps": 12000,
       "batch": 2,
-      "mean_step_s": 4.739682905799976,
-      "first_loss": 5.113165855407715,
-      "last_loss": 5.487713813781738,
-      "elapsed_s": 7859.66876244545,
-      "tokens_per_s": 432.09641672312114,
+      "mean_step_s": 4.52668040753314,
+      "first_loss": 3.937778949737549,
+      "last_loss": 5.725685119628906,
+      "elapsed_s": 7530.7483422756195,
+      "tokens_per_s": 452.42867081841945,
       "corrupt": {
         "token_dropout": 0.0,
         "sched_sample_max": 0.0,
@@ -62,6 +62,6 @@
       }
     }
   ],
-  "peak_rss_gb": 2.165608448,
+  "peak_rss_gb": 2.16549376,
   "cond_used": false
 }
