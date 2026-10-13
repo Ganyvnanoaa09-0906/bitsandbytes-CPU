@@ -1,0 +1,26 @@
+﻿long run start 2026-10-13 12:35:11
+12:35:11  segment 1/8  -> global step 1500  (fresh)
+14:38:16    train exit 0
+14:38:16  sampling 8 images at step 1500
+14:39:05    sample exit 0
+    [v2 T=1024] step 501  train=5.1274  val=5.6397  gap=+0.5123
+    [v2 T=1024] step 1001  train=5.9264  val=5.4994  gap=-0.4270
+14:39:05  segment 2/8  -> global step 3000  (resuming)
+16:44:42    train exit 0
+16:44:42  sampling 8 images at step 3000
+16:45:30    sample exit 0
+    [v2 T=1024] step 2001  train=4.9456  val=5.3920  gap=+0.4464
+    [v2 T=1024] step 2501  train=5.6922  val=5.3618  gap=-0.3304
+16:45:30  segment 3/8  -> global step 4500  (resuming)
+18:56:01    train exit 0
+18:56:01  sampling 8 images at step 4500
+18:56:50    sample exit 0
+    [v2 T=1024] step 3501  train=4.7706  val=5.3468  gap=+0.5763
+    [v2 T=1024] step 4001  train=5.5390  val=5.3546  gap=-0.1845
+18:56:50  segment 4/8  -> global step 6000  (resuming)
+21:07:59    train exit 0
+21:07:59  sampling 8 images at step 6000
+21:08:51    sample exit 0
+    [v2 T=1024] step 5001  train=4.6114  val=5.3692  gap=+0.7577
+    [v2 T=1024] step 5501  train=5.3826  val=5.3865  gap=+0.0039
+21:08:51  segment 5/8  -> global step 7500  (resuming)
