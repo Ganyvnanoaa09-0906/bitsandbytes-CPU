@@ -1,2 +1,31 @@
 ﻿grid16 experiment start 2026-10-14 22:25:55
 22:25:55  segment 1/4 -> global step 3000
+00:14:53    train exit 0
+00:14:53  sampling 8 images at step 3000
+00:15:13    sample exit 0
+    [v2 T=256] step 1501  train=6.4997  val=6.0846  gap=-0.4151
+    [v2 T=256] step 2001  train=5.0992  val=6.0618  gap=+0.9626
+    [v2 T=256] step 2501  train=5.9971  val=6.0400  gap=+0.0429
+00:15:13  segment 2/4 -> global step 6000
+02:05:37    train exit 0
+02:05:37  sampling 8 images at step 6000
+02:05:55    sample exit 0
+    [v2 T=256] step 4501  train=6.3663  val=6.0010  gap=-0.3653
+    [v2 T=256] step 5001  train=5.0389  val=5.9944  gap=+0.9555
+    [v2 T=256] step 5501  train=5.9531  val=5.9834  gap=+0.0303
+02:05:55  segment 3/4 -> global step 9000
+03:55:23    train exit 0
+03:55:23  sampling 8 images at step 9000
+03:55:41    sample exit 0
+    [v2 T=256] step 7501  train=6.3502  val=5.9695  gap=-0.3807
+    [v2 T=256] step 8001  train=4.9803  val=5.9621  gap=+0.9818
+    [v2 T=256] step 8501  train=5.8979  val=5.9480  gap=+0.0501
+03:55:41  segment 4/4 -> global step 12000
+05:45:27    train exit 0
+05:45:27  sampling 8 images at step 12000
+05:45:45    sample exit 0
+    [v2 T=256] step 10501  train=6.3042  val=5.9352  gap=-0.3690
+    [v2 T=256] step 11001  train=4.9438  val=5.9241  gap=+0.9803
+    [v2 T=256] step 11501  train=5.8644  val=5.9131  gap=+0.0486
+05:45:45  all segments done
+05:45:45  committing
