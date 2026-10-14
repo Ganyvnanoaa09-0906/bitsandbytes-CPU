@@ -1,0 +1,6 @@
+﻿wd run start 2026-10-14 08:36:02
+08:36:02  training 6000 steps, Muon + NS=3 + weight decay 0.05
+18:08:46    exit 0  鐢ㄦ椂 572.7 鍒嗛挓
+18:08:46  sampling 16 images
+18:09:50    sample exit 0
+18:09:50  committing

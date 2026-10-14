@@ -42,6 +42,7 @@ import bitsandbytes as bnb
 # on AdamW, which is what the A/B harness did and therefore what the numbers describe.
 _MUON_WIRED = True
 _MUON_LR_FIXED = True
+_MUON_WD = True
 
 
 def zeropower_via_newtonschulz5(G, steps=5, eps=1e-7):
@@ -63,8 +64,9 @@ def zeropower_via_newtonschulz5(G, steps=5, eps=1e-7):
 class Muon(torch.optim.Optimizer):
     """Muon on 2-D weights. The NS iteration count is the H3 variable."""
 
-    def __init__(self, params, lr=0.02, momentum=0.95, ns_iters=5):
-        super().__init__(params, dict(lr=lr, momentum=momentum, ns_iters=ns_iters))
+    def __init__(self, params, lr=0.02, momentum=0.95, ns_iters=5, weight_decay=0.0):
+        super().__init__(params, dict(lr=lr, momentum=momentum, ns_iters=ns_iters,
+                                      weight_decay=weight_decay))
         # Marked so the LR schedule skips it. The measured configuration (7.27) used a
         # constant 0.02; letting the AdamW-tuned cosine drive it to 1e-5 made Muon lose
         # to AdamW at every checkpoint, which is what the first trainer comparison found.
@@ -86,6 +88,11 @@ class Muon(torch.optim.Optimizer):
                 if d.ndim == 2:
                     d = zeropower_via_newtonschulz5(d, g['ns_iters'])
                     d = d * max(1.0, d.size(0) / d.size(1)) ** 0.5
+                # ★ 解耦权重衰减（_MUON_WD）：先向零收缩，再施加更新。这样正交化的更新方向
+                # 不受影响，而原来的实现【完全没有】衰减 —— 见 12000 步长跑的过拟合。
+                _wd = float(g.get('weight_decay', 0.0) or 0.0)
+                if _wd > 0:
+                    p.mul_(1.0 - g['lr'] * _wd)
                 p.add_(d, alpha=-g['lr'])
 
 
@@ -111,7 +118,8 @@ def build_optimizers(a, model):
     ns_it = int(getattr(a, 'ns_iters', 5) or 5)
     print('[muon] %d 个 2D 权重走 Muon（NS=%d）· %d 个其余走 AdamW8bit'
           % (len(muon_p), ns_it, len(adam_p)), flush=True)
-    return [Muon(muon_p, lr=float(getattr(a, 'muon_lr', 0.02)), ns_iters=ns_it),
+    return [Muon(muon_p, lr=float(getattr(a, 'muon_lr', 0.02)), ns_iters=ns_it,
+                  weight_decay=float(getattr(a, 'muon_wd', 0.0) or 0.0)),
             bnb.optim.AdamW8bit(adam_p, lr=a.lr)]
 
 
@@ -236,6 +244,12 @@ def main():
     # 从 27 涨到 320。是否可接受只能在训练里测，见 research/ns_iterations.md。
     ap.add_argument('--optimizer', default='adamw', choices=['adamw', 'muon'],
                     help='adamw = 现有行为（默认）；muon = 2D 权重走 Muon，其余走 AdamW8bit')
+    # ★ 权重衰减。Muon 原本【完全没有】衰减（只有 p.add_ 更新），而它管着 60/65 个 2D 权重。
+    # 12000 步长跑暴露了后果：train 降到 3.83 而 val 涨到 6.01。默认 0 保持原行为。
+    ap.add_argument('--muon-wd', type=float, default=0.0,
+                    help='Muon 的解耦权重衰减（默认 0 = 原行为；建议 0.05 试）')
+    ap.add_argument('--adamw-wd', type=float, default=None,
+                    help='AdamW 部分的权重衰减（默认不传 = bitsandbytes 的默认值）')
     ap.add_argument('--muon-lr', type=float, default=0.02,
                     help='Muon 的学习率（A/B 用的是 0.02，未调优）')
     ap.add_argument('--ns-iters', type=int, default=5,
