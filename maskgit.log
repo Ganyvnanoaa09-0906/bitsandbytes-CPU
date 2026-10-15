@@ -1,2 +1,14 @@
 ﻿maskgit run 2026-10-15 13:46:10
 13:46:10  segment 1/3 -> step 2000
+16:41:35    train exit 0
+16:41:35  sampling 8 images at step 2000 (maskgit, 16 iterations)
+16:42:49    sample exit 0
+    [v2 T=1024] step 1001  train=6.1761  val=6.3125  gap=+0.1364
+    [v2 T=1024] step 1501  train=6.9113  val=6.2713  gap=-0.6400
+16:42:49  segment 2/3 -> step 4000
+19:40:55    train exit 0
+19:40:55  sampling 8 images at step 4000 (maskgit, 16 iterations)
+19:42:09    sample exit 0
+    [v2 T=1024] step 3001  train=5.9327  val=6.2054  gap=+0.2727
+    [v2 T=1024] step 3501  train=6.9138  val=6.2004  gap=-0.7134
+19:42:09  segment 3/3 -> step 6000

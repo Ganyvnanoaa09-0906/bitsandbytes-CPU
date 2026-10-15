@@ -1008,7 +1008,11 @@ class SmallARImageModelV2(nn.Module):
 
     @torch.no_grad()
     def generate_masked(self, total=None, n_iter=16, mask_id=None, temperature=1.0,
-                        batch=1, seed=None, device=None, confidence='max'):
+                        batch=1, seed=None, device=None, confidence='max', top_k=0):
+        # _MG_TOPK: top_k was missing entirely, so sampling ran over all 1024 codewords while the
+        # AR path filtered to 100. With val 6.19 against 6.93 for uniform the distribution is nearly
+        # flat, and sampling a flat distribution per position produces high-frequency noise --
+        # exactly what the step-4000 samples show. Filter, renormalise, then sample.
         """MaskGIT 迭代解掩码采样。
 
         从【全 MASK】开始，每次前向预测所有被掩码位置，按置信度保留 top-k，
@@ -1037,6 +1041,11 @@ class SmallARImageModelV2(nn.Module):
             #   真正的 MaskGIT 是在每个位置【按预测分布抽样】token，
             #   再用"所选 token 的概率"当置信度决定谁先定稿。
             p = torch.softmax(lg, dim=-1)
+            if top_k and 0 < int(top_k) < V:
+                _v, _ = torch.topk(p, int(top_k), dim=-1)
+                _thr = _v[..., -1, None]
+                p = torch.where(p < _thr, torch.zeros_like(p), p)
+                p = p / p.sum(-1, keepdim=True).clamp_min(1e-12)
             _B = x.shape[0]
             pred = torch.multinomial(p.view(-1, V), 1).view(_B, T)
             if confidence == 'max':

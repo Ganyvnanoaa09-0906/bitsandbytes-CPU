@@ -180,10 +180,14 @@ def main():
                 _V = cfg.vocab_size - 1
                 print('  MaskGIT 采样：n_iter=%d（对比因果 AR 需要 %d 次前向）'
                       % (a.maskgit_iter, cfg.total_tokens), flush=True)
+                # top_k 以前【没有传】：generate_masked 从全部 1024 个词表裸采样，而 AR 路径
+                # 过滤到 top-100。模型未训好时分布接近均匀 ⇒ 裸采样产出高频噪声
+                # （实测 step 4000 的出图正是这个形态，生成 token 熵达 6.858/6.931 = 98.9%）。
                 toks = model.generate_masked(total=cfg.total_tokens, n_iter=a.maskgit_iter,
                                              mask_id=cfg.vocab_size - 1,
                                              temperature=a.temperature,
-                                             batch=a.n, seed=a.seed)
+                                             batch=a.n, seed=a.seed,
+                                             top_k=a.top_k)
                 assert int(toks.max()) < _V, '生成里出现了 MASK 或越界 id！'
             else:
                 toks = model.generate(cond, steps=cfg.total_tokens, top_k=a.top_k,
