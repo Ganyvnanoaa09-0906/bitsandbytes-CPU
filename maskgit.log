@@ -12,3 +12,10 @@
     [v2 T=1024] step 3001  train=5.9327  val=6.2054  gap=+0.2727
     [v2 T=1024] step 3501  train=6.9138  val=6.2004  gap=-0.7134
 19:42:09  segment 3/3 -> step 6000
+23:18:36    train exit 0
+23:18:36  sampling 8 images at step 6000 (maskgit, 16 iterations)
+23:20:08    sample exit 0
+    [v2 T=1024] step 5001  train=5.9831  val=6.1673  gap=+0.1842
+    [v2 T=1024] step 5501  train=6.8505  val=6.1584  gap=-0.6922
+23:20:08  done
+23:20:08  committing
