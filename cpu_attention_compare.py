@@ -55,7 +55,11 @@ print()
 
 
 def sdpa(q, k, v):
-    return torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True)
+    # enable_gqa lets SDPA handle 8 query heads against 4 KV heads without materialising the
+    # expansion. Without it the call fails on the head-count mismatch, which is how the first
+    # run of this comparison produced no SDPA number at all.
+    return torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True,
+                                                            enable_gqa=True)
 
 
 def manual(q, k, v, expand=True):
