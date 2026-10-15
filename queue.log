@@ -1,0 +1,75 @@
+﻿queue start 2026-10-15 13:11:13
+13:11:13  stopped older retry loops
+13:11:13  register blocking : attempt 1
+13:11:21    guard refused; waiting 5 min
+13:16:21  register blocking : attempt 2
+13:16:28    guard refused; waiting 5 min
+13:21:28  register blocking : attempt 3
+13:21:39    register blocking : ran
+===== q1_regblock.txt =====
+[guard] 鏃犲叾浠栧ぇ浠诲姟锛堟暣鏈?5.1%锛屾渶澶т粬浜鸿繘绋?WmiPrvSE.exe 18%锛?
+[鏉′欢] 瀵勫瓨鍣ㄥ垎鍧楁壂鎻忥紙LDS 璇诲彇閲忓噺鍗婏級 CPU   3.5%  鍐呭瓨 8.8/15.4 GB  python 杩涚▼ 1  
+
+璁惧 gfx902 | 6 CU | 鏈湴 32 KB
+
+绾跨▼脳姣忕嚎绋?                        TS    LDS/缁?       璇?FMA     GFLOPS       姝ｇ‘
+----------------------------------------------------------------------------
+16x16 / 4x4                  64     9.2KB        0.500      185.8      鉁撳叏瀵?  1.00x
+8x8 / 8x8                    64     9.2KB        0.250      283.9      鉁撳叏瀵?  1.53x
+16x8 / 4x8                   64     9.2KB            -          -   167348 閿?
+8x16 / 8x4                   64     9.2KB            -          -    73213 閿?
+
+鍒ゆ嵁锛?.39.4 浜嬪厛鍥哄畾锛? 鍗曞唴鏍?鈮?400 GFLOPS 鈬?LDS 涓嶆槸纭锛?.28 鐨勭粨璁鸿鏀?
+瀵圭収: 淇鍚庣殑 v4 鍩虹嚎 170.5 GFLOPS锛堝叏瀵癸級路 CPU 鍚屽舰鐘?218~240
+13:21:39  swizzle/padding : attempt 1
+13:21:49    swizzle/padding : ran
+===== q2_swizzle.txt =====
+[guard] 鏃犲叾浠栧ぇ浠诲姟锛堟暣鏈?1.6%锛屾渶澶т粬浜鸿繘绋?svchost.exe 5%锛?
+[鏉′欢] Swizzle / padding 鎵弿锛圠DS bank conflict锛?CPU   6.1%  鍐呭瓨 8.8/15.4 GB  python 杩涚▼ 1  
+
+璁惧 gfx902 | 6 CU | 鏈湴 32 KB
+
+閰嶇疆                                  鏈湴/缁?   GFLOPS
+----------------------------------------------------
+鐜扮姸鍩虹嚎                               9.2KB     183.4  1.000x  鉁撳叏瀵?
+As 琛岃窛 17锛堜簰璐級                       8.5KB     190.4  1.038x  鉁撳叏瀵?
+As 琛岃窛 18                           8.8KB     186.3  1.016x  鉁撳叏瀵?
+As 琛岃窛 24                          10.2KB     186.6  1.017x  鉁撳叏瀵?
+Bs 鍧楀唴杞疆 swizzle                    9.2KB     345.0  1.881x  鉁撳叏瀵?
+As 17 + Bs swizzle                 8.5KB     365.4  1.992x  鉁撳叏瀵?
+As 17 + Bs swizzle + B 琛岃窛 65       8.3KB     366.6  1.999x  鉁撳叏瀵?
+As 17 + B 琛岃窛 65锛堟棤 swizzle锛?        8.3KB     188.5  1.028x  鉁撳叏瀵?
+
+鍒ゆ嵁锛?.39.4 浜嬪厛鍥哄畾锛? 鈮?400 GFLOPS 鈬?LDS 涓嶆槸纭锛?.28 瑕佹敼
+瀵圭収: 淇鍚庣殑 v4 = 170.5 GFLOPS 路 CPU 鍚屽舰鐘?218~240
+13:21:49  CPU attention : attempt 1
+13:22:04    CPU attention : ran
+===== q3_attention.txt =====
+[guard] 鏃犲叾浠栧ぇ浠诲姟锛堟暣鏈?6.8%锛屾渶澶т粬浜鸿繘绋?svchost.exe 5%锛?
+[鏉′欢] CPU attention: SDPA 瀵?鎵嬪啓 CPU   7.0%  鍐呭瓨 8.9/15.4 GB  python 杩涚▼ 1  
+
+褰㈢姸: batch 2 路 T 1024 路 8 澶?路 4 KV 澶?路 d 64 锛堜笌鐪熷疄閰嶇疆涓€鑷达級
+
+瀹炵幇                                鍓嶅悜 ms         鍓嶅悜+鍙嶅悜 ms
+----------------------------------------------------------
+SDPA锛堣缁冨湪鐢ㄧ殑锛?               澶辫触: The size of tensor a (8) must match the 
+鎵嬪啓 matmul+softmax                 65.83           164.73
+鎵嬪啓锛圙QA 涓嶅睍寮€锛?                      62.13           181.96
+
+
+鍒ゆ嵁锛堜簨鍏堝浐瀹氾級: 鎵嬪啓鐗堟瘮 SDPA 蹇?> 15% 鎵嶅€煎緱鍋氾紱鍚﹀垯杩欐潯鍏抽棴銆?
+鍙傝€冭祫鏂? 涓€姝ラ噷 attention 鍗犲墠鍚?13.43% + 鍙嶅悜 4.87%
+13:22:04  re-running fixed v4 as the reference point
+===== q4_v4.txt =====
+璁惧 gfx902 | 6 CU | 鏈湴 32 KB
+v4: 64x64 tile, 16x16=256 绾跨▼, 姣忕嚎绋?4x4, float4 璇诲啓, As[64][20]+Bs[16][68]=9.5KB
+
+褰㈢姸 MxNxK                 GFLOPS      鐩稿 CPU         閿欒 缁撹
+----------------------------------------------------------------------
+64x64x64                    1.2       0.01x       鉁?鍏ㄥ CPU 鏇村揩 鉁?
+256x256x256                54.6       0.27x       鉁?鍏ㄥ CPU 鏇村揩 鉁?
+1024x512x512              141.6       0.71x       鉁?鍏ㄥ CPU 鏇村揩 鉁?
+1024x2736x512             180.2       0.91x       鉁?鍏ㄥ CPU 鏇村揩 鉁?
+1024x512x2736             173.8       0.88x       鉁?鍏ㄥ CPU 鏇村揩 鉁?
+2048x2048x2048            200.0       1.01x       鉁?鍏ㄥ 鏍告樉鏇村揩 鉁?
+13:22:07  done
