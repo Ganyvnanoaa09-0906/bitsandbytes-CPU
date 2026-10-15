@@ -57,10 +57,12 @@ __kernel void sgemm_v4(const int M, const int N, const int K,
         for (int j = 0; j < TN; j++) acc[i][j] = 0.f;
 
     for (int k0 = 0; k0 < K; k0 += TK) {
-        // stage A: TS*TK = 1024 floats = 256 float4
-        #pragma unroll
-        for (int p = 0; p < 4; p++) {
-            int f4 = p * 256 + lane;              // 0..1023 float4 index
+        // stage A: TS*TK = 1024 floats = 256 float4, one per thread.
+        // The original had a 4-iteration loop with f4 = p*256 + lane, which reaches 1023 and
+        // writes As[r][c] with r up to 255 into an array of 64 rows -- four times out of bounds,
+        // landing on Bs. That is why 0.03% of outputs were wrong.
+        {
+            int f4 = lane;                        // 0..255 float4 index
             int r = (f4 * 4) / TK;                // row in tile
             int c = (f4 * 4) % TK;                // col, multiple of 4
             int gr = by + r, gc = k0 + c;
@@ -70,10 +72,9 @@ __kernel void sgemm_v4(const int M, const int N, const int K,
             As[r][c + 0] = v.x; As[r][c + 1] = v.y;
             As[r][c + 2] = v.z; As[r][c + 3] = v.w;
         }
-        // stage B: TK*TS = 1024 floats = 256 float4
-        #pragma unroll
-        for (int p = 0; p < 4; p++) {
-            int f4 = p * 256 + lane;
+        // stage B: same fix -- 1024 floats = 256 float4, one per thread.
+        {
+            int f4 = lane;
             int k = (f4 * 4) / TS;
             int n = (f4 * 4) % TS;
             int gk = k0 + k, gn = bx + n;
