@@ -1,0 +1,134 @@
+﻿clean measurement suite 2026-10-15 07:59:56
+07:59:56  python processes at start: 0
+07:59:56  --- 1/4 clean step timing (3000-step baseline, phase split) ---
+08:15:39    exit 0   (forward/backward/optimiser split)
+08:15:39  --- 2/4 batch-8 operator profile ---
+08:16:22    exit 0
+08:16:22  --- 3/4 memory subsystem diagnostic (MLP / thread scaling) ---
+08:16:36    exit 0
+08:16:36  --- 4/4 iGPU GEMM re-test (is 300 GFLOPS reproducible?) ---
+08:16:39    exit 0
+08:16:39  collecting key results into this log
+===== clean_1_steptime.txt =====
+[guard] 鏃犲叾浠栧ぇ浠诲姟锛堟暣鏈?16.6%锛屾渶澶т粬浜鸿繘绋?localsend_app.exe 6%锛?
+[鏉′欢] 骞插噣璁℃椂寮€濮?            CPU  19.7%  鍐呭瓨 8.8/15.4 GB  python 杩涚▼ 1  
+
+100 姝ワ紝batch 2锛孴=1024锛岀┖闂叉満鍣?
+
+鑷?             鍓嶅悜 s       鍙嶅悜 s      浼樺寲鍣?s       鍚堣 s
+------------------------------------------------------
+[loop] 寰幆 Transformer 宸叉寕杞? L=1 L_max=3 random=False step_enc=True cross_res=True  鏂板鍙傛暟 4608
+adamw        1.0593     2.2801     0.1066     3.4460
+[loop] 寰幆 Transformer 宸叉寕杞? L=1 L_max=3 random=False step_enc=True cross_res=True  鏂板鍙傛暟 4608
+muon         1.0385     2.2783     2.4941     5.8109
+
+Muon 姣忔鏄?AdamW 鐨?1.686脳
+鈬?姝ユ暟姣?3.19脳 鈬?銆愭椂闂存瘮 = 3.19 / 1.686 = 1.89脳銆?
+
+锛堝鐓э細琚薄鏌撶殑 2000 姝?A/B 缁欏嚭 Muon 5.942 s/姝ャ€丄damW 3.316 s/姝ワ級
+===== clean_2_profile.txt =====
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (USDT:2026-10-15... profiler_start:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+USDT:2026-10-15 08:16:21 22268:332 C:\actions-runner\_work\pytorch\pytorch\third_party\kineto\libkineto\src\SyncActivit
+yProfilerHandler.cpp:59] profiler_stop
+batch 8, T=1024锛屼竴娆″墠鍚?鍙嶅悜
+绠楀瓙                                              鑷韩鏃堕棿 ms       鍗犳瘮       璋冪敤娆℃暟
+------------------------------------------------------------------------------
+aten::mm                                         5907.9   52.39%        184
+aten::_scaled_dot_product_flash_attention_       1514.5   13.43%         10
+aten::mul                                        1309.0   11.61%        490
+aten::_scaled_dot_product_flash_attention_        549.7    4.87%         10
+autograd::engine::evaluate_function: MmBac        351.5    3.12%         61
+aten::sum                                         261.2    2.32%        162
+aten::copy_                                       203.4    1.80%        284
+aten::add_                                        156.5    1.39%        109
+aten::cat                                         146.1    1.30%         10
+aten::add                                         123.2    1.09%         33
+aten::pow                                         108.2    0.96%        120
+aten::silu_backward                               100.9    0.89%         10
+aten::silu                                         88.9    0.79%         10
+aten::fill_                                        82.4    0.73%        196
+autograd::engine::evaluate_function: Scale         79.7    0.71%         10
+autograd::engine::evaluate_function: ViewB         67.6    0.60%        121
+aten::div                                          65.1    0.58%         40
+autograd::engine::evaluate_function: MulBa         39.1    0.35%        110
+autograd::engine::evaluate_function: SiluB         15.0    0.13%         10
+aten::_log_softmax_backward_data                   10.9    0.10%          1
+aten::_log_softmax                                 10.8    0.10%          1
+autograd::engine::evaluate_function: PowBa          5.8    0.05%         40
+aten::empty                                         5.4    0.05%        139
+aten::_fused_rms_norm                               4.9    0.04%         40
+
+=== 鎸夌被鍒?===
+  matmul                     5908.4 ms   52.39%
+  elementwise/reshape        2212.5 ms   19.62%
+  attention                  2064.8 ms   18.31%
+  other                      1062.5 ms    9.42%
+  loss                         22.8 ms    0.20%
+  norm                          6.7 ms    0.06%
+  鍚堣                        11277.6 ms
+
+娉? 杩欎簺鏄?CPU 鑷韩鏃堕棿锛坰elf time锛夛紝宸叉寜绠楀瓙鍘婚噸锛?
+    mm 鑻ュ崰澶氭暟鑰屾暣浣撳彧鏈?114 GFLOPS锛屽垯宸窛鍦ㄥ叾浣欑畻瀛愪笂銆?
+===== clean_3_memory.txt =====
+
+姣忎釜缂撳啿鍖?0.5 GB锛?.3 浜夸釜 float32锛?
+
+=== 1. 绾跨▼鏁版墿灞曪紙绾 23.7 GB/s 鏄摢涓暟锛燂級===
+绾跨▼                 GB/s     姣忕嚎绋?GB/s
+--------------------------------------
+1                 17.21        17.21
+2                 22.37        11.19
+3                 24.52         8.17
+4                 25.67         6.42
+6                 23.08         3.85
+
+鍒ゆ嵁: 鑻?4 涓?6 绾跨▼鍑犱箮鐩稿悓 鈬?鍏变韩璧勬簮鍦?4 绾跨▼澶勯ケ鍜岋紱
+      鑻ユ瘡绾跨▼甯﹀鎸佺画涓嬮檷 鈬?鏃犻ケ鍜岋紝鏄姹傚苟鍙戜笉瓒炽€?
+
+=== 2. 璇?/ 鍐?/ 鎷疯礉 / 娣峰悎 ===
+妯″紡                       GB/s 璇存槑
+----------------------------------------------------
+绾                       3.91 sum 褰掔害
+绾啓                       7.60 fill
+鎷疯礉                      17.57 璇?鍐欏悇涓€浠?
+閫愬厓绱犳贩鍚?                  12.95 璇?2 鍐?1
+
+鍒ゆ嵁: 鑻ユ嫹璐濈殑 GB/s 杩滀綆浜庣函璇?鈬?鎬荤嚎銆愭柟鍚戝垏鎹€戞槸涓昏鎹熷け锛圖DR4 鐨勫吀鍨嬭涓猴級锛?
+      鑻ヤ笁鑰呮帴杩?鈬?鏄嚎閫熼檺鍒躲€?
+
+=== 3. 璁块棶姝ラ暱锛堣缂撳啿灞€閮ㄦ€э級===
+姝ラ暱(鍏冪礌)               GB/s
+--------------------------
+1                    3.51
+8                    3.44
+64                   3.90
+512                 14.85
+
+鍒ゆ嵁: 姝ラ暱鍙樺ぇ鑻ュ甫瀹藉ぇ璺?鈬?琛岀紦鍐插懡涓巼鏄叧閿紱鑻ュ钩绋?鈬?娴佸紡棰勫彇鏈夋晥銆?
+
+=== 4. 鎸囬拡杩介€愬欢杩?===
+  闅忔満璁块棶寤惰繜 鈮?259.3 ns锛?000000 娆¤拷閫?/ 0.52 s锛?
+
+璇绘硶: 寤惰繜楂樿€屽甫瀹藉钩 鈬?鎺у埗鍣ㄥ悶鍚愬彈闄愶紙鑳藉彂鍑虹殑璇锋眰鏁拌鎵撴弧锛夛紝
+      鑰屼笉鏄?璇锋眰鍙戜笉鍑哄幓"銆傝繖涓よ€呯殑淇硶瀹屽叏涓嶅悓銆?
+
+=== 鏈仛鐨? 鍗曢€氶亾瀵规瘮 ===
+  鏃犳硶浠庤蒋浠堕€夋嫨鍗曢€氶亾锛涢渶瑕?BIOS 鎴栨嫈涓€鏉″唴瀛橈紝涓嶉€傚悎鏃犱汉鍊煎畧鏃跺仛銆?
+  鑻ヤ笂闈㈢殑鎵╁睍鏇茬嚎鍦?4 绾跨▼澶勫钩鎺夛紝瀹冮棿鎺ユ寚鍚戞帶鍒跺櫒鑰岄潪閫氶亾鏁般€?
+===== clean_4_igpu.txt =====
+璁惧 gfx902 | 6 CU | 鏈湴 32 KB
+v4: 64x64 tile, 16x16=256 绾跨▼, 姣忕嚎绋?4x4, float4 璇诲啓, As[64][20]+Bs[16][68]=9.5KB
+
+褰㈢姸 MxNxK                 GFLOPS      鐩稿 CPU         閿欒 缁撹
+----------------------------------------------------------------------
+64x64x64                    0.9       0.00x       鉁?鍏ㄥ CPU 鏇村揩 鉁?
+256x256x256                41.7       0.21x       鉁?鍏ㄥ CPU 鏇村揩 鉁?
+1024x512x512              128.2       0.65x 1460/524288 鉁?CPU 鏇村揩 鉁?
+1024x2736x512             155.5       0.78x 914/2801664 鉁?CPU 鏇村揩 鉁?
+1024x512x2736             152.9       0.77x 1079/524288 鉁?CPU 鏇村揩 鉁?
+2048x2048x2048            163.1       0.82x 1793/4194304 鉁?CPU 鏇村揩 鉁?
+08:16:40  copying raw logs
+08:16:40  committing
