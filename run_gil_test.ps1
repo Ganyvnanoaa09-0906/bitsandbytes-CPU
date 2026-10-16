@@ -12,7 +12,7 @@ Say "waiting for the FMA analysis to finish"
 $w = 0
 while ($w -lt 300) {
     if ((Test-Path "D:\work\bitsandbytes-CPU\fma.log") -and
-        (Select-String -Path "D:\work\bitsandbytes-CPU\fma.log" -Pattern "^done" -Quiet)) { break }
+        (Select-String -Path "D:\work\bitsandbytes-CPU\fma.log" -Pattern "done" -Quiet)) { break }
     Start-Sleep -Seconds 60
     $w = $w + 1
 }

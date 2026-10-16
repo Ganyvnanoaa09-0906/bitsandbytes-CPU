@@ -31,7 +31,7 @@ Say 'waiting for the memorisation test to finish'
 $waited = 0
 while ($waited -lt 300) {
     if ((Test-Path 'D:\work\bitsandbytes-CPU\overfit100.log') -and
-        (Select-String -Path 'D:\work\bitsandbytes-CPU\overfit100.log' -Pattern '^done' -Quiet)) {
+        (Select-String -Path 'D:\work\bitsandbytes-CPU\overfit100.log' -Pattern 'done' -Quiet)) {
         break
     }
     Start-Sleep -Seconds 60

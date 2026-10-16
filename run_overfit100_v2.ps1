@@ -30,7 +30,7 @@ Say 'waiting for maskgit.log to contain done'
 $waited = 0
 while ($waited -lt 200) {
     if ((Test-Path 'D:\work\bitsandbytes-CPU\maskgit.log') -and
-        (Select-String -Path 'D:\work\bitsandbytes-CPU\maskgit.log' -Pattern '^done' -Quiet)) {
+        (Select-String -Path 'D:\work\bitsandbytes-CPU\maskgit.log' -Pattern 'done' -Quiet)) {
         break
     }
     Start-Sleep -Seconds 60

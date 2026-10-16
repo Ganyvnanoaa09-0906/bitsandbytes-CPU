@@ -4,3 +4,9 @@
 22:57:11  waiting for maskgit.log to contain done
 23:07:11    waited 10 min
 23:17:11    waited 20 min
+--- overfit100 v2 start 2026-10-15 23:22:00 ---
+23:22:00  waiting for maskgit.log to contain done
+23:22:00  maskgit chain finished after 0 min of waiting
+23:22:00  segment 1/4 -> step 500 (5 epochs over 100 images)
+23:23:32    train exit -1
+23:23:32  sampling 8 images at step 500

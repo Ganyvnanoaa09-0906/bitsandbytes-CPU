@@ -12,7 +12,7 @@ Say "waiting for the L2 blocking test to finish"
 $w = 0
 while ($w -lt 300) {
     if ((Test-Path "D:\work\bitsandbytes-CPU\l2block.log") -and
-        (Select-String -Path "D:\work\bitsandbytes-CPU\l2block.log" -Pattern "^done" -Quiet)) { break }
+        (Select-String -Path "D:\work\bitsandbytes-CPU\l2block.log" -Pattern "done" -Quiet)) { break }
     Start-Sleep -Seconds 60
     $w = $w + 1
 }
