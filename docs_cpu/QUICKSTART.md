@@ -1,7 +1,25 @@
 # 快速入门流程指南
 
-> 适用对象：首次使用本项目的开发者。
-> 说明：本文档提供每一步操作的**命令、命令作用及参数说明**，您可直接复制执行。
+---
+
+## 0. 装完之后第一件事：`bitsandbytes-cpu help`
+
+本 fork 会随包安装一个 `bitsandbytes-cpu` 命令（简写 `bnb-cpu`）。它是这份文档的命令行版本：**每个新增功能怎么调用、参数是什么、报错长什么样**，每条都带一段可以直接复制的代码，而且这些代码在发版前都会真跑一遍。
+
+```bash
+bitsandbytes-cpu detect        # 这台机器是什么 CPU、几核、SIMD、内存、推荐线程数
+bitsandbytes-cpu selftest      # 真跑一遍 4-bit 层、8-bit 优化器、GDN 内核；失败退出码 1
+bitsandbytes-cpu doctor        # 加载的是哪个 .dll/.so、能不能加载、符号齐不齐
+bitsandbytes-cpu help          # 完整参考
+bitsandbytes-cpu help 8bitopt  # 只看一节：8-bit 优化器
+bitsandbytes-cpu help 4bit     # 只看一节：CPU 上的 4-bit 层
+```
+
+节名：`intro start 4bit qlora 8bitopt kernels toolkit threads memory gdn disks layers optim functional notes`。
+
+`help` / `detect` / `doctor` / `version` **不需要 torch**：本包刻意不依赖 torch（PyPI 上的 `torch` 是 CUDA 版，约 2.5 GB），所以一个还没装 torch 的用户也能先读到该装什么。只有 `selftest` 需要 torch，缺了会直接告诉你怎么装。
+
+Markdown 版本由同一份表格生成，即 [`API_REFERENCE.md`](API_REFERENCE.md)（[English](API_REFERENCE_EN.md)）；下面的第 4 节是同一批功能的长文说明。
 
 ---
 
@@ -45,6 +63,49 @@ py -3.11 -m bitsandbytes.gdn_cpu
 ```
 
 输出 `selftest PASSED` 即表示编译成功。
+
+---
+
+## 2A. 编译与其他平台
+
+### 2A.1 Linux
+
+```bash
+cd <克隆路径>/bitsandbytes
+bash build_linux.sh --selftest
+```
+
+脚本会自动探测 AVX2（x86_64）或 NEON（aarch64），并探测 OpenMP 是否可用；探测失败时自动降级，而不是让链接阶段报错。产物为 `bitsandbytes/libbitsandbytes_cpu.so`。
+
+**交叉编译**：`build_linux.sh` 接受 `CC` / `CXX` 环境变量，可指定交叉工具链；脚本本身不做目标架构推断，若要让 `-march=native` 之类的探测结果正确，需显式传入 `-D__AVX2__` 等宏或改用 `--arch` 参数（见 `bash build_linux.sh --help`）。
+
+### 2A.2 Android / Termux（ARM64）
+
+```bash
+pkg install -y clang libomp make python
+cd ~/bitsandbytes && bash build_termux.sh --selftest
+```
+
+产物为 `bitsandbytes/libbitsandbytes_cpu.so`。Termux 的 clang 对 `-mcpu=native` 支持不稳定，脚本会先试编译再决定是否启用；OpenMP 需要单独 `pkg install libomp`，没有时自动降级为单线程。
+
+> ## ⚠️ 风险声明：不建议在手机上训练
+>
+> Termux 支持**已经实现并在真机（HUAWEI nova 5i Pro）上通过测试**，但**不推荐在 Termux 上训练或微调模型**。
+>
+> 该操作可能导致您的设备损坏。如执意继续，请先备份数据。若您的设备已 root，**请勿删除温控文件**，并保持在合理数值。
+>
+> 具体风险：
+>
+> | 风险 | 说明 |
+> |---|---|
+> | **闪存寿命** | `disk_balancer` 会在内存紧张时把冷参数写入磁盘。手机闪存（UFS/eMMC）的写入寿命远低于桌面 SSD，该功能**并非为手机设计**，不建议在手机上启用 |
+> | **SoC 虚焊** | 持续训练的高温会反复热胀冷缩，可能导致 SoC 焊点开裂，设备无法开机 |
+> | **电池不可逆衰减** | 长时间满载供电会永久降低续航能力 |
+> | **保修失效** | 上述操作可能使您失去设备保修资格（具体请访问您设备制造商的官网获取保修信息） |
+>
+> **继续使用即视为您已同意上述全部风险。**
+>
+> 相关测试数据见 [技术文档](TECHNICAL_GUIDE.md) 与 [技术报告](TECH_REPORT.md)；Termux 专项说明见仓库根的 `TERMUX_GUIDE.md`。
 
 ---
 
@@ -186,30 +247,21 @@ opt = bnb.optim.AdamW8bit(filter(lambda p: p.requires_grad, model.parameters()),
 
 ### 4.8 核显（DirectML）块级常驻执行器（实验性，默认关闭）
 
-> **⚠️ 2026-10-17 补充：该组件的定位已变化，选用前先读 `TECHNICAL_GUIDE.md` §3.11。**
->
-> 此后对这颗核显（Vega 6 / gfx902）的测量给出了三条新的结论：
->
-> * **"CPU 一忙核显就掉 5×" 的机制是【共享 8 MB L3 被挤】，不是功耗仲裁**
->   （纯 ALU 满转只掉 3%；而 48 MB 工作集掉 6×）
-> * **正确的用法是【换手】不是【分工】**：M=1 给 CPU，M≥64 给核显，两者一起只多 7%
-> * ★ **设备常驻训练已实现并与 CPU【逐位一致】**，而它的适用区间是
->   **参数 ≥ 16 MB 且 K 大** ⇒ 在那个区间赢 **1.30×**；512×512 那种小层上 CPU 仍赢 1.84×
->
-> **⇒ 所以在小层/小 batch 上，这个执行器【不该开】。判据是形状，不是"有没有核显"。**
-
 > 仅适用于 Windows + `pip install torch_directml` 的环境；未检测到 DirectML 核显、
 > 或回退条件不满足时，`--igpu` 会打印原因并自动回退纯 CPU，不影响正常训练。
 
 ```bat
 :: 启用核显块级常驻执行器（实验性，默认关闭）
-py -3.11 train.py --igpu
+:: 注意：主训练环境（torch ≥2.6）不装 torch-directml（两者钉死的 torch 版本互斥，
+:: 同环境安装会互相破坏）；跑 --igpu 请用独立 DML venv（.venv_dml，torch 2.4.1 +
+:: torch_directml）。主环境直接跑 --igpu 会得到 venv 引导提示并自动回退纯 CPU。
+D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe train.py --igpu
 
 :: 自定义每步 token 上限 与 fp32 基座内存上限（MB）
-py -3.11 train.py --igpu --igpu_max_tokens 128 --igpu_mem_mb 4096
+D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe train.py --igpu --igpu_max_tokens 128 --igpu_mem_mb 4096
 
 :: 调低核显启用门槛（校准比 ≥ 该值才启用）；0 = 跳过启动校准
-py -3.11 train.py --igpu --igpu_min_gain 1.05
+D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe train.py --igpu --igpu_min_gain 1.05
 ```
 
 **作用**：训练时把**全部权重常驻核显**（冻结基座只搬一次），前向+反向全程在核显上
@@ -239,11 +291,23 @@ py -3.11 train.py --igpu --igpu_min_gain 1.05
 请保持纯 CPU。**
 
 **兼容性与换机自查**：本执行器基于通用 DirectML（D3D12）接口，已在 AMD Radeon(TM)
-Graphics（R5-4500U）实测；Intel UHD 630（i5-10400 等）走同一接口，但核显相对 CPU
-更弱，预期收益低于 AMD 机型。换机后请先本机自检：`py -3.11 gpu_scheduler.py`
-（打印设备名与核显可用性），再以 `--igpu` 跑一小段训练与纯 CPU 对比后决定是否保留。
-若提示「Basic Render Driver / 软件适配器」，说明未安装或未启用厂商图形驱动，
-执行器会自动拒绝启用。
+Graphics（R5-4500U）实测；Intel UHD 630（i5-10400 等）走同一接口——自 R8 起执行器
+为**换机自适应，无需人工预判**：内存上限按整机内存等比缩放，启动时 `calibrate_gpu()`
+实测本机核显/CPU GEMM 吞吐比（两轮取较好、长预热促核显爬频——单轮实测有 ±0.1 抖动），
+低于门槛（默认 1.10，`--igpu_min_gain 0` 跳过）自动回退并打印实测值，即「弱核显机器
+开 --igpu 无害，只是自动不生效」。换机后运行 `py -3.11 gpu_scheduler.py`，末行直接
+打印校准值与判定。若提示「Basic Render Driver / 软件适配器」，说明未安装或未启用
+厂商图形驱动，执行器会自动拒绝启用。
+
+**异步/并发压榨已证死路（R9）**：CPU/核显真并发技术上是可行的（后台排空线程，
+混合负载 1.32×），但用于训练实测 0.83× vs 常驻——本机核显快于 CPU，分批给 CPU
+只会坐上关键路径。不要尝试「半 CPU 半核显」的数据并行或算子切分方案。
+
+**生图（SD）训练不要开核显**：同机实测 SD UNet 主力算子在 DML 上全面落后
+（conv 主力形状 0.50~0.90×、S=1024 自注意力 0.14×、投影 GEMM 0.38~0.65×），
+且 torch-directml 钉死 torch 2.4.1 与 diffusers 0.40 导入不兼容（修复：
+`torch241_compat.py`，train_sd_lora.py 已在 import diffusers 前引入），真实 UNet
+的 DML 反向还会触发插件崩溃。SD 训练保持纯 CPU（fp32）。
 
 **Python 接口**（脚本内自行驱动，`train.py` 已内置同款流程）：
 
@@ -259,72 +323,249 @@ print(ex.prepare(tokens=batch_size * seq_len))  # "OK" = 已启用，模型常�
 低阶接口 `big_gemm / big_linear / big_conv2d / patch_igpu` 仍保留（单算子实验用途），
 但**逐算子调度在训练中为负收益，官方不推荐**。
 
----
+### 4.9 融合 elementwise 内核（RMSNorm / SwiGLU / 残差+LayerScale）
 
-### 4.9 ★ 4-bit 块优化器（AdamW4bit，本 fork 新增）
+**它解决什么**：实测训练步里 **elementwise 占 20.8%**（GEMM 已到基准的 92%，没空间了）。
+`RMSNorm` 在 eager 下是 6 个 aten 算子（`pow → mean → add → rsqrt → mul → mul`），
+激活要被完整读写 6 遍 ⇒ 纯带宽浪费。这一族把它们压成 1 遍。
 
-**降低【优化器状态】的内存，而不是降低权重精度 —— 后者已被实测否定（见 `TECH_REPORT.md` §3.5）。**
+**可用函数**（`fused_cpu.py`）：
 
-#### 为什么用它
-
-| 对手 | 内存 | 速度 |
+| 函数 | 语义 | 对应 eager 写法 |
 |---|---|---|
-| 对 fp32 AdamW | **7.8×** 少（1.031 对 8.000 字节/参数） | 0.96× |
-| **对 AdamW8bit** | ★ **2.06×** 少（1.031 对 2.125） | ★ **1.74× 更快**（≥64M；2.63× 是 1M 缓存内的数，见下） |
+| `fused_rmsnorm(x, weight=None, res=None, eps=1e-6)` | `(x + res) * rsqrt(mean((x+res)²) + eps) * weight` | 6 个 aten 算子 |
+| `fused_swiglu(gate, up)` | `silu(gate) * up` | `F.silu(gate) * up` |
+| `fused_add_scale(x, y, scale=None)` | `x + scale * y`（`scale=None` 时退化为 `x + y`） | `x + scale * y` |
+| `fused_add_scale_rmsnorm(x, y, scale, weight, eps=1e-6)` | `RMSNorm(x + scale*y)` 一步出 | 残差 + norm 两趟 |
 
-**★ 两个基线都要说：7.8× 是对 fp32 的，而你手里已经是 8-bit，所以实际收益是 2.06×。
-两个数都对，回答的是不同的问题。**
+四个都是 `torch.autograd.Function`，**前向反向都有** ⇒ 可直接放进训练图，不需要手写 backward。
 
-**★ 而它是【两边都赢】，不是"用速度换内存"。**
+**方式 A：一键接线（推荐，不改模型代码）**
+```python
+import enable_fused
+enable_fused.enable()             # 只融合 RMSNorm（改动面最小，最稳）
+enable_fused.enable(block=True)   # 再加残差 + LayerScale
+# enable_fused.enable(rmsnorm=True, swiglu=True, block=True)   # 全开
+```
+实测收益（交替 6 轮、配对比值中位）：RMSNorm **+5.0 ~ 8.0%**；
+加残差后 **+5.5 ~ 7.1%**（两者接近 ⇒ 默认只开 RMSNorm）。
+⚠️ 必须在**创建模型实例之前**调用（它 patch 的是类方法，对已建实例也生效，但顺序清晰更好排查）。
 
-**★ 而"快多少"取决于参数量（2026-10-17 补测，五次独立运行）：**
+**方式 B：显式调用**
+```python
+import fused_cpu
+assert fused_cpu.available()          # DLL 里必须有 cfused_* 导出，否则要重新编译
 
-| 参数量 | 4-bit 对 8-bit 的步时比 |
+# 残差 + LayerScale + RMSNorm 一步出（原来是两趟）
+h  = fused_cpu.fused_add_scale_rmsnorm(x, attn_out, self.ls1, self.ln1_w, eps=1e-6)
+# SwiGLU
+h2 = self.w2(fused_cpu.fused_swiglu(self.w1(h), self.w3(h)))
+# 残差（scale=None 时退化为 x + y）
+x  = fused_cpu.fused_add_scale(h, h2, self.ls2)
+```
+
+**核对与复跑**：
+```bat
+py -3.11 test_fused_kernels.py     :: 四个核 vs eager 对拍（前向+反向）+ 计时
+py -3.11 bench_fused_final.py      :: 端到端（RMSNorm + 残差都走融合）
+py -3.11 bench_fused_e2e3.py       :: v1/v2/v3 三种接法对比
+py -3.11 bench_l3_vs_swiglu.py     :: 融合 vs 单独算（隔离对照）
+py -3.11 bench_r5_threads.py       :: 线程数（本机 5 线程最优，6 反而慢 5.9%）
+```
+数值：与 eager `max|Δ| ~1e-7 ~ 1e-6`（fp32 累加顺序不同所致），
+`state_dict` 键名不变 ⇒ checkpoint 可安全互载。
+
+**边界与使用约束**：
+
+| 边界 | 说明 |
 |---|---|
-| 1M（内核基准，L3 内） | 2.6~3.1× |
-| **≥64M（DRAM，也就是它该被用的区间）** | ★ **1.74×**（1.69~1.81） |
+| 只省**带宽**，不省算力 | 对算术强度远高于拐点的负载（卷积为主的 UNet）收益 ≈ 0 |
+| 需要**重新编译** | DLL 里没有 `cfused_*` 时 `fused_cpu.available()` 返回 False；`enable_fused` 会抛 `RuntimeError('DLL 里没有融合核 —— 需要重新编译 bnb（含 cfused_* 导出）')` ⇒ 见本文 §2 |
+| `enable_fused` 要在建模型前调用 | patch 的是类方法 |
+| NT store 有**阈值与对齐**要求 | 输出 ≤1.0 MB 时反而倒退；阈值按运行时 L3 推导，不要硬编码（详见 `TECHNICAL_GUIDE.md` §3.5.2） |
+| `gemv_fp16w_*` 未接 Python | C 侧已实现已导出，但**没有 Python 调用点**，只能从 C/C++ 或 ctypes 调用（详见 `TECHNICAL_GUIDE.md` §3.5.2） |
+| 数值是 fp32 舍入级差异 | `max|Δ| ~1e-7`，checkpoint 可互载 |
 
-**⇒ 此前本文档写的"2.63×"是 1M 上的数；而在 300M 级，诚实的数字是约 1.7×。
-内存 2.06× 不变，速度依然更快，但量级要按规模说。**
+完整实现细节（C 侧导出签名、参数约定、strided 版、NT store 阈值机制）见
+[`TECHNICAL_GUIDE.md`](TECHNICAL_GUIDE.md) §3.5.2；整步占比与对照数字见
+[`TECH_REPORT.md`](TECH_REPORT.md) §3.5.1。
 
-#### 用法
+### 4.10 `fused_dequant_linear_8bit`：支持任意前导维 + K 校验
+
+8-bit 融合反量化线性层前向（`functional.fused_dequant_linear_8bit`）**行为有变化**：
 
 ```python
-from bitsandbytes.optim.adamw4bit import AdamW4bit
-opt = AdamW4bit(model.parameters(), lr=1e-4)
+import bitsandbytes.functional as F
+# 现在 A 支持任意前导维：A.shape == (..., K)，输出 A.shape[:-1] + (N,)
+out = F.fused_dequant_linear_8bit(A5d, wq, absmax, blocksize=64)
 ```
 
-**⇒ 与 `torch.optim.AdamW` 同签名。**
-
-#### ★ 在什么规模上用 —— 这条比上面所有数字都重要
-
-```
-30.5M 参数  ⇒ 优化器状态省 203 MB = 内存的 1.3%   ⇒ ★【收益很小】
-100M 参数   ⇒ 约省 400 MB         ≈ 内存的 2.5%   ⇒ 仍然小
-300M 参数   ⇒ 约省 2 GB            = 内存的 13%    ⇒ ★【才是它的战场】
-```
-
-**⇒ 在 30.5M 这种规模上，"换成更大 batch"的收益本来就很小。
-它是为【大模型】准备的，不是一个"到处都该换"的默认。**
-
-#### 实测（30.5M 模型 · 真实数据 · 300 步）
-
-```
-loss 轨迹   与 AdamW8bit 差 −0.10%（末步）· +0.53%（最差一格）
-步时        0.955×（4-bit 反而略快）
-状态内存    66.3 MB → 33.4 MB ⇒ 2.0×
-```
-
-**⇒ 正确性：内核与 numpy 参考【逐码一致】（`test_optimizer_4bit_cpu.py`）。**
-
-#### 注意事项
-
-* **AVX2 路径存在**（`optimizer_4bit_blockwise_avx2`，`cpu_ops.cpp:3056`），
-  分派对【两状态家族】（adam/ademamix）选它；一状态家族（sgd/lion）走标量，那是刻意设计。
-* **不要逐元素 get/set 状态**：那会产生 store-to-load 停顿，实测慢 4.6×。
-  内核对同一个字节"读一次、拆两个码、写一次"，这是性能关键而非风格。
+- **视频 latent 用法**：先把通道 permute 到最后（`[B,T,H,W,K]`），或把 `(B,T,H,W)` 展平成 2D；
+  **不要**直接传 `[B,C,T,H,W]`（最后一维不是 K）
+- **新增显式校验**：`K % blocksize != 0` 时**抛 `ValueError`** —— 原因是这个融合内核按
+  行块布局，K 不整除时**会静默返回错值**；上游没有这个检查
+- 收益前提：权重全程保持 uint8，不产生 fp32 权重临时张量（DRAM 流量 = fp32 的 1/4）
 
 ---
+
+### 4.11 核显加速（OpenCL / CLBlast，实验性）
+
+§4.8 的核显路径是 Windows 专用的 DirectML 执行器。另有一条**跨平台**路径：OpenCL + CLBlast，
+用于回答"这块核显到底能算多快、算得对不对"。
+
+**调用约定（踩过的坑）**：CLBlast 的 C API 是**列主序**的。用行主序思维传非立方矩阵会返回
+`-1011/-1015/-1016`（参数校验失败，而不是内核崩溃）。正确做法是"列主序调用 + 转置映射"，
+零拷贝：
+
+```
+C_row(m×n) = A_row(m×k) @ B_row(k×n)
+  ⇔ Sgemm(COL, NO, NO, m=n, n=m, k=k,
+          A=B_row 在显存里的地址, lda=n,
+          B=A_row 在显存里的地址, ldb=k,
+          C=C_row 在显存里的地址, ldc=n)
+```
+
+**实测（Vega 6 / R5-4500U，fp32，CLBlast）**：
+
+| 形状 | 核显 GFLOPS | 同形状 CPU |
+|---|---|---|
+| MLP up (k=2048→n=2048) | 535.0 | 217 |
+| MLP down (k=2048→n=512) | 512.5 | 256 |
+| QKV (k=512→n=2048) | 531.5 | 235 |
+| o proj (k=512→n=512) | 371.5 | 164 |
+| head (k=512→n=1024) | 486.0 | 219 |
+| attn QK / AV | 116.7 / 119.5 | — |
+
+套件平均 **505~551 GFLOPS vs CPU 204 ⇒ 2.6~2.7×**。fp16 纯运算（unroll ×4、16~24 累加器、
+worksize 98304）实测 **1290 GFLOPS = GT 1030 理论值 1127 的 1.14×**；但 fp16 GEMM 最高 1039
+（0.92×），fp32 GEMM 655（0.58×）。
+
+**设备常驻单层训练步**（权重常驻显存、loss/反向/Adam 全在设备上，host 每步只见 4 字节 loss）：
+
+| 层宽 | CPU | 核显常驻 | 加速 |
+|---|---|---|---|
+| 2048 | 202.9 ms | 135.1 ms | **1.50×** |
+| 1024 | — | — | 1.35× |
+| 512 | — | — | **CPU 反而快 1.24×** |
+
+权重对拍相对误差 7.6e-05，先对拍再读速度。
+
+**什么时候用核显（由 M 决定，不是"谁快"）**：M=1 给 CPU；**M≥64 给核显（约 2×）**。
+**异步并发不要做**：CPU 与核显同时跑时，iGPU 只保留 40~54%、CPU 只剩 53~61%（共享的 8 MB L3
+被 CPU 工作集挤掉），并发 1.1~1.3× 反而不如顺序执行 1.51×。
+
+**复跑脚本**（仓库根目录，需要 `pyopencl` + CLBlast 动态库）：
+
+```bat
+py -3.11 clblast_colmajor_shapes.py     :: CLBlast 列主序修复 + 真实形状 GFLOPS 表
+py -3.11 igpu_clblast_resident.py       :: 设备常驻单层训练步（先对拍、后计时）
+py -3.11 igpu_fp16_tune.py              :: fp16 纯运算调参（nacc/worksize/unroll 网格）
+```
+
+⚠️ **状态：实验性，尚未接入训练/推理主路径**，也没有随 wheel 发布 Python API；把它当
+"测量与验证工具"用。它与 §4.8 的 DirectML 执行器是两条不同的路（DirectML 仅 Windows，
+OpenCL 跨平台），结论不能混用。
+
+### 4.12 4-bit 优化器（AdamW4bit：状态再减半）
+
+8-bit 优化器的两阶矩状态已压到约 2.3 B/参数；`AdamW4bit` 再把状态压到 **约 1.03 B/参数**
+（fp32 AdamW 是 8.0）。用法与 8-bit 优化器同形：
+
+```python
+from bitsandbytes.optim import AdamW4bit
+
+opt = AdamW4bit(model.parameters(), lr=1e-4, weight_decay=0.01)
+opt.zero_grad()
+loss = loss_fn(model(x), y)
+loss.backward()
+opt.step()               # 训练循环其余部分不变
+```
+
+**状态布局**：两阶矩各按 4-bit 码保存（每字节两个码，高半字节是偶数下标），每 256 个元素一个
+fp32 absmax；16 个对称电平（码 0 = −1，码 15 = +1）。**精确 0 不在码表里**——全零块写入码 8
+（对应 +1/15），因为 absmax 也是 0，反量化后仍是 0。
+
+**收益（在 30.49M 参数的 AR 模型上实测量）**：
+
+| 项 | 数值 |
+|---|---|
+| 状态内存 | 232.6 MB → **29.5 MB**（8-bit 优化器的 1/2，fp32 的 1/8） |
+| 内核步耗时（1M 参数） | 0.658 ms vs 8-bit 1.682 ms = **2.56×** |
+| 内核步耗时（≥64M 参数） | **1.74×**（5 次：1.69~1.81）——量级越大收益越小，别拿 1M 的数字外推 |
+| 训练轨迹（120 步 AR） | 两条 loss 曲线相差 **0.27%**（不是"一致"，是"同轨"） |
+| 状态码正确性 | 与独立 numpy 实现 50 步**逐位一致** |
+
+**边界**（每条都是踩过的）：
+
+- 只支持 **fp32 参数**；`blocksize` 编译期固定 256，传其它值直接报错
+- 它是**独立类**，不替换 `torch.optim.AdamW`；量化状态**不保证可复现轨迹**（同 seed 同数据，路径与 fp32 不同）
+- DLL 里没有 `coptimizer_update_4bit_blockwise_cpu` 时**导入即报错**，不会静默退回 8-bit
+- 发布状态：`0.50.2.dev3` 起的构建提供
+
+### 4.13 2-bit / 3-bit 量化（quant2bit / quantnbit）
+
+**2-bit（`quant2bit.py`）**：块级（block=64）最近电平量化，**每字节打包 4 个索引**。
+存储 **2.5 bit/权重**（2 + 32/64），对比 4-bit 路径的 4.5 bit 和 fp32 的 32 bit。
+
+**3-bit（`quantnbit.py`）**：通用 N-bit 打包（LSB 优先，3-bit 会跨字节边界），自带
+"打包→解包"自检。3-bit 选 **uniform** 电平而不是 NF：两者损失只差 0.0003（噪声内），
+uniform 让解码回到一次乘加。
+
+**损失代价**（训练好的 32×32 AR 模型，512 条验证样本）：
+
+| 存储格式 | 验证 loss | 相对 fp32 |
+|---|---|---|
+| fp32 | 5.5038 | — |
+| 4-bit（uniform / nf） | 5.5080 / 5.5084 | +0.004 |
+| 3-bit（uniform / nf） | 5.5234 / 5.5231 | +0.019 |
+| **2-bit nf** | **5.6206** | **+0.117（≈2.1%）** |
+| 2-bit uniform | 5.6354 | +0.132 |
+
+⇒ **2-bit 时 NF 比 uniform 好 11%；3-bit 及更宽时 NF 没有意义。**
+
+**两个端到端判决**：
+
+- ⚠️ **SD1.5 全 pipeline 用 2-bit 权重：不成立** —— 存储省 39.5%，但生成的图彻底坏掉
+- ✓ **冻结的 2-bit 基座 + LoRA 训练：成立** —— 只替换 `nn.Linear`，初始验证 loss
+  5.5538（与格式自身的值一致），LoRA 参数可训、loss 下降，基座不需要可微
+
+```python
+from quant2bit import quantize, dequantize, bytes_per_weight      # 2-bit：2.5 bit/权重
+from quantnbit import quantize as quantize_n, dequantize as dequantize_n   # 任意 N-bit
+
+packed, absmax, meta = quantize(w, block=64)        # 2-bit 打包（4 码/字节）
+w2 = dequantize(packed, absmax, *meta)
+print(bytes_per_weight(64))                         # 2.5
+
+packed3, absmax3, meta3 = quantize_n(w, bits=3, block=64)   # 3-bit
+w3 = dequantize_n(packed3, absmax3, meta3)
+```
+
+⚠️ **状态：脚本级组件（仓库根目录），尚未进 wheel**；它是"格式与测量"的参考实现，
+不是训练主路径的一部分。
+
+### 4.14 AVX-512 构建（实验性）
+
+CPU 后端在 AVX2 之外还有一套手写 AVX-512 内核（4-bit 反量化的 16-lane 路径、bf16 GEMV 的
+tinygemm 路径），默认关闭。构建方式（要求构建机自己能执行 AVX-512 探针）：
+
+```bat
+:: CMake 构建（Linux/GCC），BNB_ENABLE_AVX512 默认 OFF
+cmake -DBNB_ENABLE_AVX512=ON ..
+```
+
+**已验证的事实（远程 AVX-512 机器实测）**：
+
+| 项 | 结果 |
+|---|---|
+| 数值正确性 | 5 个内核与 AVX2 构建**逐位一致**（误差 0.00e+00） |
+| 分派 | 库内 `has_avx512f_cpu()=True`，受保护内核的守卫成立 |
+| 硬件峰值 | 全宽 512 位机器：fp32 FMA **2.02×** AVX2、BF16 点积 **2.71×**（同编译器、单线程） |
+| 真实内核 | 现有 memory-bound 内核 **0.97~1.02×**（见 `TECH_REPORT.md` §3.11） |
+
+⚠️ **注意**：`-mavx512f` 是**整编译单元**级开关，会让普通内核（dequantize、优化器、rmsnorm）
+被编译器自动向量化成 zmm → 在 AVX2 机器上**一调用就 SIGILL**。所以 AVX-512 二进制不能发给
+AVX2 机器，必须按 CPUID 选择加载（本 fork 尚未把"双库+选路"接入安装包，属于待办）。
 
 ## 5. 硬盘均衡负载（disk_balancer，SSD 保护）
 
@@ -499,3 +740,169 @@ balancer.start()
 
 - 技术文档：`docs_cpu/TECHNICAL_GUIDE.md`（各内核的改动细节）
 - 技术报告：`docs_cpu/TECH_REPORT.md`（完整实验数据与结论）
+
+---
+
+## 9. 灾难恢复（Disaster Recovery）
+
+> **适用范围**：当 `disk_balancer`（`--flash`）在**非受支持环境**（尤指 WSL）下使用，可能
+> 导致宿主 Windows 文件系统（NTFS / 主文件表 MFT）损坏与数据丢失。
+>
+> **前置条件**：请先阅读本文件 §5 的「免责声明与使用限制」，确认您处于**受支持环境**。
+> 本流程为一般性恢复路径，**不构成对特定结果的保证**；若涉及重要数据且不确定，
+> **应首选咨询专业数据恢复机构**。
+
+> ### 必需：先准备一块「独立的存储介质」（U 盘 / 移动硬盘）
+>
+> **开始任何镜像/恢复前，必须准备一块【与受损盘不同物理磁盘】的独立存储介质**，
+> 且其**剩余空间 ≥ 受损盘的总容量**（整盘镜像需要等大的空间）。
+>
+> **为什么必须独立物理盘**：镜像的目标**必须写在另一块物理磁盘上**，绝不能在受损盘
+> 自身 / 与受损盘同一块的其它分区上。例如——如果您的 C:/D:/E:… 全是同一块物理 SSD
+> 上的不同分区，那么 U 盘 / 移动硬盘（独立物理盘）就是**唯一安全的目标**；若把镜像
+> 写到同一块 SSD 的另一个分区，相当于往正在损坏的盘上继续写数据，**会加剧损坏**。
+>
+> **可用的目标**：USB 闪存盘、外接移动硬盘、**另一块与受损盘不同的内置盘**（能在
+> 「磁盘管理 / diskpart → list disk」确认是**另一块 PhysicalDriveN**）。
+> **绝不可用**：受损盘本身的其它分区 / 与受损盘同一物理盘的任何分区。
+>
+> **准备要点**：
+> 1. 插上 U 盘 / 移动硬盘，容量 ≥ 受损盘总大小；
+> 2. 用「磁盘管理（diskmgmt.msc）」或 `diskpart` → `list disk` 确认它确实是
+>    **另一块物理盘**（不同 PhysicalDrive 编号），不是受损盘的分区；
+> 3. 确认目标盘有足够的剩余空间，且可写。
+
+### 9.1 诊断阶段：仅执行只读检查（勿修改数据）
+
+数据损坏时，**唯一正确且安全的第一步**是**只读诊断**，**不修改磁盘**：
+
+```
+chkdsk <盘符>:          （不带 /f —— 只读报告，不修改数据）
+```
+
+- 若 `chkdsk` 报告 MFT / 文件系统错误 → 进入下一阶段恢复；
+- **严禁**立即执行 `chkdsk <盘符>: /f`（会修改磁盘，可能将本可恢复的数据标记为丢失）；
+- **严禁**对受损盘执行格式化 / 覆写 / 任何写操作。
+
+> 在完成镜像或确认恢复方案前，**不要向受损盘写入任何数据**——哪怕一个字节都可能
+> 覆盖 MFT 中待恢复的记录，造成不可逆损失。
+
+### 9.2 第一梯队：本仓库自带的 `sector_mirror`（绕过文件系统）
+
+> **适用**：本仓库仍可用（含已编译的 `sector_mirror.exe` / `sector_mirror_gui.exe`）。
+> 该工具使用 Win32 内核 API（`CreateFile` + `ReadFile`）**绕过文件系统**，直接读取磁盘
+> **原始扇区**（`\\.\PhysicalDriveN`），将受损盘**整盘镜像**到一个**完好的驱动器**。
+> **不依赖 Python**——即使 MFT 损坏导致 Python 无法运行，只要 `sector_mirror.exe`
+> 存在即可使用。
+>
+> 提供**两个版本**，内核完全相同（读原始扇区 + 稀疏镜像）：
+> - **`sector_mirror_gui.exe`（GUI 版，推荐）**——纯 Win32 图形界面：**双击即用**，
+>   下拉选「源盘」、点「浏览」选「目标镜像」、点「开始镜像」，进度条 + 日志，
+>   **完全不需要命令行 / 传参**。当 `cmd.exe` / `powershell.exe` 因系统损坏无法工作时，
+>   这是**最可靠**的入口（Win32 原生 GUI，不依赖任何 shell）。
+> - **`sector_mirror.exe`（命令行版）**——在管理员命令行里指定源盘和目标镜像。
+
+#### 9.2.1 编译（在完好的机器上）
+
+```bat
+:: 命令行版（VS x64 原生终端）
+cl /O2 tools\sector_mirror.c /Fe:sector_mirror.exe /link advapi32.lib
+:: GUI 版（依赖已由源码 #pragma 声明，无需手动 /link）
+cl /O2 /utf-8 /DNOMINMAX /DNDEBUG tools\sector_mirror_gui.c /Fe:sector_mirror_gui.exe
+:: 或 MinGW（命令行版）
+gcc -O2 -o sector_mirror.exe tools\sector_mirror.c -ladvapi32
+```
+
+> **注意**：两版均为 Windows 专用（依赖 Win32 内核 API）。**命令行版已在本机
+> （MSVC `cl`）编译通过并实测验证**：无参数列盘、源盘符自动解析到物理盘、稀疏镜像、
+> 进度显示均正常。**GUI 版**也编译通过，仅依赖 Windows 系统 DLL。不同系统/盘符组合
+> 请先小范围验证（稀疏文件在 FAT32 移动盘上可能不支持，建议 NTFS 移动盘）。
+
+#### 9.2.2 使用（GUI 版，推荐 —— 无需命令行）
+
+> 当 `cmd` / `powershell` 打不开时，**双击 `sector_mirror_gui.exe`** 即可。
+
+```text
+1) 插好 U 盘（必须是【不同物理盘】，可读 NTFS）；
+2) 双击 sector_mirror_gui.exe（自动 UAC 提权，点「是」）；
+3) 「源盘」下拉选受损盘（如 D:）；「目标镜像」点「浏览...」选 U 盘文件名；
+4) 点「开始镜像」；进度条 + 日志（可随时「取消」）；
+5) 完成后，在完好机器上用 TestDisk / 7-Zip / winfr 从 .img 恢复。
+```
+
+- **自动提权**：双击即自动 UAC 获得管理员权限；
+- **防二次损伤**：GUI 校验目标不得为源盘 / 系统盘 `C:`；
+- **进度条 + 日志** + **可取消**（已写部分保留）。
+
+#### 9.2.3 使用（命令行版，管理员命令提示符）
+
+```bat
+:: ① 无参数运行，列出所有盘符 + 容量 + 物理盘号，识别源盘
+sector_mirror.exe
+:: ② 用「源盘符」镜像：D:（受损盘）-> E:\d_drive.img
+sector_mirror.exe D: E:\d_drive.img
+:: ③ （旧版兼容）用「物理盘号」镜像：PhysicalDrive1 = 1
+sector_mirror.exe 1 E:\d_drive.img
+```
+
+- **源盘符（推荐）**：自动解析成 `PhysicalDriveN`；
+- **目标不得为源盘**：拒绝写向系统盘 C: / 同一物理盘；
+- **稀疏镜像**：全 0 扇区写成「稀疏空洞」，不占 U 盘实际空间；
+- **管理员权限** + **Ctrl+C 中断**（已写部分保留）。
+
+#### 9.2.4 恢复（镜像完成后，在完好机器上操作）
+
+- 用 **TestDisk**（便携版）从 `d_drive.img` 恢复分区 / 文件；或
+- 用 **7-Zip** 提取 `.img`（若文件系统尚可读）；或
+- 用 **Windows File Recovery** 对镜像深度扫描（`winfr` 支持从镜像恢复）。
+
+#### 9.2.5 签名恢复 `sector_carve`（自带，可干翻 winfr 的 signature 模式）
+
+> **用途**：当 **MFT / 文件系统已损坏**、但**数据扇区还在**时，用【文件签名(magic bytes)】
+> **绕过文件系统**直接从镜像/原始扇区里把仍完整的常见文件抠出来 —— 这是 winfr 的
+> signature 模式做的事，但本工具**直接在已镜像的 `.img` 或原始扇区上做**，无需依赖 winfr。
+> **MFT 坏了 winfr 的 segment 模式反而不灵，而签名恢复此时最有效。**
+
+```bat
+:: 用法：sector_carve <镜像/盘符> <输出目录>（输出目录必须在另一块完好盘上）
+sector_carve.exe D:\usb_mom.img D:\carved_mom
+:: 或直接扫盘符（建议先镜像再扫；物理盘扫描请用 GUI 版）
+sector_carve.exe E: D:\carved_mom
+```
+
+- **支持格式**：PNG/JPEG/GIF/ZIP(自动识别 docx/xlsx/pptx)/PDF/MP4 —— 流式跨块提取。
+- **GUI 版 `sector_carve_gui.exe`（推荐）**：双击即用，无需命令行。
+- **零写入原盘** + **输出目录禁止写回受损盘**。
+
+> **实测参考**：MFT 已损坏的 U 盘（7.5GB）经 sector_mirror 镜像 + sector_carve 扫，
+> 恢复 **3200+ 个文件**（照片/压缩包/PDF/MP4/Word/Excel/PPT）；PNG 99.6% 可打开、
+> docx 10/10 有效、MP4 完整；GUI 直扫物理盘恢复 **~95% 可用**。
+
+### 9.3 第二梯队：本仓库 / 工具均不可用时 → Windows File Recovery
+
+> **适用**：**MFT 损坏过于严重，连本仓库 / Python / exe 都无法运行**。退回微软商店的
+> Windows File Recovery。
+
+```bat
+:: 深度扫描 D 盘，恢复全部文件到 E:\recovered（E 为另一块完好盘）
+winfr D: E:\recovered /extensive /n *
+```
+
+- **输出必须写入另一块盘（E）**，**严禁写回受损盘（D）**；
+- `/extensive` 为深度扫描——MFT 损坏时找回概率更高。
+
+### 9.4 防二次损伤要点（务必遵守）
+
+1. **恢复完成前，禁止向受损盘写入任何数据**；
+2. **优先镜像（第一梯队 Tier 1）再操作**——在完好副本上恢复最安全；
+3. 数据恢复工具（TestDisk / PhotoRec / winfr）**应从另一块盘运行，输出写另一块盘**；
+4. 若不确定 / 涉及重要数据，**先只读 `chkdsk` 诊断，并咨询专业人员**。
+
+### 9.5 结论陈述
+
+- 若按上述路径**恢复成功**：数据可找回，请按本指南操作；
+- 若**恢复失败**（MFT 损坏过深 / 扇区已被覆写）：**损失数据可能无法恢复**——请以
+  **备份 / 镜像为准**，**切勿在受损盘上反复尝试覆写类操作**（只会加剧损坏）。
+
+> **最后提醒**：任何数据恢复操作都存在不确定性。若数据价值较高，**请优先采用
+> 专业数据恢复服务，而非自行反复尝试**。

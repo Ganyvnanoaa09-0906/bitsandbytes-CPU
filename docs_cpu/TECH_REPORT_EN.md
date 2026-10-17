@@ -1,7 +1,5 @@
 # Technical Report: bitsandbytes Modification & Training Acceleration on Pure CPU
 
-**Author**: deepsleep team
-**Date**: 2026-09
 **Scope**: engineering acceleration of LLM fine-tuning and image-generation
 training on machines **without an NVIDIA GPU** (CPU only, AVX2 / ARM64 NEON,
 12–16 GB RAM).
@@ -102,7 +100,50 @@ a real Qwen3Next decoder layer (with Gated DeltaNet linear attention), with
 
 Shapes tested: M∈[1,8], K,N∈[320,1280], blocksize∈[64,256] — all relative error ≤ 4.7e-7.
 
-### 3.4 Threads & precision (empirical)
+**Measured speed on R5-4500U (important negative finding)**: the `gemm_8bit` CPU kernel
+(`cgemm_8bit_inference_cpu_fp32`) is a **single-thread / not-optimized** naive implementation,
+measured **clearly slower than oneDNN multithreaded fp32 BLAS**:
+
+| GEMM (M=256) | fp32 oneDNN | gemm_8bit | 8bit-store + dequant + fp32 BLAS |
+|---|---|---|---|
+| 2048×2048 | 11.6ms | 29.4ms | 19.0ms |
+| 2048×10944 | 81ms | 134ms | 90ms |
+| 10944×2048 | 54ms | **500ms** | 72ms |
+| 4096×2048 | 19ms | 76ms | 29ms |
+
+→ **8bit kernel 0.2–0.6×, 8bit-store+dequant 0.7–0.9×, both slower than fp32 (1.0×, ~200 GFLOP/s)**.
+**Conclusion: quantized GEMM does NOT save time on pure CPU** (DRAM bandwidth is not the
+bottleneck; the dequant / unoptimized kernel is the overhead instead). Quantization's real value
+on CPU is **memory saving** (8bit weight storage + 8bit optimizer avoids swap) — see §3.5 — not speed.
+The fastest CPU GEMM remains **oneDNN multithreaded fp32** (train in fp32 with physical-core threads).
+
+### 3.3.1 gemm_4bit: M-dependent dispatch — the table above holds only for **LARGE M**
+
+Every shape in §3.3 starts at 2048×2048. The **training-path** 4-bit linear (`gemm_4bit`,
+which is what `autograd/_functions.py:324/334/462/472` calls) behaves the opposite way at **small M**:
+
+| M | fused kernel ms | default (oneDNN dense) ms | winner |
+|---|---|---|---|
+| 1 | **1.20** | ~14.5 | fused **12×** |
+| 8 | **4.71** | 25.14 | fused 5.3× |
+| 32 | **16.20** | 28.41 | fused 1.75× |
+| 64 | **28.79** | 31.37 | fused 1.09× |
+| 96 | 43.45 | **37.01** | default overtakes |
+| 256 | 166.11 | **64.94** | default **2.56×** |
+
+(K=N=4096, OMP=6)
+
+→ Threshold `_GEMM_4BIT_FUSED_MAX_M = 64`: **M ≤ 64 uses this fork's fused kernel, M > 64 goes back to oneDNN dense**.
+→ That threshold used to be **16**, so M=17–64 was misrouted to default and was up to **3.4× slower than necessary**.
+→ The fused kernel loses at large M for a **structural** reason: its inner loop is `m0 += 4`, re-reading the whole
+weight block every 4 rows ⇒ weight traffic is O(M/4).
+
+**⇒ So §3.3's line "the fastest CPU GEMM remains oneDNN multithreaded fp32" needs a scope qualifier**:
+it holds only for **M ≳ 96**; for **M ≤ 64 this fork's fused kernel is faster** (per-token inference is M=1,
+exactly that range). The two do not contradict — it is a **dispatch by M**. Implementation and one easily
+inverted polarity note: `TECHNICAL_GUIDE_EN.md §3.5.1` and `§6 item 9`.
+
+### 3.4 Threads & precision
 
 | Task | 6 threads | 8 threads | 12 threads |
 |---|---|---|---|
@@ -113,6 +154,19 @@ Shapes tested: M∈[1,8], K,N∈[320,1280], blocksize∈[64,256] — all relativ
 - Text GEMM-heavy → 8 threads optimal; image conv-heavy → **12 threads**;
 - R5-4500U (6C6T, no SMT) → **6 threads** (all physical cores);
 - **bf16 unusable on AVX2** (software-emulated >90 s hang) — always fp32.
+
+**Real gap between the two target machines (qwen3-1.7B LoRA, seq256, batch1, pure CPU fp32)**:
+
+| Machine | Threads | Per step | Note |
+|---|---|---|---|
+| **i5-10400** | 6C12T (SMT) | ~4s | Desktop, stronger AVX2, 12 threads |
+| **R5-4500U** | 6C6T (no SMT) | **12–17s** | Low-power laptop U, 6 threads |
+
+Measured (R5) with fp32 / 8bit-quantized base / Trainer+use_cache=False / torch_cpu_kit(lm) —
+all 12–17 s/step (no real gain). **Conclusion: 12s (R5) vs 4s (i5) is a hardware gap
+(threads 12 vs 6 + AVX2 single-core strength + power), NOT a bug and NOT fixable by
+quantization/optimization.** i5 is the primary training machine; R5 (dev box) is at its ceiling.
+Do not compare per-step time across the two machines directly.
 
 ### 3.5 Negative finding: lower-precision base-weight storage (important)
 
@@ -135,6 +189,59 @@ truly stored as 8bit/NF4/FP4 codes (no fp32 master), saving ~75% (8-bit) / ~87.5
 only per-block scales adapt, not the base codes. This is implemented by the upper
 layer `quant_lora.QuantLinearTrainable`, reusing this repo's `quantize_blockwise` /
 `quantize_4bit` / codebook (`create_dynamic_map` / `get_4bit_type`).
+
+### 3.5.1 Fused elementwise kernel family: the only block left in a training step (+5~8%)
+
+**Where it comes from** (`probe_step_breakdown.py`, R5-4500U pure CPU, ~30M model):
+```
+one step = 2.819 s:
+    GEMM        63.6%   already at 92% of a same-shape pure-GEMM baseline => no room
+    elementwise 20.8%   the only block with room left
+    attention    7.6%
+```
+In eager mode `RMSNorm` expands into 6 aten operators (`pow -> mean -> add -> rsqrt -> mul -> mul`),
+so the activation is fully read and written 6 times => pure bandwidth waste. This family collapses
+those 6 passes into 1, i.e. the 12 `cfused_*` exports.
+
+**Measured gain** (6 alternating rounds, paired-ratio median; `enable_fused.py`):
+```
+RMSNorm only                +5.0% (conservative) ~ +8.0% (median)
+RMSNorm + SwiGLU + residual +5.5% (conservative) ~ +7.1% (median)
+=> the two are close => default is RMSNorm only
+```
+**Numerics**: `max|delta| ~1e-7` vs eager (fp32 accumulation order); `state_dict` keys are
+unchanged, so checkpoints interload.
+
+**NT store measured (the bandwidth optimisation inside the same kernels)**:
+
+A normal store triggers write-allocate (RFO: the target cache line is read in before being
+written back), adding a gratuitous third of the memory traffic; NT store
+(`_mm256_stream_ps`) bypasses the cache and writes the line without reading it.
+
+| kernel | normal store | NT store | ratio |
+|---|---|---|---|
+| copy | 13.40 GB/s | **25.40** | 1.90x |
+| triad | 16.09 | **23.86** | 1.48x |
+
+The threshold derives from the **runtime L3 size**: outputs >= 4.2 MB win (2.0~3.1x),
+<= 1.0 MB lose (0.69~0.73x). Note the optimizer's `p` write must **not** use NT
+(read-modify-write: the line is already resident, so NT forces an eviction; measured 21% regression).
+
+**Boundary**: this family saves **bandwidth, not FLOPs**.
+On the same machine, **convolution-dominated** UNet training has elementwise at only 9.4% with
+an arithmetic intensity of 394 FLOP/byte (far above the crossover of 9) => fusing elementwise
+gains ~0 there; different work is needed (see `TECHNICAL_GUIDE_EN.md` section 3.5.2).
+The "elementwise 20.8%" figure comes from a **Transformer-shaped** load and must not be
+extrapolated to convolutional ones.
+
+**One export is not yet wired up**: `gemv_fp16w_inference_cpu_{fp32,bf16,fp16}` (fp16-weight
+GEMV/GEMM — halve weight traffic while fp32 FMA throughput is unchanged) is implemented,
+exported and compiled into the DLL, but there is **no Python call site** — exported is not the
+same as wired up; see `TECHNICAL_GUIDE_EN.md` section 3.5.2.
+
+Usage (`fused_cpu` explicit calls and the `enable_fused` one-liner), the argument contract and
+the full boundary table: [`QUICKSTART_EN.md`](QUICKSTART_EN.md) section 4.9. C-side signatures and
+implementation details: [`TECHNICAL_GUIDE_EN.md`](TECHNICAL_GUIDE_EN.md) section 3.5.2.
 
 ### 3.6 EFST: MoE expert-specific fine-tuning (efst.py)
 
@@ -161,7 +268,7 @@ and `lora=True` automatically falls back to row-wise unfreeze (tensor experts ha
 **Question**: on a machine with no discrete GPU (R5-4500U, AMD Radeon(TM) Graphics,
 sharing DDR4-2667 with the CPU), can the iGPU speed up training?
 
-**Phase 1: per-operator scheduling = negative (conclusion retained)**
+**Phase 1: per-operator scheduling = negative**
 
 The first `gpu_scheduler.py` dispatched large operators by the compute/transfer ratio
 `M*N/(M+N)`. Same-machine 8-step measurement (8-layer BigLinear(2048²) LoRA-style):
@@ -177,7 +284,7 @@ The first `gpu_scheduler.py` dispatched large operators by the compute/transfer 
 multi-process memcpy reaches only ~21-22 GB/s (about half the 42.7 GB/s theoretical)
 — the platform's bandwidth ceiling, with nothing to schedule.
 
-**Phase 2: block-level resident executor (measured viable on this machine)**
+**Phase 2: block-level resident executor**
 
 Form: all weights resident on the iGPU (moved once) + forward/backward of the whole
 step on the iGPU + one sync per step; trainable parameters (LoRA adapters) make small
@@ -198,119 +305,150 @@ the specialized kernel to fix it. Consistent with §3.5: "memory bandwidth is th
 ceiling" still holds; the iGPU only pays off in the **few-syncs, few-bytes-moved**
 form.
 
+**Phase 3: CPU/iGPU asynchronous concurrency**
+
+Question: while the resident executor runs, the CPU sits idle — can asynchrony put it
+to work too?
+
+| Experiment (`jiaoben/igpu_async_probe.py` / `igpu_async_drain_probe.py`) | Result |
+|---|---|
+| Single-GEMM output-column split (CPU half + DML half, one drain at the end) | 0.82-1.07x — worse than the faster single device |
+| Micro-batch data parallel (half batch fully on CPU + half on DML, one grad merge per step) | 0.96-1.16x vs CPU, 0.59-0.71x vs resident ≈ strict serial sum of both devices |
+| Lazy-execution root cause | enqueue takes only ~0.3ms; after 800ms of idle CPU the drain still needs the full execution time (563ms) — **DML starts executing only at the drain**, so "CPU works after enqueue" is inherently serial |
+| Background drain thread (main thread enqueues + background thread `.cpu()` drains + main thread computes on CPU) | serial 1213ms → concurrent 921ms = **1.32x, true concurrency achieved** (shared DDR4 bandwidth degrades each side ~1.6x, yet the wall time still wins) |
+
+But applying "background drain + data parallel" to training (BS=4 SL=128, 8-layer
+Qwen-style block): 736.9ms vs resident 615.2ms = **0.83x** — on this machine the DML
+is faster than the CPU (~1.6x), so any batch fraction given to the CPU lands on the
+critical path together with bandwidth contention; the optimal assignment is "everything
+on the DML" = the existing resident executor. **The async-concurrency technique works
+(a background drain thread is the only form that triggers true parallelism under
+torch-directml), but the training gain is negative — direction closed.** It would suit
+workloads where CPU and GPU are comparable, or that mix CPU-favored and GPU-favored
+operators — this training stack has neither. Also note: enqueueing from a non-main
+thread is racy (once hit a bare RuntimeError, occasionally succeeds) and must not be
+relied upon.
+
+**Portable rule of thumb**: CPU/GPU concurrency is only a win when the two devices are
+**comparable in throughput** or the workload is **naturally split into each device's
+strength**. If one device is clearly faster than the other (here DML ≈ 1.6× CPU), the
+optimal assignment is **everything on the fast device** (the resident executor) — any
+"half CPU, half iGPU" split will put the slower half, plus shared-memory bandwidth
+contention, on the critical path and end up slower. This applies to any "fast primary +
+slow secondary" heterogeneous accelerator setup: measure the two-device throughput ratio
+first; if it is clearly >1 (e.g. 1.2~1.5×), don't expect to gain by offloading to the
+slow device. Only when the ratio is near 1, or a class of operators is inherently a
+strength of the slow device, is async splitting worthwhile — and then it must be
+block-level / one-sync-per-step, avoiding per-operator syncs that give the gain back to
+queue draining.
+
 **Final form**: `train.py --igpu` is now a **block-level resident executor** (off by
 default): enabled when tokens per step ≤ `GPU_SCHED_MAX_TOKENS` (default 256), the fp32
-base ≤ `GPU_SCHED_MEM_MB` (default 7000MB), and there are no quantized parameters;
-otherwise it prints a reason and falls back to pure CPU. The per-operator interfaces
-(`big_gemm` / `patch_igpu`) remain for experiments only and are not recommended for
-training.
+base ≤ a RAM-adaptive limit (16GB→7000MB, 12GB→5250MB, 8GB→3500MB), the startup GEMM
+calibration passes, and there are no quantized parameters; otherwise it prints a reason
+and falls back to pure CPU. The per-operator interfaces (`big_gemm` / `patch_igpu`)
+remain for experiments only and are not recommended for training.
+
+**Machine-adaptive (R8, targeting Intel UHD 630 and other machines)**: iGPU compute
+varies hugely across machines, so the executor no longer hard-codes per-model limits:
+(1) the base-memory cap scales with total system RAM (`min(7000, RAM×7/16)`; the iGPU
+shares system memory and the DML runtime adds ~0.5-1GB overhead, so small-RAM machines
+tighten automatically); (2) at `prepare()` time `calibrate_gpu()` measures this
+machine's "2048² pipelined GEMM iGPU/CPU throughput ratio" (best of two rounds with a
+long warmup to let the iGPU reach clock — a single round measured ±0.1 jitter; the
+same machine once read 1.20x and 1.06x). Below `GPU_SCHED_CALIB_MIN` (default 1.10;
+`--igpu_min_gain` to change, 0 to skip) it falls back automatically and prints the
+measured ratio. This machine (Vega 6) steadies at 1.2-1.5x → enabled; UHD 630 is
+expected below the gate → automatic fallback — "enabling --igpu on a weak-iGPU machine
+is harmless; it simply does not engage". On a new machine run `python gpu_scheduler.py`;
+the last line prints the calibration value and verdict.
 
 **Device applicability**: all measured data come from AMD Radeon(TM) Graphics
-(R5-4500U); Intel UHD 630 (i5-10400 etc.) runs the same DirectML interface, but its
-iGPU is weaker relative to its CPU, so gains are expected to be lower than the AMD
-machine and must be verified on the target machine. When a software adapter (Basic
-Render Driver) is detected the executor refuses to enable and advises installing the
-vendor graphics driver; `iGPU_name()` reports the device name.
+(R5-4500U); Intel UHD 630 (i5-10400 etc.) runs the same DirectML interface, and its
+gain is decided automatically by the startup calibration — no manual pre-judgement
+needed. When a software adapter (Basic Render Driver) is detected the executor refuses
+to enable and advises installing the vendor graphics driver; `iGPU_name()` reports the
+device name.
 
 ---
 
-### 3.8 ★★ Two revisions to §3.7 (2026-10-17)
+### 3.8 iGPU (OpenCL/CLBlast): 2.6-2.7x the CPU on real shapes, while concurrency loses to sequential
 
-**§3.7's conclusion was "per-operator negative → block-level resident is viable". Two more
-rounds of measurement followed, and both changed that conclusion.**
+**The column-major root cause**: every CLBlast failure on non-cubic shapes (-1011/-1015/-1016) was
+**row-major call style** violating its column-major API, not a kernel problem. After switching to the
+zero-copy "column-major + transpose mapping" call, every real model shape works.
 
-#### 3.8.1 First revision: the mechanism is not power consumption, it is the shared L3
+**Measured (Vega 6 / R5-4500U, fp32)**: MLP up 535.0, MLP down 512.5, QKV 531.5, o proj 371.5,
+head 486.0, attn QK/AV 116.7/119.5 GFLOPS; the CPU on the same shapes gets 164-256. **Suite average
+505-551 vs CPU 204 => 2.6-2.7x**; cube 2048^3 655.0 GFLOPS.
 
-| CPU load (1 thread) | Working set | iGPU vs idle |
-|---|---|---|
-| Pure ALU spin (no memory access) | 0 | ★ **1.03×** |
-| `torch.mm` 256³ | 0.8 MB | 1.96× |
-| `torch.mm` 2048³ | 48 MB | ★ **6.08×** |
+**GT 1030 equivalence**: fp16 pure compute 1290.1 GFLOPS = **1.14x** the GT 1030's theoretical 1127;
+fp16 GEMM peaks at 1039.4 (0.92x); fp32 GEMM at 655 (0.58x). **"pure compute meets the target" does
+not mean "GEMM meets the target"** -- the two numbers have to be reported separately.
 
-**⇒ ★ A full-power, zero-memory-access load only drops the iGPU by 3%, while the
-larger the working set, the more it drops
-⇒ the mechanism is the shared 8 MB L3 being squeezed out by the CPU's working set, not
-power arbitration.**
+**Device-resident single-layer step**: a 2048-wide layer measures CPU 202.9 ms vs device 135.1 ms =
+**1.50x** (weights agree to 7.6e-05); a 1024 layer 1.35x; a 512 layer has the CPU ahead at 1.24x. The
+device returns only a 4-byte loss.
 
-**⇒ And that distinction has consequences: power arbitration is "on/off" (you can only add
-power to bypass it, and this machine cannot read temperature); cache contention is
-"continuous" (shrink the working set and you buy it back).**
+**When to use the iGPU**: M=1 belongs to the CPU; **M>=64 belongs to the iGPU (about 2x)**.
+**Concurrency is not the answer**: the iGPU retains 40-54% and the CPU 53-61% (shared L3 thrashed), so
+concurrency gives 1.1-1.3x against 1.51x sequential.
 
-#### 3.8.2 Second revision: not division of labor, but a handoff
+**Applicability**: experimental, script-level, not in the wheel; iGPU training pays only on layers with
+parameters >=16 MB and a large K.
 
-| M | iGPU alone | CPU alone |
-|---|---|---|
-| 1 | 5.3 | ★ **11.7** |
-| 64 | ★ **356.8** | 56.7 |
-| 2048 | ★ **425.3** | 199.7 |
+### 3.9 The 4-bit optimizer: 1.031 B/parameter of state, 2.56x at 1M params and 1.74x at >=64M
 
-**⇒ ★ M=1 goes to the CPU, M≥64 goes to the iGPU (about 2×); and "both together" is only
-7% above the iGPU alone — because the shared L3 is zero-sum.**
+| Quantity | Measured |
+|---|---|
+| State memory (1M params) | 1.031 B/param (8-bit 2.062, fp32 8.0) |
+| 30.49M model | 232.6 MB -> 29.5 MB (7.9x) |
+| Kernel step (1M params) | 0.658 ms vs 8-bit 1.682 ms = 2.56x |
+| Kernel step (>=64M params) | **1.74x** (5 runs 1.69-1.81) -- the early "2.63x" was a 1M-parameter number and is retracted |
+| Training trajectory (120 AR steps) | within 0.27% of fp32 |
+| State codes | bit-identical to an independent numpy implementation over 50 steps |
 
-#### 3.8.3 ★★★ Device-resident training is complete, and bit-identical with the CPU
+**Verdict**: the 4-bit optimizer is a tool, not a toy -- memory is deterministically halved, the
+trajectory stays on the same track, and the step is 74% faster at a large enough parameter count. It
+only holds for fp32 parameters, blocksize=256 and a DLL that contains the 4-bit kernel; without the
+kernel the import fails loudly.
 
-```
-✓ OpenCL GEMM as a torch.autograd.Function, forward and backward both on the iGPU
-✓ Gradient equivalence: dX 1.3e-06 · dW 1.0e-06
-✓ Adam kernel: step-by-step cross-check against torch 1.7e-07; transposed copy bit-exact
-✓ End-to-end training bit-identical with CPU (loss and weight deltas exactly the same)
-✓ Per-step host traffic O(NK) → O(BK+BN)
-```
+### 3.10 2-bit/3-bit quantisation: the loss cost is known, and the end-to-end verdict splits in two
 
-**→ The applicable range has been measured:**
+**Loss (32x32 AR model, 512-sample validation)**: fp32 5.5038; 4-bit +0.004; 3-bit +0.019;
+2-bit nf +0.117 (2.1%). **At 2 bits NF beats uniform by 11%; at 3 bits NF differs by 0.0003 (noise).**
 
-| N × K × B | Params | CPU ms | Device ms | Verdict |
-|---|---|---|---|---|
-| 512×512×1024 | 1.0 MB | 7.24 | 13.28 | ★ **CPU wins 1.84×** |
-| 1024×1024×1024 | 4.2 MB | 40.68 | 37.69 | tie |
-| **2048×2048×1024** | 16.8 MB | 152.56 | **117.42** | ★ **device wins 1.30×** |
-| 4096×1024×4096 | 16.8 MB | 570.55 | 594.87 | tie |
+**Two end-to-end verdicts**:
+- ⚠️ **SD1.5 full pipeline with 2-bit weights: does not work** (storage -39.5%, images destroyed)
+- ✓ **Frozen 2-bit base + LoRA: works** (replace only `nn.Linear`; the initial validation loss 5.5538
+  matches the format, LoRA trains and the loss drops)
 
-**⇒ ★ Applicable range = parameters ≥ 16 MB and large K. Batch has almost no effect
-(1.30→1.31 at 1024→4096).**
+**Storage**: 2-bit 2.5 bits/weight, 3-bit 3.5 bits/weight (block=64), against 4.5 for the 4-bit path and
+32 for fp32. Script-level components, not in the wheel.
 
-#### 3.8.4 ★ One usage reminder: we got the measurement wrong four times on this line, twice in opposite directions
+### 3.11 The AVX-512 backend measured: numerics correct, current kernels 0.97-1.02x, peak waits for new kernels
 
-```
-Enqueue time treated as execution time   ⇒ overestimated 40× (46787 GFLOPS, device peak 1150)
-Per-step weight re-upload as the norm    ⇒ underestimated 5.8× (64.5 vs 374 GFLOPS)
-```
+**First real-machine validation** (Ubuntu 22.04 / gcc 11.4 / full-width 512-bit CPU / 2-core container):
 
-**⇒ ★ Criterion: any iGPU number above the device's nominal peak is a measurement error
-first, not a discovery.
-⇒ And on small layers / small batches the iGPU executor should not be enabled — the
-criterion is the shape, not whether an iGPU exists.**
+| Item | Result |
+|---|---|
+| Build | AVX2 baseline 256 KB, AVX-512 variant 284 KB (same sources, flags only) |
+| Dispatch | `has_avx512f_cpu()=True`, `has_avx512bf16_cpu()=True` |
+| Correctness | quantize8 / dequantize8 / gemm_8bit / gemm_8bit_M64 / gemv_4bit / adamw8bit **6/6 bit-identical** |
+| Hardware ceiling (single thread) | fp32 FMA 113.7 -> **229.3 GFLOPS (2.02x)**; BF16 dot product **308.6 GFLOPS (2.71x AVX2-fp32)** |
+| Real kernels | quantize8 0.99x, dequantize8 0.99x, gemm_8bit 0.97x, gemm_M64 1.02x, gemv_4bit 1.01x, adamw8bit 1.02x |
 
----
+**Why the ceiling is 2x while the kernels stay at 1.0x**: all of these kernels move bytes
+(dequantise, optimizer state, M=1 GEMV) and none reaches the FMA ceiling; even the deliberately
+compute-heavy `gemm_8bit_M64` only reaches 1.02x, because the current implementation dequantises B block
+by block and then runs a GEMM, so the time goes to LUT/gather and the fp32 scratch buffer.
+**=> the AVX-512 payoff is not in "recompiling" but in "writing new compute-bound kernels"
+(BF16 dot product / VNNI int8).**
 
-## 3.9 ★ Two components added this round
-
-### 3.9.1 4-bit block optimizer (AdamW4bit)
-
-| Baseline | Memory | Speed |
-|---|---|---|
-| vs fp32 AdamW | **7.8×** less (1.031 vs 8.000 bytes/param) | 0.96× |
-| **vs AdamW8bit** | ★ **2.06×** less | ★ **1.74× faster** (≥64M; 2.63× at 1M) |
-
-**⇒ ★ It wins on both axes, not "trading speed for memory". And the two claims in the
-early docs — "no AVX2 path" and "4× slower" — are both wrong.
-⇒ ★ And its battleground is large models: at 30.5M params it saves only 1.3% of memory,
-at 300M it saves 13%.**
-
-**★ Speed vs scale (2026-10-17 supplementary measurement, five independent runs): 1M 2.87× ·
-4M 1.72× · 16M 1.63× · 64M 1.71× · 256M 1.74× · 384M 1.74× ⇒ in the range where it should
-be used (≥64M) it is about 1.7×, not 2.63×; the latter is the 1M (in-L3) figure.**
-
-### 3.9.2 2-bit / 3-bit quantization
-
-**`quant2bit.py` · `quantnbit.py` (generic N-bit, with a self-check roundtrip) · `quant_lora.py`
-(wired into training) · `linear2bit.py` / `embed2bit.py` (layer replacement).**
-
-**★ One important distinction: lowering *weight* precision has been ruled out (§3.5),
-while lowering *optimizer-state* precision is positive ⇒ the claim "4-bit is good" must
-carry its subject.**
-
----
+**One more trap worth remembering**: forcing the AVX-512 build on the AVX2-only box yields 1861 zmm
+instruction lines and SIGILLs immediately; attributing the zmm lines shows the crash sites are the
+**ordinary** functions (dequantise/rmsnorm/optimizer), not the hand-written kernels -- `-mavx512f` is a
+whole-TU switch, and that is the physical reason the build host itself must support AVX-512.
 
 ## 4. Image-generation training measured (R5-4500U)
 
@@ -326,6 +464,21 @@ carry its subject.**
   due to page retention) — use only when memory is tight.
 - Call distribution (profiler, one step): conv 43.6%, attention projection 20%,
   dropout (LoRA) 14%.
+- **The iGPU (DML) is not used for image-generation training (R8, direction closed)**:
+  every dominant UNet operator loses on DML — mainstream conv3×3 shapes 0.50-0.90x,
+  S=1024 self-attention **0.14x** (head_dim=40, 7x slower), projection GEMMs
+  0.38-0.65x; only the 320ch@64² conv and the 64×1280² GEMM break even. The full-chain
+  DML backward additionally hits a GroupNorm-backward CPU fallback and a plugin
+  RuntimeError with an empty message. Probes kept at `jiaoben/igpu_sd_probe.py` /
+  `igpu_sd_fullchain.py`.
+- **torch-directml version wall**: installing torch-directml downgrades torch to 2.4.1
+  (a hard dependency), which is incompatible with diffusers 0.40 in three ways (string
+  annotations in `infer_schema`, missing `flex_attention`, no `enable_gqa` in `sdpa`)
+  — **on any machine with torch-directml installed, pure-CPU SD training crashes at
+  import too**. Fix: the `torch241_compat.py` runtime shim (idempotent, skipped
+  automatically on torch≥2.5); `train_sd_lora.py` imports it before `diffusers`. Also
+  note: on DML, changing `requires_grad` after `model.to(DML)` silently drops the
+  autograd graph — set requires_grad before the move.
 
 ### 4.1 Advanced methods (ControlNet / iP-Adapter)
 
@@ -359,6 +512,29 @@ cold); mmap zero-copy read-back.
 returns immediately); it offloads on demand (one param/step, bounded) near the
 threshold and does not slow training.
 
+**Crash found on a real LLM**: §5's stress test used "self-supplied dummy cold
+params" (`4×200MB dummy`), not a real model. On **Qwen3-1.7B LoRA training** (fp32 base
+~7GB, memory near threshold triggering offload), `update_step()` iterates `named_parameters()`
+and treats the `requires_grad=False` **`embed_tokens.embedding.weight` (1.24GB) as a cold
+param**; `put_cold` does `tensor.data = torch.empty(0)`, so the embedding forward errors with
+`'weight' must be 2-D`.
+
+**Root cause**: the auto-offload is safe **only when a param is not used in forward** (needs a
+manual `get_cold` read-back later). But `update_step()` auto-offloads frozen layers (LoRA
+frozen base), which **participate in forward every step**; with no read-back they crash. And it's
+not just embeddings from the day one — any frozen layer read in forward (incl. transformer
+Linear, whose shape becomes `[0]`) will crash.
+
+**Fix (`_is_cold_param`)**: skip embed/output/norm layers (`embed_tokens`/`lm_head`/
+`word_embeddings`/`layernorm`/`layer_norm`, etc. — weights read directly in forward and most
+prone to crashing). After the fix, `--flash` runs normally on real Qwen3-1.7B LoRA training.
+
+**Applicability (important)**: auto-offload fits only "this layer is not in forward this round"
+or with a manual `get_cold` read-back. If every frozen layer is in forward (ordinary LoRA frozen
+base), auto-offload may still hit a transformer Linear and crash — in that case **do not enable
+`--flash`** (quantized base saves memory more robustly), or use `offload_prefix` to restrict
+offload to truly non-forward params.
+
 ---
 
 ## 6. Cross-platform build & self-test
@@ -371,18 +547,13 @@ threshold and does not slow training.
 **torch-free C self-test** (`selftest_cpu.c`, shared by Linux/x86_64+aarch64 and Windows,
 links kernel source directly):
 quantize_blockwise 8-bit roundtrip / gemm_8bit forward / 4-bit GEMV (nf4) /
-single AdamW8bit step — **4/4 PASS** (verified with MSVC on Windows; Linux differs
-only by toolchain).
+single AdamW8bit step — **4/4 PASS** (Windows side: `build_manual\selftest_win.bat`,
+MSVC `/TP /we4556`, measured 4/4 PASS with exit code 0; Linux side:
+`bash build_linux.sh --selftest`, differing only by toolchain).
 
 ---
 
 ## 7. Conclusions & Outlook
-
-> **2026-10-17 addendum: for the iGPU conclusion, use §3.8 as the authority.**
-> The mechanism is the shared L3 (not power), the form is hand-off (not division of
-> labour), and device-resident training is now bit-identical with the CPU with an
-> applicability window of **parameters ≥ 16 MB and large K**.
-> **On small layers its conclusion is [negative]** (at 512×512 the CPU is 1.84× faster).
 
 - **Pure-CPU training on AVX2 is usable**: 1.7B LoRA 7 s/step, 8B NF4 38 s/step
   (16 GB), SD 2.1 s/step — none "an hour per step". Key = GDN fusion (35×),
@@ -403,6 +574,151 @@ only by toolchain).
    **negative** here (R5 AMD + i5 AMD R5 M240 are both slower than same-gen CPU), so
    it is **not recommended**; this direction only applies to real low-end cards with
    dedicated VRAM and needs separate hardware to validate.
+
+**Video generation (AnimateDiff) adaptation measured + high-res path + training support (this addendum)**
+
+**Adaptation works (standard diffusers, no format mismatch)**: SD1.5 unet (3.2GB) + motion
+adapter (v1-5-2) + standard SD1.5 vae/text_encoder + **vocab fix** (CLIP vocab = 49408; missing
+vocab before made prompts meaningless / output abstract — after the fix 512x512 is sharp).
+Measured video generation:
+
+| Config | Speed (oneDNN+threads) | Peak memory |
+|---|---|---|
+| 256×8 frame×15 steps | 341–375s | ~9GB |
+| 512×8 frame×3 steps | 369s | **11.56GB** (runs in 16GB) |
+| 1080p×15s | **infeasible** | est. >90GB |
+
+**Key honest conclusions**: `oneDNN + more threads` (visual conv-heavy optimal, R5 6-core) makes
+CPU video ~31% faster (543→341s); `512×8 frame` peak 11.56GB is the **limit config that runs in 16GB**.
+
+**1080p×15s hardware reality**: 512→1080p scales space by `(1920/512)×(1080/512)≈7.9×`; memory
+est. >90GB (far beyond 16GB) and CPU takes minutes/frame/step. **16GB CPU cannot generate 1080p long
+video** — this is a hardware (no dedicated VRAM) limit; 1080p long video is a GPU use case.
+
+**1080p optimization path (if stronger hardware)**: (1) generate low-res then VAE upscale; (2) tiled
+generation (infer tile-by-tile); (3) `attention/Vae slicing` (measured INEFFECTIVE on 16GB — slightly
+increases, recorded as negative); (4) 8bit/4bit quantize + offload (saves memory, dequant overhead);
+(5) activation checkpointing (for training). **Memory-squeeze conclusion**: `attention_slicing` is
+ineffective here (11.84 vs 11.56GB, slightly up + slower); real memory savings come from lower
+resolution/frames (lower quality) or stronger hardware.
+
+**Training support (AnimateDiff motion fine-tune)**: data pipeline works — `facebook/PE-Video` (798MB)
+downloaded + 500 video+json pairs extracted + PyAV 8-frame extraction (`.npy`). But **training** on 16GB
+stalls on (1) video-latent layout (AnimateDiff internal temporal frame alignment, needs diffusers'
+training implementation) and (2) 1.3G unet (fp32) + video latent + backward = 16GB segfault. **Plan**: use
+`DDPMScheduler + video-latent handling` + **gradient checkpointing** (saves activation memory) + smaller
+frames/resolution + CPU offload (adapt disk_balancer for device/memory offload). **Training motion on
+16GB needs lower config or stronger hardware**; data + adaptation are ready, training is the next step
+(incl. memory strategy).
+
+**Low-res generation + super-resolution to 1080p/2K ("DLSS-like") — measured + trilemma conclusion**:
+
+User workflow = generate at low res (256/512) then upscale to 1080p/2K. Measured (512/384 source):
+
+| SR method | 512→2K speed | 4x quality | Video feasible |
+|---|---|---|---|
+| FSR 1.0 (spatial, official algo) | 0.55s/frame | ❌ **smear/grain** (real video 4x) | ✅ |
+| Real-ESRGAN x4plus (AI, 16.7M) | 110s/frame | ✅ **sharp & natural** (learns real detail) | ❌ (582 frames = 18h) |
+| Self-trained FSRCNN (light, 22.5k params) | 0.4s/frame | ⚠️ **no grain but color-shift/soft** (small-model limit) | ✅ |
+
+**Key**: on 16GB CPU, SR is a **trilemma** — fast (video-feasible) requires a small model, but small
+models are either slow (Real-ESRGAN) or color-shift/soft (self-trained FSRCNN); **natural quality +
+lightweight + video-feasible** cannot all be had on pure CPU. A 64px source **still collapses on any
+upscale** (only 4096 pixels, no detail to reconstruct — "garbage in, garbage out"). **Conclusion**: CPU
+video SR reality = FSR (fast but 4x grain) or Real-ESRGAN (good but slow); "light + natural" needs an
+official lightweight SR weight (not self-trained) or a GPU (Real-ESRGAN real-time video). Upstream
+(AMD FSR 2/3 temporal, FSR 4.0 AI) and AI SR (Real-ESRGAN) measured and characterized as a hardware
+boundary.
+
+---
+
+## 7.1 Full validation: image-gen + LLM, 500 real training steps each (R5, pure CPU)
+
+> Goal: thoroughly verify the whole CPU training chain (DLL kernels + 8-bit optimizer +
+> LoRA) in a real training environment, recording speed / memory / loss. Device: R5-4500U
+> (6C6T / 16GB / AVX2), torch 2.13.0+cpu, transformers 5.15.0.
+
+### 7.1.1 Issues found & fixed during the review
+
+| Issue | Root cause | Fix |
+|-------|-----------|-----|
+| `build_manual.bat` errors `'??具' is not recognized` / `... was unexpected` | tool REM comments were Chinese (GBK non-ASCII); cmd's GBK codepage parses comment bytes as commands | rewrote as pure ASCII English |
+| `gpu_scheduler.py` not in repo | iGPU machine-adaptive (calibrate_gpu / RAM-scaled limit / calibration threshold) was doc-only | committed the feature |
+| 8 `.obj` artifacts + `build_release_tmp\` | leftover compile intermediates | removed |
+| LLM real-text training blocked | `deepseek-coder-1.3b-base` **missing tokenizer** (only config/model) | switched to `qwen3.5-0.8B` (MoE) which has a full tokenizer |
+| qwen3-series CPU backward segfault | transformers 5.6.0 Qwen3 backward bug (fails even with pure torch) | upgraded to 5.15.0 |
+
+### 7.1.2 Image-gen LoRA 500 steps (bk-sdm-tiny)
+
+- Model: bk-sdm-tiny (UNet ~324M), LoRA trainable 0.43M (rank=4); 256px, batch=1,
+  grad_accum=4, fp32, opt=bnb.optim.AdamW8bit, 6 threads.
+- **Result**: 500/500 ran; **~1.7 s/step** avg, ~19 min total; peak RSS **~2.15 GB**;
+  loss ranged 0.002~0.80 (normal image-gen LoRA); sampled + saved LoRA every 100 steps.
+- **Conclusion**: image-gen LoRA is fully workable on pure CPU + bnb 8-bit optimizer,
+  at a "can retrain while editing without lag" level.
+
+### 7.1.3 LLM LoRA 500 steps (qwen3.5-0.8B)
+
+- Model: qwen3.5-0.8B (Qwen3_5ForCausalLM, hybrid-attention + MoE), 752.4M params;
+  LoRA (q/k/v/o_proj, rank=16), trainable **1.08M** (753.5M base frozen); real jsonl
+  text, seq=128, batch=1, pure-CPU fp32, opt=bnb.optim.AdamW8bit.
+- **Result**: 500/500 ran; **0.25 step/s (~4s/step)**, **~33 min** total; loss
+  **2.999 → 1.8315** (stable ~1.1-1.9 later); **no crash** (the earlier qwen-series
+  backward segfault is fixed by 5.15.0).
+- **Conclusion**: MoE hybrid-attention LLM LoRA training is fully workable on pure CPU +
+  bnb AdamW8bit; 4s/step is reasonable for a same-gen CPU.
+
+### 7.1.4 Summary
+
+- Correctness: image-gen + LLM both ran 500 real CPU steps **successfully, loss
+  converged, no crash** — the bnb CPU training chain is trustworthy on real data.
+- Speed/memory (R5 6C6T 16GB): image-gen ~1.7s/step, ~2.1GB; LLM 0.8B MoE LoRA ~4s/step.
+- Known limits: **AVX2 forbids bf16 (use fp32)**; `deepseek-coder-1.3b-base` is missing a
+  tokenizer (add it locally or download).
+- Note: 500 steps (not 1000) to keep CPU cost reasonable; double the steps for 1000.
+
+---
+
+## 7.2 Review: issues found & fixed
+
+> A workflow stress-tested all fork-added components in 4 parallel groups (normal / edge /
+> invalid-input / extreme values), finding 20+ issues, all fixed.
+
+### Fixed (by severity)
+
+**Numerical / functional (🔴)**
+| Issue | Root cause | Fix commit |
+|-------|-----------|-----------|
+| `sector_carve` false-success on unwritable outdir (reports "recovered N", exit=0, but 0 files) | `CreateFileW` failure still did `g_carved++` + unconditional return 0 | only count/succeed on full write; else log "cannot create" (`1753c8b`) |
+| `sector_carve` deadlock on a false header | extractFile returning 0 did not advance readPos | advance at least one sector (`1753c8b`) |
+| `quant_lora` nf4u/fp4u + `from_quantized` broken (dtype mismatch crash) | QuantState used `dtype=torch.uint8`, so dequantize_blockwise returned uint8 not float32 | use `dtype=torch.float32` (`a5e10da`) |
+| `gemm_8bit` silent wrong value for non-aligned K | fused kernel requires K % blocksize == 0 but no check | added K-alignment guard in `fused_dequant_linear_8bit` (`a5e10da`) |
+
+**Robustness (🟡, missing validation)**
+| Issue | Fix |
+|-------|-----|
+| disk_balancer `memory_threshold=1.5` silently disabled offload; `None` crashed; `min_free_ratio=1.5` gave negative cache | `__post_init__` validates range/non-None, raises on invalid (`d80777a`) |
+| disk_balancer `parse_flash_args` dropped drive colon (`c`→should be `C:`), manual mode never matched | re-append `:` (`d80777a`) |
+| efst `apply_efst(None)`/`freeze_all(None)` crashed; `top_k=-1` silently wrong | raise on None; require top_k>=1 (`5959855`) |
+| sd_quant `apply_quant_frozen(None)` crashed; `_pick_bs(0)` returned 256 | raise on None; k<=0 returns 0 (`5959855`) |
+| quant_lora `lora_r=0` ZeroDivisionError; `weight=None` crashed; fp16 input crashed | raise on None/lora_r; cast non-fp32 weight (`5959855`) |
+
+**Training scripts (🟢)**
+| Issue | Fix |
+|-------|-----|
+| verify_train_release / train_llm_sft `--steps 0` IndexError | validate steps>=1/batch>=1/non-empty data; guard empty losses (`0e19101`) |
+| verify delta print sign wrong | `losses[-1]-losses[0]` (`0e19101`) |
+
+### Passed (no fix needed)
+- Kernel numerics: quant round-trip / gemm_8bit(aligned) / GDN / 8-bit optimizer all within
+  tolerance (normRel ~3e-7, GDN selftest PASSED).
+- disk_balancer normal path, efst/quant_lora/sd_quant normal calls, disaster tools normal
+  recovery, gpu_scheduler CPU fallback path, doc integrity.
+
+### Not measurable on R5 (needs specific env)
+- GPU / DirectML (WSL 9P / physical disk / GPU) paths — no GPU, R5 WSL broken, physical
+  disk missing; only the CPU-fallback/non-crash path was verified. `gpu_scheduler`'s actual
+  iGPU scheduling needs a GPU machine.
 
 ---
 

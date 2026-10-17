@@ -6,6 +6,36 @@
 
 ---
 
+## 0. First thing after installing: `bitsandbytes-cpu help`
+
+This fork installs a `bitsandbytes-cpu` command (short alias `bnb-cpu`). It is the
+command-line form of this document: **how every added feature is called, what its
+arguments are, and what its errors look like**, each entry with a snippet that can be
+copied as-is. Those snippets are executed before every release.
+
+```bash
+bitsandbytes-cpu detect        # CPU model, cores, SIMD, memory, recommended threads
+bitsandbytes-cpu selftest      # runs a 4-bit layer, an 8-bit optimizer step, the GDN kernel
+bitsandbytes-cpu doctor        # which .dll/.so is loaded, whether it loads, which symbols it has
+bitsandbytes-cpu help          # the whole reference
+bitsandbytes-cpu help 8bitopt  # one section: the 8-bit optimizer
+bitsandbytes-cpu help 4bit     # one section: 4-bit layers on a CPU
+```
+
+Section keys: `intro start 4bit qlora 8bitopt kernels toolkit threads memory gdn disks
+layers optim functional notes`.
+
+`help`, `detect`, `doctor` and `version` **do not need torch**: this package deliberately
+does not depend on it (the name `torch` on PyPI is the CUDA build, about 2.5 GB), so a
+user who has not installed torch yet can still read what to install. Only `selftest`
+needs torch, and says so when it is missing.
+
+The markdown version is generated from the same tables:
+[`API_REFERENCE_EN.md`](API_REFERENCE_EN.md) ([中文](API_REFERENCE.md)). Section 4 below
+is the long-form description of the same features.
+
+---
+
 ## 1. Prerequisites
 
 This project extends the bitsandbytes **CPU backend** for machines **without a discrete
@@ -51,6 +81,64 @@ py -3.11 -m bitsandbytes.gdn_cpu
 ```
 
 A `selftest PASSED` output indicates a successful build.
+
+---
+
+## 2A. Building on other platforms
+
+### 2A.1 Linux
+
+```bash
+cd <clone>/bitsandbytes
+bash build_linux.sh --selftest
+```
+
+The script probes for AVX2 (x86_64) or NEON (aarch64) and for OpenMP, degrading
+automatically when a probe fails instead of letting the link stage error out. The
+artefact is `bitsandbytes/libbitsandbytes_cpu.so`.
+
+**Cross-compilation**: `build_linux.sh` honours the `CC` / `CXX` environment
+variables, so a cross toolchain can be supplied. The script does not infer the
+target architecture, so probes such as `-march=native` reflect the host unless the
+relevant macros (e.g. `-D__AVX2__`) are passed explicitly — see
+`bash build_linux.sh --help`.
+
+### 2A.2 Android / Termux (ARM64)
+
+```bash
+pkg install -y clang libomp make python
+cd ~/bitsandbytes && bash build_termux.sh --selftest
+```
+
+The artefact is `bitsandbytes/libbitsandbytes_cpu.so`. Termux's clang handles
+`-mcpu=native` inconsistently, so the script test-compiles before enabling it.
+OpenMP needs a separate `pkg install libomp`; without it the build degrades to
+single-threaded automatically.
+
+> ## WARNING: training on a phone is not advised
+>
+> Termux support **is implemented and has passed testing on a real device (HUAWEI
+> nova 5i Pro)**, but running training or fine-tuning under Termux is **not
+> recommended**.
+>
+> Doing so may damage your device. Back up your data before continuing. If your
+> device is rooted, **do not delete the thermal control files**, and keep their
+> values within a reasonable range.
+>
+> Specific risks:
+>
+> | Risk | Detail |
+> |---|---|
+> | **Flash storage wear** | `disk_balancer` writes cold parameters to disk when memory is tight. Phone storage (UFS/eMMC) has far lower write endurance than a desktop SSD, and the feature **was not designed for phones** — do not enable it there |
+> | **SoC solder failure** | Sustained training heat cycles the board repeatedly and can crack SoC solder joints, leaving the device unable to boot |
+> | **Irreversible battery degradation** | Prolonged full-load power draw permanently reduces battery life |
+> | **Voided warranty** | The above may void your device warranty (check your manufacturer's website for warranty terms) |
+>
+> **Continuing means you accept all of the above.**
+>
+> Measured results are in the [Technical Guide](TECHNICAL_GUIDE_EN.md) and
+> [Tech Report](TECH_REPORT_EN.md); Termux-specific notes are in `TERMUX_GUIDE.md`
+> at the repository root.
 
 ---
 
@@ -203,36 +291,23 @@ Measured (3-layer Qwen3Next hybrid, top-2): trainable 725,712 → 143,600 (19.8%
 
 ### 4.8 iGPU (DirectML) block-level resident executor (experimental, off by default)
 
-> **⚠️ 2026-10-17 addendum: this component's positioning has changed — read `TECHNICAL_GUIDE_EN.md`
-> §3.11 before choosing it.**
->
-> Measurements of this iGPU (Vega 6 / gfx902) made afterwards gave three new conclusions:
->
-> * **The mechanism behind "the iGPU loses 5× whenever the CPU is busy" is a [shared 8 MB L3 being
->   squeezed out], not power arbitration** (a pure-ALU load at full clocks costs only 3%, while a
->   48 MB working set costs 6×)
-> * **The right usage is a [hand-off], not a [division of labour]**: M=1 goes to the CPU, M≥64 to the
->   iGPU, and running both together adds only 7%
-> * ★ **Device-resident training is implemented and [bit-identical] to the CPU**, and its applicable
->   window is **parameters ≥ 16 MB with large K** ⇒ 1.30× inside that window; on small layers such as
->   512×512 the CPU still wins 1.84×
->
-> **⇒ So on small layers / small batches do not enable this executor. The criterion is shape, not
-> "does the machine have an iGPU".**
-
 > Applies only to Windows with `pip install torch_directml`; when no DirectML iGPU is
 > detected or a fallback condition applies, `--igpu` prints the reason and falls back
 > to pure CPU automatically — training is unaffected.
 
 ```bat
-:: Enable the block-level iGPU resident executor (experimental, off by default)
-py -3.11 train.py --igpu
+:: Enable the block-level iGPU resident executor (experimental, off by default).
+:: NOTE: the main training env (torch >=2.6) must NOT install torch-directml (mutually
+:: pinned torch versions; co-installing breaks both). Run --igpu from the dedicated
+:: DML venv (.venv_dml, torch 2.4.1 + torch_directml); in the main env, --igpu just
+:: prints a venv hint and falls back to pure CPU automatically.
+D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe train.py --igpu
 
 :: Customize the per-step token cap and the fp32 base-weight memory cap (MB)
-py -3.11 train.py --igpu --igpu_max_tokens 128 --igpu_mem_mb 4096
+D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe train.py --igpu --igpu_max_tokens 128 --igpu_mem_mb 4096
 
-:: Lower the enable threshold (enable only when the calibration ratio >= this value); 0 = skip startup calibration
-py -3.11 train.py --igpu --igpu_min_gain 1.05
+:: Lower the enable gate (startup calibration must reach this iGPU/CPU ratio); 0 = skip calibration
+D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe train.py --igpu --igpu_min_gain 1.05
 ```
 
 **What it does**: at training start, **all weights are moved to the iGPU once** (frozen
@@ -252,8 +327,8 @@ updated weights.
 | Condition | Default | Override |
 |---|---|---|
 | tokens per step (batch×seq) | ≤ 256 | `--igpu_max_tokens` / env `GPU_SCHED_MAX_TOKENS` |
-| fp32 base-weight memory | adapts to total RAM: 16GB→7000MB, 12GB→5250MB, 8GB→3500MB | `--igpu_mem_mb` / env `GPU_SCHED_MEM_MB` |
-| startup GEMM calibration of the iGPU/CPU throughput ratio | ≥ 1.10 | `--igpu_min_gain` / env `GPU_SCHED_CALIB_MIN` (`=0` skips calibration) |
+| fp32 base-weight memory | RAM-adaptive: 16GB→7000MB, 12GB→5250MB, 8GB→3500MB | `--igpu_mem_mb` / env `GPU_SCHED_MEM_MB` |
+| startup GEMM calibration, iGPU/CPU ratio | ≥ 1.10 | `--igpu_min_gain` / env `GPU_SCHED_CALIB_MIN` (`=0` skips calibration) |
 | any non-fp32 parameter (quantized base) | unsupported | — |
 | combined with `--flash` (disk_balancer) | incompatible | — (this run ignores `--igpu`) |
 
@@ -267,13 +342,30 @@ is not supported). **Conclusion: enable only for short-sequence (seq≤256) trai
 long sequences, small models (H<1024) and quantized bases should stay pure CPU.**
 
 **Compatibility & machine self-check**: the executor uses the generic DirectML (D3D12)
-interface and was measured on AMD Radeon(TM) Graphics (R5-4500U); Intel UHD 630
-(i5-10400 etc.) runs the same interface, but its iGPU is weaker relative to its CPU,
-so gains are expected to be lower than the AMD machine. After switching machines, run
-`py -3.11 gpu_scheduler.py` first (prints the device name and availability), then
-compare a short `--igpu` training run against pure CPU before keeping it enabled. A
-"Basic Render Driver / software adapter" message means the vendor graphics driver is
-not installed or not active — the executor refuses to enable itself.
+interface and was measured on AMD Radeon(TM) Graphics (R5-4500U). Intel UHD 630
+(i5-10400 etc.) runs the same interface — since R8 the executor is **machine-adaptive,
+no manual pre-judgement needed**: the memory cap scales with system RAM, and at startup
+`calibrate_gpu()` measures the local iGPU/CPU GEMM ratio (two rounds, best kept, long
+warmup for iGPU clocks — a single round jitters ±0.1); below the gate (default 1.10,
+`--igpu_min_gain 0` to skip) it falls back automatically and prints the measured value,
+so "turning --igpu on a weak-iGPU machine is harmless; it simply does not engage".
+After switching machines run `py -3.11 gpu_scheduler.py`: the last line prints the
+calibration value and verdict. A "Basic Render Driver / software adapter" message means
+the vendor graphics driver is not installed or not active — the executor refuses to
+enable itself.
+
+**The async/concurrency squeeze is a proven dead end (R9)**: true CPU/iGPU concurrency
+is technically achievable (a background drain thread; 1.32x on a mixed workload), but
+applied to training it measured 0.83x vs resident — on this machine the iGPU is faster
+than the CPU, so any batch fraction given to the CPU lands on the critical path. Do not
+attempt "half CPU, half iGPU" data-parallel or operator-split schemes.
+
+**Not for image-generation (SD) training**: measured on the same machine, every
+dominant SD UNet operator loses on DML (mainstream conv3×3 0.50-0.90x, S=1024
+self-attention 0.14x, projection GEMMs 0.38-0.65x), torch-directml pins torch 2.4.1
+which is import-incompatible with diffusers 0.40 (fix: `torch241_compat.py`, imported
+before `diffusers` in `train_sd_lora.py`), and the real-UNet DML backward crashes
+inside the plugin. SD training stays pure CPU (fp32).
 
 **Python API** (drive it in your own script; `train.py` already embeds this flow):
 
@@ -290,78 +382,264 @@ The low-level `big_gemm / big_linear / big_conv2d / patch_igpu` remain available
 single-operator experiments, but **per-operator scheduling is a net negative for
 training and is not recommended**.
 
----
+### 4.9 Fused elementwise kernels (RMSNorm / SwiGLU / residual+LayerScale)
 
-### 4.9 ★ 4-bit blockwise optimizer (AdamW4bit, new in this fork)
+**What it solves**: measured, **elementwise is 20.8%** of a training step (GEMM is already at 92%
+of its baseline, no room left). In eager mode `RMSNorm` is 6 aten operators
+(`pow -> mean -> add -> rsqrt -> mul -> mul`), so the activation is fully read and written
+6 times => pure bandwidth waste. This family collapses those 6 passes into 1.
 
-**Reduce the memory of optimizer states, not weight precision — the latter has been
-empirically disproven (see `TECH_REPORT_EN.md` §3.5).**
+**Available functions** (`fused_cpu.py`):
 
-#### Why use it
-
-| Baseline | Memory | Speed |
+| Function | Semantics | Eager equivalent |
 |---|---|---|
-| vs fp32 AdamW | **7.8×** less (1.031 vs 8.000 bytes/parameter) | 0.96× |
-| **vs AdamW8bit** | ★ **2.06×** less (1.031 vs 2.125) | ★ **1.74× faster** (≥64M; 2.63× is the 1M in-cache number, see below) |
+| `fused_rmsnorm(x, weight=None, res=None, eps=1e-6)` | `(x + res) * rsqrt(mean((x+res)^2) + eps) * weight` | 6 aten ops |
+| `fused_swiglu(gate, up)` | `silu(gate) * up` | `F.silu(gate) * up` |
+| `fused_add_scale(x, y, scale=None)` | `x + scale * y` (`scale=None` degenerates to `x + y`) | `x + scale * y` |
+| `fused_add_scale_rmsnorm(x, y, scale, weight, eps=1e-6)` | `RMSNorm(x + scale*y)` in one pass | residual + norm, two passes |
 
-**★ Both baselines must be stated: 7.8× is against fp32, and you are already on 8-bit, so
-the real gain is 2.06×. Both numbers are correct; they answer different questions.**
+All four are `torch.autograd.Function` with **both forward and backward** — they drop
+straight into a training graph, no hand-written backward needed.
 
-**★ And it wins on both sides — it is not "trading speed for memory".**
+**Option A: one-liner wiring (recommended, no model-code changes)**
+```python
+import enable_fused
+enable_fused.enable()             # RMSNorm only (smallest, safest change)
+enable_fused.enable(block=True)   # also residual + LayerScale
+# enable_fused.enable(rmsnorm=True, swiglu=True, block=True)   # everything
+```
+Measured (6 alternating rounds, paired-ratio median): RMSNorm **+5.0 ~ 8.0%**;
+adding residual gives **+5.5 ~ 7.1%** (the two are close, so RMSNorm-only is the default).
+NOTE: must be called **before** model instances are created (it patches class methods;
+it also affects already-built instances, but a clear ordering is easier to debug).
 
-**★ And "how much faster" depends on the parameter count (follow-up measurement
-2026-10-17, five independent runs):**
+**Option B: explicit calls**
+```python
+import fused_cpu
+assert fused_cpu.available()          # the DLL must export cfused_*, otherwise rebuild
 
-| Parameter count | 4-bit vs 8-bit step-time ratio |
+# residual + LayerScale + RMSNorm in one pass (was two)
+h  = fused_cpu.fused_add_scale_rmsnorm(x, attn_out, self.ls1, self.ln1_w, eps=1e-6)
+# SwiGLU
+h2 = self.w2(fused_cpu.fused_swiglu(self.w1(h), self.w3(h)))
+# residual (scale=None degenerates to x + y)
+x  = fused_cpu.fused_add_scale(h, h2, self.ls2)
+```
+
+**Verify and reproduce**:
+```bat
+py -3.11 test_fused_kernels.py     :: all four kernels vs eager (fwd+bwd) + timing
+py -3.11 bench_fused_final.py      :: end to end (RMSNorm and residual both fused)
+py -3.11 bench_fused_e2e3.py       :: three wiring variants compared
+py -3.11 bench_l3_vs_swiglu.py     :: fused vs unfused, isolated
+py -3.11 bench_r5_threads.py       :: thread count (5 is optimal here; 6 is 5.9% SLOWER)
+```
+Numerics: `max|delta| ~1e-7 to 1e-6` vs eager (fp32 accumulation order only);
+`state_dict` keys unchanged, so checkpoints interload safely.
+
+**Boundaries and constraints**:
+
+| Boundary | Detail |
 |---|---|
-| 1M (kernel benchmark, in L3) | 2.6~3.1× |
-| **≥64M (DRAM, i.e. the range where it should be used)** | ★ **1.74×** (1.69~1.81) |
+| Saves **bandwidth only**, not FLOPs | ~0 gain on convolution-dominated workloads whose arithmetic intensity is far above the crossover (e.g. UNet) |
+| Requires a **rebuild** | `fused_cpu.available()` is False when the DLL lacks `cfused_*`; `enable_fused` then raises `RuntimeError('DLL has no fused kernels -- rebuild bnb with cfused_* exports')` — see section 2 of this file |
+| `enable_fused` must run before model construction | it patches class methods |
+| NT store has **threshold and alignment** requirements | outputs <= 1.0 MB regress; the threshold derives from the runtime L3 size and must not be hard-coded (see `TECHNICAL_GUIDE_EN.md` section 3.5.2) |
+| `gemv_fp16w_*` is not wired to Python | implemented and exported on the C side, but there is **no Python call site**; callable only from C/C++ or ctypes (see `TECHNICAL_GUIDE_EN.md` section 3.5.2) |
+| Numerics differ at fp32 rounding level | `max|delta| ~1e-7`; checkpoints interload |
 
-**⇒ The "2.63×" previously written in this document is a 1M number; at the 300M scale the
-honest figure is about 1.7×. The 2.06× memory saving is unchanged and it is still faster,
-but the magnitude has to be stated per scale.**
+Full implementation details (C-side signatures, argument contract, strided variant, NT store
+threshold mechanics): [`TECHNICAL_GUIDE_EN.md`](TECHNICAL_GUIDE_EN.md) section 3.5.2.
+Step-share figures and the controlled comparison: [`TECH_REPORT_EN.md`](TECH_REPORT_EN.md) section 3.5.1.
 
-#### Usage
+### 4.10 `fused_dequant_linear_8bit`: arbitrary leading dims + K validation
+
+The 8-bit fused dequant linear forward (`functional.fused_dequant_linear_8bit`) **changed behaviour**:
 
 ```python
-from bitsandbytes.optim.adamw4bit import AdamW4bit
-opt = AdamW4bit(model.parameters(), lr=1e-4)
+import bitsandbytes.functional as F
+# A now accepts arbitrary leading dims: A.shape == (..., K) -> output A.shape[:-1] + (N,)
+out = F.fused_dequant_linear_8bit(A5d, wq, absmax, blocksize=64)
 ```
 
-**⇒ Same signature as `torch.optim.AdamW`.**
-
-#### ★ What scale to use it at — this matters more than all the numbers above
-
-```
-30.5M params  ⇒ optimizer state saves 203 MB = 1.3% of memory  ⇒ ★ [gain is tiny]
-100M params   ⇒ saves ~400 MB                ≈ 2.5% of memory  ⇒ still small
-300M params   ⇒ saves ~2 GB                  = 13% of memory   ⇒ ★ [this is its battlefield]
-```
-
-**⇒ At a scale like 30.5M, the gain from "switch to a larger batch" is tiny to begin with.
-It is made for large models, not a default that should be swapped in everywhere.**
-
-#### Measured (30.5M model · real data · 300 steps)
-
-```
-loss curve   difference vs AdamW8bit: −0.10% (final step) · +0.53% (worst cell)
-step time    0.955× (4-bit is slightly faster)
-state memory 66.3 MB → 33.4 MB ⇒ 2.0×
-```
-
-**⇒ Correctness: the kernel is code-for-code identical to the numpy reference
-(`test_optimizer_4bit_cpu.py`).**
-
-#### Notes
-
-* **An AVX2 path exists** (`optimizer_4bit_blockwise_avx2`, `cpu_ops.cpp:3056`); the
-  dispatcher selects it for the two-state family (adam/ademamix). One-state families
-  (sgd/lion) take the scalar path, which is deliberate.
-* **Do not get/set state element by element**: that creates store-to-load stalls and
-  measured 4.6× slower. The kernel "reads once, splits two codes, writes once" per byte —
-  that is a performance requirement, not a style choice.
+- **Video latent usage**: permute channels to last (`[B,T,H,W,K]`), or flatten `(B,T,H,W)` to 2D.
+  Do **not** pass `[B,C,T,H,W]` directly (the last dim is not K).
+- **New explicit validation**: raises `ValueError` when `K % blocksize != 0`. The fused kernel uses
+  a per-row block layout and **silently returns wrong values** when K is not divisible; upstream has
+  no such check.
+- Precondition for the speedup: weights stay uint8 end to end, no fp32 weight temporary
+  (DRAM traffic = 1/4 of fp32).
 
 ---
+
+### 4.11 Integrated-GPU acceleration (OpenCL / CLBlast, experimental)
+
+The iGPU path in 4.8 is the Windows-only DirectML executor. There is a second, **cross-platform**
+path: OpenCL + CLBlast, built to answer "how fast is this iGPU really, and is the result correct".
+
+**The call convention (the trap)**: CLBlast's C API is **column-major**. Passing non-cubic matrices
+with a row-major mindset returns `-1011/-1015/-1016` (argument validation failures, not a crashing
+kernel). The fix is a column-major call with a transpose mapping, zero copies:
+
+```
+C_row(m×n) = A_row(m×k) @ B_row(k×n)
+  <=> Sgemm(COL, NO, NO, m=n, n=m, k=k,
+            A=B_row buffer, lda=n,
+            B=A_row buffer, ldb=k,
+            C=C_row buffer, ldc=n)
+```
+
+**Measured (Vega 6 / R5-4500U, fp32, CLBlast)**:
+
+| Shape | iGPU GFLOPS | CPU, same shape |
+|---|---|---|
+| MLP up (k=2048->n=2048) | 535.0 | 217 |
+| MLP down (k=2048->n=512) | 512.5 | 256 |
+| QKV (k=512->n=2048) | 531.5 | 235 |
+| o proj (k=512->n=512) | 371.5 | 164 |
+| head (k=512->n=1024) | 486.0 | 219 |
+| attn QK / AV | 116.7 / 119.5 | — |
+
+Suite average **505-551 GFLOPS vs CPU 204 => 2.6-2.7x**. fp16 pure compute (unroll x4, 16-24
+accumulators, worksize 98304) measures **1290 GFLOPS = 1.14x the GT 1030's theoretical 1127**; but
+fp16 GEMM peaks at 1039 (0.92x) and fp32 GEMM at 655 (0.58x).
+
+**Device-resident single-layer training step** (weights resident on the device, loss/backward/Adam all
+on-device, the host sees a 4-byte loss per step):
+
+| Layer width | CPU | iGPU resident | Speedup |
+|---|---|---|---|
+| 2048 | 202.9 ms | 135.1 ms | **1.50x** |
+| 1024 | — | — | 1.35x |
+| 512 | — | — | **CPU wins at 1.24x** |
+
+Weights agree to 7.6e-05 relative error -- correctness before speed.
+
+**When to use the iGPU (it is decided by M, not by "which is faster")**: M=1 goes to the CPU;
+**M>=64 goes to the iGPU (about 2x)**. **Do not run CPU and iGPU concurrently**: when both run, the
+iGPU retains only 40-54% and the CPU 53-61% (the shared 8 MB L3 is thrashed by the CPU working set),
+so concurrency gives 1.1-1.3x against 1.51x for sequential execution.
+
+**Scripts to reproduce** (repo root; needs `pyopencl` and the CLBlast shared library):
+
+```bat
+py -3.11 clblast_colmajor_shapes.py     :: column-major fix + real-shape GFLOPS table
+py -3.11 igpu_clblast_resident.py       :: device-resident single-layer step (check, then time)
+py -3.11 igpu_fp16_tune.py              :: fp16 pure-compute tuning (nacc/worksize/unroll)
+```
+
+⚠️ **Status: experimental, not wired into the training/inference path** and not shipped as a Python
+API in the wheel. Treat it as a measurement/verification tool. It is a different path from the
+DirectML executor in 4.8 (DirectML is Windows-only, OpenCL is cross-platform); do not mix conclusions.
+
+### 4.12 The 4-bit optimizer (AdamW4bit: half the state of 8-bit)
+
+The 8-bit optimizer already stores its two moments at about 2.3 B/parameter; `AdamW4bit` takes the
+state down to **about 1.03 B/parameter** (fp32 AdamW is 8.0). Its API has the same shape:
+
+```python
+from bitsandbytes.optim import AdamW4bit
+
+opt = AdamW4bit(model.parameters(), lr=1e-4, weight_decay=0.01)
+opt.zero_grad()
+loss = loss_fn(model(x), y)
+loss.backward()
+opt.step()               # the rest of the training loop is unchanged
+```
+
+**State layout**: each moment is stored as 4-bit codes (two codes per byte, high nibble = even index)
+with one fp32 absmax per 256 elements; 16 symmetric levels (code 0 = -1, code 15 = +1). **Exact zero
+is not in the code table** -- an all-zero block writes code 8 (+1/15), whose dequantised value is
+still 0 because its absmax is 0.
+
+**Measured payoff (on the 30.49M-parameter AR model)**:
+
+| Quantity | Value |
+|---|---|
+| State memory | 232.6 MB -> **29.5 MB** (half of the 8-bit optimizer, 1/8 of fp32) |
+| Kernel step (1M params) | 0.658 ms vs 1.682 ms for 8-bit = **2.56x** |
+| Kernel step (>=64M params) | **1.74x** (5 runs: 1.69-1.81) -- the larger the tensor, the smaller the gain; do not extrapolate the 1M number |
+| Training trajectory (120 AR steps) | the two loss curves stay within **0.27%** (same track, not identical) |
+| State codes | **bit-identical** to an independent numpy implementation over 50 steps |
+
+**Limits** (each one encountered the hard way):
+
+- fp32 parameters only; `blocksize` is compiled in at 256 and any other value raises
+- it is a **separate class**, not a replacement for `torch.optim.AdamW`; quantised state does not
+  promise reproducible runs (same seed and data still take a different path from fp32)
+- if the DLL does not export `coptimizer_update_4bit_blockwise_cpu`, **import fails loudly** instead
+  of falling back to 8-bit
+- release status: available from the `0.50.2.dev3` build onward
+
+### 4.13 2-bit and 3-bit quantisation (quant2bit / quantnbit)
+
+**2-bit (`quant2bit.py`)**: block-wise (block=64) nearest-level quantisation, **four indices packed per
+byte**. Storage is **2.5 bits/weight** (2 + 32/64), against 4.5 bits for the 4-bit path and 32 for fp32.
+
+**3-bit (`quantnbit.py`)**: a general packed N-bit quantiser (LSB first; 3-bit crosses byte
+boundaries) with a built-in pack/unpack self-test. 3-bit uses **uniform** levels rather than NF: the
+difference is 0.0003 (inside noise), and uniform keeps decoding a multiply-add.
+
+**Loss cost** (trained 32x32 AR checkpoint, 512-sample validation slice):
+
+| Storage format | Validation loss | vs fp32 |
+|---|---|---|
+| fp32 | 5.5038 | — |
+| 4-bit (uniform / nf) | 5.5080 / 5.5084 | +0.004 |
+| 3-bit (uniform / nf) | 5.5234 / 5.5231 | +0.019 |
+| **2-bit nf** | **5.6206** | **+0.117 (~2.1%)** |
+| 2-bit uniform | 5.6354 | +0.132 |
+
+=> **at 2 bits NF beats uniform by 11%; at 3 bits and wider NF buys nothing.**
+
+**Two end-to-end verdicts**:
+
+- ⚠️ **SD1.5 full pipeline with 2-bit weights: does not work** -- 39.5% storage saved, but the
+  generated images are destroyed
+- ✓ **Frozen 2-bit base + LoRA training: works** -- replace only `nn.Linear`; the initial validation
+  loss is 5.5538 (matching the format's own number), LoRA parameters train and the loss drops, and the
+  base never needs to be differentiable
+
+```python
+from quant2bit import quantize, dequantize, bytes_per_weight      # 2-bit: 2.5 bits/weight
+from quantnbit import quantize as quantize_n, dequantize as dequantize_n   # any N-bit
+
+packed, absmax, meta = quantize(w, block=64)        # 2-bit, 4 codes per byte
+w2 = dequantize(packed, absmax, *meta)
+print(bytes_per_weight(64))                         # 2.5
+
+packed3, absmax3, meta3 = quantize_n(w, bits=3, block=64)   # 3-bit
+w3 = dequantize_n(packed3, absmax3, meta3)
+```
+
+⚠️ **Status: script-level components (repo root), not in the wheel**; they are the reference
+implementation of the format and its measurements, not part of the training path.
+
+### 4.14 AVX-512 builds (experimental)
+
+Beyond AVX2 the CPU backend has a second set of hand-written AVX-512 kernels (the 16-lane 4-bit
+dequantise path and the bf16 GEMV tinygemm path), off by default. Build them with the opt-in switch
+(the build host must be able to *run* an AVX-512 probe):
+
+```bat
+:: CMake build (Linux/GCC); BNB_ENABLE_AVX512 defaults to OFF
+cmake -DBNB_ENABLE_AVX512=ON ..
+```
+
+**Verified facts (measured on a remote AVX-512 machine)**:
+
+| Item | Result |
+|---|---|
+| Correctness | five kernels **bit-identical** to the AVX2 build (max diff 0.00e+00) |
+| Dispatch | the library reports `has_avx512f_cpu()=True`, so the guarded kernels' guard holds |
+| Hardware ceiling | on a full-width 512-bit CPU: fp32 FMA **2.02x** AVX2, BF16 dot product **2.71x** (same compiler, single thread) |
+| Real kernels | **0.97-1.02x** on today's memory-bound kernels (see `TECH_REPORT_EN.md` 3.11) |
+
+⚠️ **Warning**: `-mavx512f` is a **translation-unit-wide** switch, so ordinary kernels
+(dequantise, optimizer, rmsnorm) get auto-vectorised to zmm and **SIGILL on an AVX2-only CPU** the
+moment they are called. An AVX-512 binary therefore cannot be shipped to AVX2 machines; it has to be
+loaded through a CPUID check (the dual-library selector is not wired into the installer yet -- it is
+on the todo list).
 
 ## 5. Disk load balancer (disk_balancer, SSD protection)
 
@@ -552,3 +830,127 @@ training flow is unaffected.
 
 - Technical guide: `docs_cpu/TECHNICAL_GUIDE_EN.md` (per-kernel changes)
 - Tech report: `docs_cpu/TECH_REPORT_EN.md` (full measured results and conclusions)
+
+---
+
+## 9. Disaster Recovery (Data Recovery)
+
+> **Scope**: host-Windows-filesystem (NTFS / Master File Table, MFT) corruption and data loss
+> that may result from using `disk_balancer` (`--flash`) in an **unsupported environment**
+> (especially WSL).
+>
+> **Prerequisite**: read §5 "Disclaimer & Usage Restrictions" and confirm you are in a
+> **supported environment**. This is a general recovery path and **does not guarantee any
+> specific outcome**; if the data is important, **consult a professional data-recovery
+> service first**.
+
+> ### ⚠️ Required: prepare an independent storage medium (USB stick / external drive)
+>
+> **Before any mirror/recovery**, prepare an independent medium — a device on a **DIFFERENT
+> physical disk** from the damaged one — with free space ≥ the damaged drive's total
+> capacity. The mirror target **must be on another physical disk**, never the damaged drive
+> or another partition on the same disk. **Usable** targets: USB stick, external HDD/SSD, or
+> another truly-different internal drive (a different `PhysicalDriveN`). **Never**: another
+> partition on the damaged drive / any partition on the same physical disk. Confirm via Disk
+> Management or `diskpart` → `list disk` that it is really a different disk.
+
+### 9.1 Diagnosis: read-only checks only (do not modify data)
+
+The **only correct first step** is a **read-only diagnosis** that does **not modify** the disk:
+
+```
+chkdsk <drive>:          (no /f — read-only report)
+```
+
+- If `chkdsk` reports MFT / filesystem errors → proceed to recovery;
+- **Never** run `chkdsk /f` immediately (may mark recoverable data as lost);
+- **Never** format / overwrite / write to the damaged drive until a recovery plan is set.
+
+### 9.2 Tier 1: this repo's `sector_mirror` (bypass the filesystem)
+
+> **Use**: when this repo is still available (incl. a compiled `sector_mirror.exe` /
+> `sector_mirror_gui.exe`). It reads raw sectors (`\\.\PhysicalDriveN`) and mirrors the whole
+> damaged drive to a healthy drive. **No Python dependency**. Two builds, same kernel:
+> - **`sector_mirror_gui.exe` (GUI, recommended)** — double-click, no command line; most
+>   reliable when `cmd`/`powershell` won't open.
+> - **`sector_mirror.exe` (CLI)** — specify source & target in an admin prompt.
+
+#### 9.2.1 Build (on a healthy machine)
+
+```bat
+:: CLI (VS x64 Native Tools prompt)
+cl /O2 tools\sector_mirror.c /Fe:sector_mirror.exe /link advapi32.lib
+:: GUI (deps declared via #pragma; no manual /link)
+cl /O2 /utf-8 /DNOMINMAX /DNDEBUG tools\sector_mirror_gui.c /Fe:sector_mirror_gui.exe
+```
+
+#### 9.2.2 Use (GUI, recommended — no command line)
+
+Double-click `sector_mirror_gui.exe`: pick source drive, Browse target image, Start Mirror,
+progress bar + log, cancel anytime. Auto-UAC; validates the target isn't the source/`C:`.
+
+#### 9.2.3 Use (CLI, admin prompt)
+
+```bat
+sector_mirror.exe                       :: list drives (letter/capacity/physical disk)
+sector_mirror.exe D: E:\d_drive.img     :: mirror D: to a healthy drive
+sector_mirror.exe 1 E:\d_drive.img      :: legacy: physical disk number 1
+```
+
+- Source by **drive letter** (auto-resolves to `PhysicalDriveN`);
+- **Target ≠ source / `C:`** (anti-secondary-damage); **sparse mirror** (all-zero as holes);
+- **admin required**; **Ctrl+C** keeps the written portion.
+
+#### 9.2.4 Recover (on a healthy machine after the mirror)
+
+- **TestDisk** (portable) from `d_drive.img`; or **7-Zip** extract `.img`; or
+  **Windows File Recovery** deep scan (`winfr` supports image recovery).
+
+#### 9.2.5 Signature carve `sector_carve` (built-in; beats winfr's signature mode)
+
+> When the **MFT is wrecked but data sectors remain**, use file signatures to carve
+> still-intact files straight from the image/raw sectors — what winfr's signature mode does,
+> but this tool works on an already-mirrored `.img` / raw sectors, no winfr needed. When the
+> MFT is broken, winfr's segment mode fails while signature carve still works.
+
+```bat
+sector_carve.exe D:\usb_mom.img D:\carved_mom
+sector_carve.exe E: D:\carved_mom
+```
+
+- **Formats**: PNG/JPEG/GIF/ZIP(auto-detects docx/xlsx/pptx)/PDF/MP4 — streamed cross-block.
+- **GUI `sector_carve_gui.exe` (recommended)** — double-click, no command line.
+- **Zero writes to the source**; **never write the outdir back to the damaged drive**.
+
+> **Measured**: on an MFT-damaged 7.5GB USB stick, mirror + carve recovered **3200+ files**
+> (photos/zip/PDF/MP4/Word/Excel/PPT); PNG 99.6% open, docx 10/10 valid, MP4 complete;
+> the GUI physical-drive scan recovers **~95%** usable.
+
+### 9.3 Tier 2: Windows File Recovery (when repo/tool unavailable)
+
+> **Use**: when **MFT corruption is too severe that even this repo / Python / the exe can't
+> run**. Fall back to **Windows File Recovery** (Store).
+
+```bat
+winfr D: E:\recovered /extensive /n *
+```
+
+- **Output to another drive (E)**; **never write back to the damaged drive (D)**;
+- `/extensive` = deep scan, higher recovery chance when the MFT is damaged.
+
+### 9.4 Prevent secondary damage (must follow)
+
+1. **No writes to the damaged drive until recovery is done**;
+2. **Mirror first (Tier 1) then operate** on the healthy copy;
+3. Run recovery tools (TestDisk / PhotoRec / winfr) **from another drive**, output to another;
+4. If unsure / important data, **read-only `chkdsk` first and consult a professional**.
+
+### 9.5 Conclusion
+
+- If recovery **succeeds**: data can be recovered — follow this guide.
+- If it **fails** (deep MFT damage / sectors overwritten): data **may be unrecoverable** —
+  rely on **backup / mirror**; **never keep retrying overwrite-like operations** on the
+  damaged drive (only worsens it).
+
+> **Final note**: any data recovery carries uncertainty. If the data is valuable, **prefer a
+> professional recovery service** over repeated DIY attempts.

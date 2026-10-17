@@ -1,8 +1,6 @@
-# 技术报告：纯 CPU 环境的 bitsandbytes 微小调整与训练加速
+# 技术报告：纯 CPU 环境的 bitsandbytes 爆改与训练加速
 
-**作者**：deepsleep team
-**日期**：2026-09
-**范畴**：面向无 NVIDIA GPU（仅 CPU，AVX2 ，12–16GB 内存）设备的
+**范畴**：面向无 NVIDIA GPU（仅 CPU，AVX2 / ARM64 NEON，12–16GB 内存）机器的
 大模型微调与生图训练加速工程化。
 
 ---
@@ -25,7 +23,7 @@ Intel i5-10400 6C12T 12GB）**环境下，对 bitsandbytes 的 CPU 后端进行�
 
 ## 1. 问题背景
 
-目标设备均无 NVIDIA GPU（仅核显/集显，且核显用系统共享内存，无法作为
+两台目标机器均无 NVIDIA GPU（仅核显/集显，且核显用系统共享内存，无法作为
 权重 offload 目标），指令集上限为 AVX2。此时：
 
 - 1.7B 模型 fp32 权重 6.8GB，叠加梯度+优化器状态后 12/16GB 机器容易 swap；
@@ -90,7 +88,46 @@ diffusers 0.40。全部 fp32（AVX2 上 bf16 禁用）。
 
 测试形状：M∈[1,8], K,N∈[320,1280], blocksize∈[64,256]——全部相对误差 ≤ 4.7e-7。
 
-### 3.4 线程与精度（实证）
+**速度实测（R5-4500U，重要反面结论）**：gemm_8bit 的 CPU 内核（`cgemm_8bit_inference_cpu_fp32`）是**单线程/未充分优化**的 naive 实现，实测**明显落后于 oneDNN 多线程 fp32 BLAS**：
+
+| GEMM（M=256） | fp32 oneDNN | gemm_8bit | 8bit存储+dequant+fp32 BLAS |
+|---|---|---|---|
+| 2048×2048 | 11.6ms | 29.4ms | 19.0ms |
+| 2048×10944 | 81ms | 134ms | 90ms |
+| 10944×2048 | 54ms | **500ms** | 72ms |
+| 4096×2048 | 19ms | 76ms | 29ms |
+
+→ **8bit 内核 0.2–0.6×、8bit存储+dequant 0.7–0.9×，均慢于 fp32（1.0×，~200 GFLOP/s）**。
+**结论：纯 CPU 上量化 GEMM 不省时间**（DRAM 带宽不是瓶颈，dequant/内核未优化反而是开销）。
+量化在 CPU 上的真正价值是**省内存**（权重 8bit 存储 + 8bit 优化器避免 swap），而非提速——见 §3.5。
+CPU 上最快的 GEMM 仍是 **oneDNN 多线程 fp32**（训练用 fp32 + 物理核数线程）。
+
+### 3.3.1 `gemm_4bit`：M 分档 —— 上表的结论**只对【大 M】成立**
+
+§3.3 的表测的都是大 M（2048×2048 起）。而**训练路径**的 4-bit 线性（`gemm_4bit`，
+`autograd/_functions.py:324/334/462/472` 调的就是它）在**小 M** 上结论相反：
+
+| M | 融合内核 ms | default（oneDNN 稠密）ms | 谁赢 |
+|---|---|---|---|
+| 1 | **1.20** | ~14.5 | 融合 **12×** |
+| 8 | **4.71** | 25.14 | 融合 5.3× |
+| 32 | **16.20** | 28.41 | 融合 1.75× |
+| 64 | **28.79** | 31.37 | 融合 1.09× |
+| 96 | 43.45 | **37.01** | default 反超 |
+| 256 | 166.11 | **64.94** | default **2.56×** |
+
+（K=N=4096、OMP=6）
+
+→ 阈值 `_GEMM_4BIT_FUSED_MAX_M = 64`：**M ≤ 64 走本 fork 的融合内核，M > 64 交回 oneDNN 稠密**。
+→ 该阈值原先写 **16**，于是 M=17~64 被误分给 default、**白慢最多 3.4×**。
+→ 大 M 时融合会输是**结构性**的：其内层是 `m0 += 4`，每 4 行就把整块权重重读一遍 ⇒ 权重流量 O(M/4)。
+
+**⇒ 因此 §3.3 那句「CPU 上最快的 GEMM 仍是 oneDNN 多线程 fp32」要限定适用范围**：
+它只在 **M ≳ 96** 成立；**M ≤ 64 时本 fork 的融合内核更快**（推理逐 token 即 M=1，正是这个区间）。
+两者不矛盾，是**按 M 分档**。实现细节与一处极易读反的极性说明见
+`TECHNICAL_GUIDE.md §3.5.1` 与 `§6 第 9 项`。
+
+### 3.4 线程与精度
 
 | 任务 | 6线程 | 8线程 | 12线程 |
 |---|---|---|---|
@@ -101,6 +138,18 @@ diffusers 0.40。全部 fp32（AVX2 上 bf16 禁用）。
 - 文本 GEMM 密集 → 8 线程最优；生图卷积密集 → **12 线程**；
 - R5-4500U（6C6T 无超线程）→ **6 线程**（物理核拉满）。
 - **bf16 在 AVX2 上不可用**（软件模拟 >90s 卡死）——训练一律 fp32。
+
+**两台目标机的真实差距（qwen3-1.7B LoRA，seq256，batch1，纯 CPU fp32）**：
+
+| 机器 | 线程 | 每步 | 说明 |
+|---|---|---|---|
+| **i5-10400** | 6C12T（超线程） | ~4s | 桌面级，AVX2 强、12 线程 |
+| **R5-4500U** | 6C6T（无超线程） | **12–17s** | 低功耗笔记本 U，6 线程 |
+
+实测（R5）用 fp32 / 8bit 量化基座 / Trainer+use_cache=False / torch_cpu_kit(lm) 调优
+三种配置，单步均 12–17s（无实质提升）。**结论：12s(R5) vs 4s(i5) 是硬件差距
+（线程 12 vs 6 + AVX2 单核强度 + 功耗），不是 bug、也不是量化/优化能弥补的**。
+i5 才是主训练机；R5（开发机）已到其硬件天花板。两台机做同一任务时不可直接对比速度。
 
 ### 3.5 基座权重降精度存储的负面结论（重要）
 
@@ -119,6 +168,52 @@ diffusers 0.40。全部 fp32（AVX2 上 bf16 禁用）。
 不再驻留），8bit 省约 75%、4bit 省约 87.5% 权重内存，实现「压缩内存」目标；代价是训练只
 调整 per-block 标度、不更新基座码字。该能力由上层 `quant_lora.QuantLinearTrainable` 实现，
 复用本仓库的 `quantize_blockwise` / `quantize_4bit` / 码本（`create_dynamic_map` / `get_4bit_type`）。
+
+### 3.5.1 融合 elementwise 内核族：训练步里唯一还有空间的一块（+5~8%）
+
+**定位**（`probe_step_breakdown.py`，R5-4500U 纯 CPU、30M 级模型）：
+```
+训练步 2.819 s 的构成
+    GEMM        63.6%   已到同形状纯 GEMM 基准的 92% ⇒ 没空间
+    elementwise 20.8%   ★ 唯一还有空间的
+    attention    7.6%
+```
+`RMSNorm` 在 eager 下展开成 6 个 aten 算子（`pow → mean → add → rsqrt → mul → mul`），
+激活被完整读写 6 遍 ⇒ 纯带宽浪费。这一族把它们压成 1 遍，即 12 个 `cfused_*` 导出。
+
+**实测收益**（交替测量 6 轮、取配对比值中位；`enable_fused.py`）：
+```
+只融合 RMSNorm                +5.0%（保守） ~ +8.0%（中位）
+RMSNorm + SwiGLU + 残差       +5.5%（保守） ~ +7.1%（中位）
+⇒ 两者接近 ⇒ 默认只开 RMSNorm
+```
+**数值**：与 eager 对拍 `max|Δ| ~1e-7`（fp32 累加顺序），`state_dict` 键名不变 ⇒ checkpoint 可互载。
+
+**NT store 的实测（同一批内核里的带宽优化）**：
+
+普通存储会触发 write-allocate（RFO：先把目标 cache line 读进来再写回），凭空多出 1/3
+内存流量；NT store（`_mm256_stream_ps`）绕过 cache 直接写。
+
+| kernel | 普通存储 | NT store | 比值 |
+|---|---|---|---|
+| copy | 13.40 GB/s | **25.40** | 1.90× |
+| triad | 16.09 | **23.86** | 1.48× |
+
+阈值按**运行时 L3 大小**推导：输出 ≥4.2 MB 才赢（2.0~3.1×），≤1.0 MB 反而亏（0.69~0.73×）。
+⚠️ 优化器的 `p` 写**不能**用 NT（读-改-写，cache line 已被读过，NT 反而强制刷出，实测倒退 21%）。
+
+★ **边界**：这一族省的是**带宽**不是算力。
+同一台机器上，**卷积为主**的 UNet 训练里 elementwise 只占 9.4%、算术强度 394 FLOP/byte
+（远高于拐点 9）⇒ 融合 elementwise 对它收益 ≈ 0，该用别的办法（见 `TECHNICAL_GUIDE.md` §3.5.2）。
+"elementwise 占 20.8%" 这个数字来自 **Transformer 型**负载，不能外推到卷积型。
+
+★ **一项尚未接线的导出**：`gemv_fp16w_inference_cpu_{fp32,bf16,fp16}`（fp16 权重
+GEMV/GEMM，权重流量减半而 fp32 FMA 吞吐不变）在 C 侧已实现、已导出、已编进 DLL，
+但 **Python 侧没有调用点** —— 已导出 ≠ 已接线，详见 `TECHNICAL_GUIDE.md` §3.5.2。
+
+使用方式（`fused_cpu` 显式调用与 `enable_fused` 一键接线）、参数约定与完整边界表见
+[`QUICKSTART.md`](QUICKSTART.md) §4.9；C 侧签名与实现细节见
+[`TECHNICAL_GUIDE.md`](TECHNICAL_GUIDE.md) §3.5.2。
 
 ### 3.6 EFST：MoE 专家专项微调（efst.py）
 
@@ -145,7 +240,7 @@ Qwen3Next/Qwen3.5 的 **3D 张量专家**（`[num_experts,...]` 大 Parameter）
 **问题**：无独显机型（R5-4500U，AMD Radeon(TM) Graphics，与 CPU 共享 DDR4-2667）
 上，核显能否加速训练？
 
-**阶段一：逐算子调度 = 负优化（结论保留）**
+**阶段一：逐算子调度 = 负优化**
 
 `gpu_scheduler.py` 初版按「计算量/搬运量」比 `M*N/(M+N)` 自动派发大算子。
 同机 8 步实测（8 层 BigLinear(2048²) LoRA 式训练）：
@@ -160,7 +255,7 @@ Qwen3Next/Qwen3.5 的 **3D 张量专家**（`[num_experts,...]` 大 Parameter）
 排空 ≈ 200ms+。带宽实测也证实：memcpy 多进程仅 ~21-22 GB/s（理论 42.7 的一半），
 本就是本机天花板，无带宽可「调度」。
 
-**阶段二：块级常驻执行器（本机实测可行）**
+**阶段二：块级常驻执行器**
 
 形态：全部权重常驻核显（只搬一次）+ 前向/反向整步在核显执行 + 每步一次同步；
 可训练参数（LoRA 适配器）梯度/权重以小体积 CPU↔核显往返。
@@ -178,105 +273,145 @@ Qwen3Next/Qwen3.5 的 **3D 张量专家**（`[num_experts,...]` 大 Parameter）
 内核修复。与 §3.5 一致：「内存带宽是天花板」依旧成立，核显只适用于**少同步 +
 少搬运**形态。
 
+**阶段三：CPU/核显异步并发**
+
+问题：块级常驻执行器运行时 CPU 全程空闲——能否用异步把 CPU 也参与进来？
+
+| 实验（`jiaoben/igpu_async_probe.py` / `igpu_async_drain_probe.py`） | 结果 |
+|---|---|
+| 单 GEMM 输出列切分（CPU 半边 + DML 半边，末尾一次排空） | 0.82~1.07×，不如较快的单设备 |
+| 微批数据并行（半批 CPU 全程 + 半批 DML 全程，每步一次梯度合并） | 0.96~1.16× vs CPU、0.59~0.71× vs 常驻 ≈ 两设备串行之和 |
+| 懒执行根因 | 入队仅 ~0.3ms；CPU 空转 800ms 后排空仍需完整执行时间（563ms）——**DML 在排空时才开始执行**，故「入队后 CPU 干活」天然串行 |
+| 后台排空线程（主线程入队 + 后台线程 `.cpu()` 排空 + 主线程并发算 CPU） | 串行 1213ms → 并发 921ms = **1.32×，真并发成立**（共享 DDR4 带宽，两端各劣化约 1.6×，总墙时仍赚） |
+
+但把「后台排空 + 数据并行」用于训练（BS=4 SL=128，8 层 Qwen 风格块）：736.9ms
+vs 常驻 615.2ms = **0.83×**——本机 DML 快于 CPU（约 1.6×），任何分给 CPU 的批量
+都会连带宽争用一起坐上关键路径，最优分配就是「全部给 DML」＝现有常驻执行器。
+**异步并发技术成立（后台排空线程是 torch-directml 下唯一能触发真并发的形态），
+但训练收益为负，方向收关**；其适用场景是 CPU 与 GPU 同量级、或混合「CPU 强 /
+GPU 强」算子的负载——本训练栈不存在这种形态。另注：非主线程入队是竞态行为
+（曾触发裸 RuntimeError、单独跑偶尔成功），不可依赖。
+
+**普适准则**：CPU/核显并发只有在**两设备算力接近**、或**负载天然
+分属两设备各自强项**时才有正收益；若一设备显著快于另一设备（本机 DML ≈ 1.6× CPU），
+最优分配就是**全部给快设备**（即常驻执行器）——任何「一半 CPU 一半核显」的做法，
+都会让较慢的那半、连同共享内存带宽争用一起坐上关键路径，反而更慢。这条准则适用于
+任何「主设备快、副设备慢」的异构加速场景：先测两设备吞吐比，若明显 >1（如 1.2~1.5×），
+就不要指望把任务拆给慢设备；只有当吞吐比接近 1、或某类算子本来就是慢设备强项时，
+异步分割才值得，且必须是「块级/整步一次同步」，避免逐算子同步把收益赔给队列排空。
+
 **最终形态**：`train.py --igpu` 落地为**块级常驻执行器**（默认关闭）：每步 token ≤
-`GPU_SCHED_MAX_TOKENS`（默认 256）、fp32 基座 ≤ `GPU_SCHED_MEM_MB`（默认 7000MB）、
-无量化参数时启用；否则打印原因自动回退纯 CPU。逐算子接口（`big_gemm` /
-`patch_igpu`）保留仅作实验，不推荐用于训练。
+`GPU_SCHED_MAX_TOKENS`（默认 256）、fp32 基座 ≤ 内存自适应上限（16GB→7000MB、
+12GB→5250MB、8GB→3500MB）、启动时 GEMM 校准达标、无量化参数时启用；否则打印原因
+自动回退纯 CPU。逐算子接口（`big_gemm` / `patch_igpu`）保留仅作实验，不推荐用于
+训练。
+
+**换机自适应（R8，面向 Intel UHD 630 等其余机型）**：不同核显算力差异极大，固定
+参数无法跨机复用，故执行器不再按机型写死：(1) 内存上限按整机内存等比缩放
+（`min(7000, RAM×7/16)`，核显共享内存 + DML 运行时开销，小内存机型自动收紧）；
+(2) `prepare()` 时以 `calibrate_gpu()` 实测本机「2048² 流水线 GEMM 核显/CPU 吞吐比」
+（两轮取较好、长预热促核显爬频——单轮实测有 ±0.1 抖动，同机曾测得 1.20x 与
+1.06x 的波动），低于 `GPU_SCHED_CALIB_MIN`（默认 1.10，`--igpu_min_gain` 可调、
+0 跳过）自动回退并打印实测值。本机（Vega 6）稳态校准 1.2~1.5x → 启用；UHD 630
+预期低于门槛 → 自动回退，「弱核显机器开 --igpu 无害，只是自动不生效」。换机自查：
+`python gpu_scheduler.py` 末行直接打印校准值与判定。
+
+**核显跑 Stable Diffusion（R5，本次补充）**：上面的异步/常驻结论针对**训练**（反向、需
+同步梯度）。对**图像生成**（SD，纯前向迭代）核显另有一层结论：
+
+| 配置 | 512×512×25步 | 对比 CPU | 画面 |
+|---|---|---|---|
+| CPU fp32 | 286.8s | 基准 | 清晰逼真 |
+| **核显(fp16 + DML)** | **228.2s** | **+1.26x** | 同样清晰 |
+
+- **兼容层（关键）**：torch_directml 钉死 torch 2.4.1，而现代 diffusers 要 torch≥2.5；
+  用 `.venv_dml` 装 diffusers 0.27 + transformers 4.38 + hf-hub 0.36，`sitecustomize.py`
+  给新版 hf-hub **补一个 `cached_download` 兼容 shim**（diffusers 0.27 仍 import 旧 API）
+  → 三者自洽，SD/AnimateDiff pipeline 可 import。
+- **fp16（关键）**：DML 硬件原生支持 fp16，且**规避 fp32 下 attention 崩溃**；fp16 还
+  内存减半（16GB 更轻松）。fp32 下 SD 前向的 cross-attention 在 torch_directml 报错。
+- **视频（AnimateDiff）局限**：核显跑**单张图像 OK**（如上述），但图像→视频的
+  **motion temporal attention 用 SDPA / baddbmm，torch_directml 均不支持**（逐个算子崩），
+  需改纯 matmul 磁改 attention，工作量大且可能仍有 DML 不支持算子。**结论：核显图像
+  生成可用（+1.26x、fp16 省内存）；核显视频生成受 DML 对现代 attention 算子的原生限制**
+  （SDPA/baddbmm），当前不实用，视频仍走 CPU。
 
 **设备适用性**：实测数据全部来自 AMD Radeon(TM) Graphics（R5-4500U）；Intel
-UHD 630（i5-10400 等）走同一 DirectML 接口，但核显相对 CPU 更弱，预期收益低于
-AMD 机型，需在目标机型实测确认。检测到软件适配器（Basic Render Driver）时执行器
-拒绝启用并提示安装厂商驱动；`iGPU_name()` 上报设备名。
+UHD 630（i5-10400 等）走同一 DirectML 接口，收益由启动校准自动判定、无需人工
+预判。检测到软件适配器（Basic Render Driver）时执行器拒绝启用并提示安装厂商
+驱动；`iGPU_name()` 上报设备名。
 
 ---
 
-### 3.8 ★★ 对 §3.7 的两次修订（2026-10-17）
+### 3.8 核显（OpenCL/CLBlast）：真实形状 2.6~2.7× CPU，而并发不如顺序
 
-**§3.7 的结论是"逐算子负优化 → 块级常驻可行"。此后又做了两轮测量，而两轮都改变了那个结论。**
+**列主序根因**：CLBlast 在非立方形状上的全部失败（-1011/-1015/-1016）都不是内核问题，而是
+**行主序调用方式**违反了它的列主序 API。改成"列主序 + 转置映射"的零拷贝调用后，真实模型形状
+全部可用。
 
-#### 3.8.1 第一次修订：机制不是功耗，是共享 L3
+**实测（Vega 6 / R5-4500U，fp32）**：MLP up 535.0、MLP down 512.5、QKV 531.5、o proj 371.5、
+head 486.0、attn QK/AV 116.7/119.5 GFLOPS；同形状 CPU 164~256。**套件平均 505~551 vs CPU 204
+⇒ 2.6~2.7×**，立方 2048³ 655.0 GFLOPS。
 
-| CPU 负载（1 线程） | 工作集 | 核显相对空闲 |
-|---|---|---|
-| 纯 ALU 自旋（无访存） | 0 | ★ **1.03×** |
-| `torch.mm` 256³ | 0.8 MB | 1.96× |
-| `torch.mm` 2048³ | 48 MB | ★ **6.08×** |
+**与 GT 1030 的等效性**：fp16 纯运算 1290.1 GFLOPS = GT 1030 理论值（1127）的 **1.14×**；
+fp16 GEMM 最高 1039.4（0.92×）；fp32 GEMM 655（0.58×）。**"纯运算达标"不等于"GEMM 达标"**，
+两个数字必须分开报。
 
-**⇒ ★【一个满功耗、零访存的负载只让核显掉 3%，而工作集越大掉得越多
-⇒ 机制是【共享的 8 MB L3 被 CPU 的工作集挤掉】，不是功耗仲裁。】**
+**设备常驻单层训练步**：2048 宽层 CPU 202.9 ms vs 设备 135.1 ms = **1.50×**（权重相对误差
+7.6e-05）；1024 层 1.35×；512 层 CPU 反而快 1.24×。设备端只回传 4 字节 loss。
 
-**⇒ 而这个区别是有后果的：功耗仲裁是【开关式】的（只能加功率绕开，而本机读不到温度）；
-缓存争抢是【连续】的（压小工作集就能买回来）。**
+**何时用核显**：M=1 归 CPU；**M≥64 归核显（约 2×）**。**并发不是答案**：iGPU 保留 40~54%、
+CPU 53~61%（共享 L3 被挤），并发 1.1~1.3× < 顺序 1.51×。
 
-#### 3.8.2 第二次修订：不是分工，是换手
+**适用性**：实验性、脚本级、未进 wheel；核显训练只在"参数≥16 MB 且 K 大"的层上成立。
 
-| M | 核显单独 | CPU 单独 |
-|---|---|---|
-| 1 | 5.3 | ★ **11.7** |
-| 64 | ★ **356.8** | 56.7 |
-| 2048 | ★ **425.3** | 199.7 |
+### 3.9 4-bit 优化器：内存 1.031 B/参数，速度 1M 2.56×、≥64M 1.74×
 
-**⇒ ★【M=1 给 CPU，M≥64 给核显（约 2 倍）；而"两者一起"只比核显单独高 7%
-—— 因为共享 L3 是【零和的】。】**
+| 量 | 实测 |
+|---|---|
+| 状态内存（1M 参数） | 1.031 B/参数（8-bit 2.062、fp32 8.0） |
+| 30.49M 模型 | 232.6 MB → 29.5 MB（7.9×） |
+| 内核步（1M 参数） | 0.658 ms vs 8-bit 1.682 ms = 2.56× |
+| 内核步（≥64M 参数） | **1.74×**（5 次 1.69~1.81）——早期"2.63×"是 1M 参数值，已收回 |
+| 训练轨迹（120 步 AR） | 与 fp32 相差 0.27% |
+| 状态码 | 与独立 numpy 50 步逐位一致 |
 
-#### 3.8.3 ★★★ 设备常驻训练已完成，并与 CPU 【逐位一致】
+**结论**：4-bit 优化器是"工具"不是"玩具"——内存确定减半、轨迹同轨、速度在足够大的参数规模上
++74%。但它只在 fp32 参数、blocksize=256、且 DLL 含 4-bit 内核时成立；缺内核时导入即报错。
 
-```
-✓ OpenCL GEMM 作为 torch.autograd.Function,前向与反传都在核显
-✓ 梯度等价:dX 1.3e-06 · dW 1.0e-06
-✓ Adam 内核:与 torch 逐步对拍 1.7e-07;转置副本【逐位精确】
-✓ 端到端训练与 CPU 【逐位一致】(loss 与权重变化量完全相同)
-✓ 每步主机流量 O(NK) → O(BK+BN)
-```
+### 3.10 2-bit/3-bit 量化：损失代价已知，端到端判决是"分两条路"
 
-**→ 适用区间是被测过的：**
+**损失（32×32 AR 模型，512 条验证样本）**：fp32 5.5038；4-bit +0.004；3-bit +0.019；
+2-bit nf +0.117（2.1%）。**2-bit 时 NF 比 uniform 好 11%，3-bit 时 NF 只差 0.0003（噪声）**。
 
-| N × K × B | 参数 | CPU ms | 设备 ms | 判定 |
-|---|---|---|---|---|
-| 512×512×1024 | 1.0 MB | 7.24 | 13.28 | ★ **CPU 赢 1.84×** |
-| 1024×1024×1024 | 4.2 MB | 40.68 | 37.69 | 平 |
-| **2048×2048×1024** | 16.8 MB | 152.56 | **117.42** | ★ **设备赢 1.30×** |
-| 4096×1024×4096 | 16.8 MB | 570.55 | 594.87 | 平 |
+**两条端到端判决**：
+- ⚠️ **SD1.5 全 pipeline 用 2-bit 权重：不成立**（存储 −39.5%，图像彻底坏掉）
+- ✓ **冻结 2-bit 基座 + LoRA：成立**（只替换 `nn.Linear`，初始验证 loss 5.5538 与格式一致，
+  LoRA 可训、loss 下降）
 
-**⇒ ★【适用区间 = 【参数 ≥ 16 MB 且 K 大】。batch 几乎无影响（1024→4096 时 1.30→1.31）。】**
+**存储**：2-bit 2.5 bit/权重、3-bit 3.5 bit/权重（block=64），对比 4-bit 的 4.5 与 fp32 的 32。
+脚本级组件，未进 wheel。
 
-#### 3.8.4 ★ 一条使用提醒：这条线上量错过四次，而两次方向相反
+### 3.11 AVX-512 后端实测：数值全对，现有内核 0.97~1.02×，峰值要等新内核
 
-```
-入队时间当执行时间   ⇒ 高估 40 倍（46787 GFLOPS，而设备峰值 1150）
-每步重传权重当常态   ⇒ 低估 5.8 倍（64.5 对 374 GFLOPS）
-```
+**第一次真机验证**（Ubuntu 22.04 / gcc 11.4 / 全宽 512 位 CPU / 2 核容器）：
 
-**⇒ ★【判据：任何超过设备标称峰值的核显数字，先当测量错误处理，而不是当发现。】
-⇒ 而在小层/小 batch 上核显执行器【不该开】—— 判据是【形状】，不是"有没有核显"。**
+| 项 | 结果 |
+|---|---|
+| 构建 | AVX2 基线 256 KB、AVX-512 变体 284 KB（同一份源码，只差 flags） |
+| 分派 | `has_avx512f_cpu()=True`、`has_avx512bf16_cpu()=True` |
+| 正确性 | quantize8 / dequantize8 / gemm_8bit / gemm_8bit_M64 / gemv_4bit / adamw8bit **6/6 逐位一致** |
+| 硬件峰值（单线程） | fp32 FMA 113.7 → **229.3 GFLOPS（2.02×）**；BF16 点积 **308.6 GFLOPS（2.71× AVX2-fp32）** |
+| 真实内核 | quantize8 0.99× · dequantize8 0.99× · gemm_8bit 0.97× · gemm_M64 1.02× · gemv_4bit 1.01× · adamw8bit 1.02× |
 
----
+**为什么峰值 2× 而内核只有 1.0×**：这些内核全是**搬字节**的（反量化、优化器状态、M=1 的 GEMV），
+没有一处吃 FMA 峰值；连特意改成的算力型 `gemm_8bit_M64` 也只有 1.02×，因为现有实现是"逐块
+反量化 B 再 GEMM"，时间花在 LUT/gather 与 fp32 中间缓冲上。**⇒ AVX-512 的收益不在"重编译"，
+而在"为 compute-bound 路径新写内核"（BF16 点积 / VNNI int8）。**
 
-## 3.9 ★ 本轮新增的两个组件
-
-### 3.9.1 4-bit 块优化器（AdamW4bit）
-
-| 对手 | 内存 | 速度 |
-|---|---|---|
-| 对 fp32 AdamW | **7.8×** 少（1.031 对 8.000 字节/参数） | 0.96× |
-| **对 AdamW8bit** | ★ **2.06×** 少 | ★ **1.74× 更快**（≥64M；1M 上 2.63×） |
-
-**⇒ ★【两边都赢，不是"用速度换内存"。而早期文档写的"没有 AVX2 路径、慢 4×"两句都是错的。】
-⇒ ★ 而它的战场是【大模型】：30.5M 参数上只省 1.3% 内存，300M 上省 13%。**
-
-**★ 速度随规模（2026-10-17 补测，五次独立运行）：1M 2.87× · 4M 1.72× · 16M 1.63× ·
-64M 1.71× · 256M 1.74× · 384M 1.74× ⇒ 在它该被用的区间（≥64M）是约 1.7×，不是 2.63×；
-后者是 1M（L3 内）的数。**
-
-### 3.9.2 2-bit / 3-bit 量化
-
-**`quant2bit.py` · `quantnbit.py`（通用 N-bit，带自检往返）· `quant_lora.py`（接入训练）·
-`linear2bit.py` / `embed2bit.py`（层替换）。**
-
-**★ 一条重要区分：降【权重】精度已被否定（§3.5），而降【优化器状态】精度是正面的
-⇒ "4-bit 好"这个说法必须带主语。**
-
----
+**另一个必须记住的坑**：在本机（AVX2-only）强行编译 AVX-512 版，产物 1861 条 zmm 指令，一跑就
+SIGILL；zmm 归属证明崩溃点在**普通函数**（dequantize/rmsnorm/optimizer）而不是手写内核——
+`-mavx512f` 是整 TU 开关，这是"构建机必须自己支持 AVX-512"的物理原因。
 
 ## 4. 生图训练实测（R5-4500U）
 
@@ -290,6 +425,18 @@ AMD 机型，需在目标机型实测确认。检测到软件适配器（Basic R
 - **256px fp32 就是甜点**（绝不"一小时一步"）；512px 可行（8.3s/步、不 swap）。
 - 冻结层 8bit 量化在 256px 是负收益（慢 1.5x、RSS 还因页滞留略高），仅内存紧时用。
 - 调用分布（profiler，单步）：conv 43.6%、注意力投影 20%、dropout(LoRA) 14%。
+- **核显（DML）不用于生图训练**：UNet 主力算子在 DML 上全面
+  落后——conv3×3 主力形状 0.50~0.90×、S=1024 自注意力 **0.14×**（head_dim=40，
+  7 倍慢）、投影 GEMM 0.38~0.65×，仅 320ch@64² conv 与 64×1280² GEMM 打平；
+  全链 DML 反向另有 GroupNorm backward CPU fallback 与插件空消息 RuntimeError。
+  探针留存于 `jiaoben/igpu_sd_probe.py` / `igpu_sd_fullchain.py`。
+- **torch-directml 版本墙**：安装 torch-directml 会把 torch 降至 2.4.1（硬性依赖），
+  与 diffusers 0.40 三处不兼容（字符串注解 `infer_schema`、缺 `flex_attention`、
+  `sdpa` 无 `enable_gqa`）——**装了 torch-directml 的环境，纯 CPU 生图训练也会
+  import 崩溃**。修复：`torch241_compat.py` 运行时兼容层（幂等，torch≥2.5 自动
+  跳过），`train_sd_lora.py` 已在 `import diffusers` 前引入。另注意 DML 上先
+  `model.to(DML)` 再改 `requires_grad` 会静默丢梯度图，必须先设 requires_grad
+  再迁移。
 
 ### 4.1 进阶方法（ControlNet / iP-Adapter）
 
@@ -318,6 +465,27 @@ controlnet 条件图是原始像素（非 VAE 潜变量）；iP-Adapter 只注�
 **结论**：balancer 在内存充足时零延迟（`update_step` 立即返回），仅在内存逼近
 阈值时按需卸载（每次 1 个，有界），不拖累训练速度。
 
+**真实 LLM 实测发现的崩溃**：§5 的压力测试用的是"自带 dummy 冷参数"
+（`4×200MB dummy`），未测真实模型。在 **Qwen3-1.7B LoRA 训练**（fp32 基座 ~7GB，
+内存逼近阈值触发卸载）上，`update_step()` 遍历 `named_parameters()` 把
+`requires_grad=False` 的 **`embed_tokens.embedding.weight`（1.24GB）也当成冷参数卸载**，
+`put_cold` 执行 `tensor.data = torch.empty(0)`，使 embedding 前向报
+`'weight' must be 2-D` 崩溃。
+
+**根因**：自动卸载机制**只对"参数不参与前向"的场景安全**（卸载后需手动
+`get_cold` 读回）；但 `update_step()` 自动卸载的冻结层（LoRA 冻结基座）**每步都参与
+前向**，卸载后无读回 → 崩。而且不只 embedding——任何被 forward 读取的冻结层
+（含 transformer Linear，形态被置成 `[0]`）都会崩。
+
+**修复（`_is_cold_param`）**：跳过嵌入/输出/归一化层（`embed_tokens`/`lm_head`/
+`word_embeddings`/`layernorm`/`layer_norm` 等权重被 forward 直接读取、最易崩的层）。
+修复后 `--flash` 在 Qwen3-1.7B 真实 LoRA 训练上可正常跑通。
+
+**适用边界（重要）**：自动卸载仅适合"该层本轮不参与前向"或配合手动 `get_cold`
+读回的场景。若训练中所有冻结层都前向（普通 LoRA 冻结基座），自动卸载仍可能命中
+transformer Linear 层导致崩溃，此时应**不启用 -flash**（量化基座省内存更稳妥），或
+用 `offload_prefix` 限定只卸载真正非前向的参数。
+
 ---
 
 ## 6. 跨平台构建与自检
@@ -329,16 +497,12 @@ controlnet 条件图是原始像素（非 VAE 潜变量）；iP-Adapter 只注�
 
 **torch-free C 自检**（`selftest_cpu.c`，Linux/x86_64+aarch64 与 Windows 通用，直接链接内核源码）：
 quantize_blockwise 8bit 往返 / gemm_8bit 前向 / 4bit GEMV(nf4) / AdamW8bit 单步 —— **4/4 PASS**
-（已在 Windows 用 MSVC 等价验证；Linux 仅差编译链差异）。
+（Windows 侧用 `build_manual\selftest_win.bat`，MSVC `/TP /we4556`，已实测 4/4 PASS、退出码 0；
+Linux 侧 `bash build_linux.sh --selftest`，仅差编译链差异）。
 
 ---
 
 ## 7. 结论与展望
-
-> **2026-10-17 补充：关于核显的那条结论请以 §3.8 为准。**
-> 机制是共享 L3（不是功耗），形态是换手（不是分工），
-> 而设备常驻训练已与 CPU 逐位一致、适用区间为【参数 ≥ 16 MB 且 K 大】。
-> **在小层上它的结论是【负的】**（512×512 时 CPU 快 1.84×）。
 
 - **AVX2 CPU 纯训练可用**：1.7B LoRA 7s/步、8B NF4 38s/步（16GB）、SD 生图 2.1s/步，
   全部无"小时级一步"。关键在 GDN 融合（35×）、8bit 优化器（内存 1/3.8）、
@@ -355,6 +519,161 @@ quantize_blockwise 8bit 往返 / gemm_8bit 前向 / 4bit GEMV(nf4) / AdamW8bit �
    核显（iGPU，共享内存）offload 已实测为负收益（R5 AMD + i5 R5 M240 均打不过
    同代 CPU），**不建议**；此方向仅对真正带独立显存的低端 GPU 卡有意义，需另配
    设备验证。
+
+**视频生成（AnimateDiff）适配实测 + 高分辨率优化路径 + 训练支持（本次补充）**
+
+**适配打通（标准 diffusers，无格式不匹配）**：SD1.5 unet（3.2GB）+ motion adapter
+(v1-5-2) + 标准 SD1.5 vae/text_encoder + **词表修复**（CLIP vocab = 49408，此前词表缺失
+导致 prompt 无语义、画面抽象——词表修复后 512 出清晰逼真图）。生成 256/512 视频实测：
+
+| 配置 | 速度（oneDNN+线程） | 峰值内存 |
+|---|---|---|
+| 256×8帧×15步 | 341–375s | ~9GB |
+| 512×8帧×3步 | 369s | **11.56GB**（16GB 能跑）|
+| 1080p×15秒 | **不可行** | 估算 >90GB |
+
+**关键结论（诚实）**：`oneDNN + 多线程`（视觉卷积密集最优，R5 6核）让 CPU 视频生成
+快 ~31%（543→341s）；`512×8帧` 峰值 11.56GB 是 **16GB 能跑的极限配置**。
+
+**1080p×15秒 的硬件现实**：512→1080p 空间放大 `(1920/512)×(1080/512)≈7.9×`，
+内存估算 >90GB（远超 16GB），且一帧/一步 CPU 要数分钟。**16GB CPU 无法生成 1080p 长视频**，
+这是硬件（无独立显存）的根本限制，需**独立显存 GPU**（1080p 长视频是 GPU 场景）。
+
+**1080p 优化路径（若上更强硬件）**：①低分辨率先生成再 VAE 放大；②分块生成（tile 逐块
+推理再拼）；③`attention/Vae slicing`（实测 16GB 上无效，反而略增——记负面）；④模型
+8bit/4bit 量化 + 卸载（省内存可行，dequant 有开销）；⑤activation checkpointing（训练用）。
+**内存压榨结论**：`attention_slicing` 在本机无效（11.84GB vs 11.56GB 反而略增 + 更慢），
+真正降内存靠降分辨率/帧数（降质量）或更强硬件。
+
+**训练支持（AnimateDiff motion 微调）**：数据链路已通——`facebook/PE-Video`(798MB)
+下载 + 解包 500 对视频+json + PyAV 抽帧 8帧/视频（`.npy`）。但**训练**在 16GB 上卡在
+①video latent 布局（AnimateDiff 内部 temporal 帧对齐，需复用 diffusers 训级实现）
+②1.3G unet(fp32) + video latent + 反向 = 16GB 段错误。**方案**：用 `ddpmscheduler +
+video latent 处理` + `gradient checkpointing`（省激活内存）+ 更小帧/分辨率 + CPU offload
+（disk_balancer 魔改做 device/内存卸载）。**16GB 上训练 motion 需降配置或更强硬件**；数据
++ 适配基础已备，训练是下一步（含内存策略）。
+
+**低分辨率生成 + 超分到 1080p/2K 的"类 DLSS"路径（实测 + 三难全结论）**：
+
+用户工作流=低分辨率(256/512)生成视频 → 超分到 1080p/2K。超分方案实测（512/384 源）：
+
+| 超分方案 | 512→2K速度 | 4x质量 | 视频可行 |
+|---|---|---|---|
+| FSR 1.0（空间, 官方算法）| 0.55s/帧 | ❌ **抹布/颗粒**（真实视频 4x 实测）| ✅ |
+| Real-ESRGAN x4plus（AI, 16.7M）| 110s/帧 | ✅ **锐利自然**（lear 真实细节）| ❌（582帧=18h）|
+| 自训 FSRCNN（轻量 2.25万参数）| 0.4s/帧 | ⚠️ **无颗粒但色偏/偏软**（小模型限制）| ✅ |
+
+**关键**：16GB CPU 上超分**三难全**——要快（视频可行）就得小模型，小模型要么慢（Real-ESRGAN）
+要么色偏/细节软（自训 FSRCNN）；**质量自然 + 轻量 + 视频可行**三者在纯 CPU 无法兼得。
+且 64 源超分**必崩**（源只有 4096 像素无细节，空间/AI 都补不回——"垃圾进垃圾出"）。
+**结论**：CPU 视频超分现实=FSR(快但4x颗粒) 或 Real-ESRGAN(质量好但慢)；要"轻量+自然"需
+官方轻量超分权重(不是自训)或 GPU(Real-ESRGAN 视频实时)。上游(AMD FSR 2/3时间/FSR 4.0 AI)、
+AI 超分(Real-ESRGAN)均已测, 定性为"硬件边界"。
+
+**矩阵乘法合并（LoRA merge）推理实测**：把 `W + A@B`（低秩更新）**预合并**成 `W+A@B`
+一次 matmul——推理省掉 LoRA 的小 matmul。实测(2048² 层 + LoRA r=16)：不合并 1.890ms vs
+合并 1.671ms = **+1.13x（13%）**，数值误差 6.2e-07(一致)。**结论**：LoRA merge 是推理的
+**常数级小优化**(白赚~13%)，仅推理有效(训练权重变不可预合并)，**无法"干翻 GPU"**(GPU 上千
+并行+专用算力的数量级优势；合并是常数级)。CPU 上用 LoRA 推理时可 merge 提速。
+
+**15秒 2K 视频成品（端到端管线打通）**：`generate → interpolate → super-resolve` 三段拼出
+2K 15秒成品（`final_2k_15s.mp4`，2048×1216，106帧）：
+1. 生成 8帧 360×216（DDIM 8步，v1-5 motion 时序稳定）→ 2. 光流插帧 8→106（RAFT，低分辨率
+算省内存，2K 上算光流 corr volume 6GB 会 OOM）→ 3. FSRCNN d64 超分到 2K。**推理管线可交付**。
+
+**训练优化方向（反向传播加速）**：视频生成训练（含反向）是更头疼的——前向 58s/步，反向 2-3x
+更慢，16GB 上 video latent + 反向段错误。**正路 = LoRA 低秩训练**（只训 motion 的低秩小参数，
+反向只算 LoRA 梯度，省 2-3x 计算；不训整个 unet），配合 gradient checkpointing（省激活内存）。
+推理提速用 DDIM 少步（已测 1.8x）。底层 AVX2 算子（GEMM 手写 vs torch）实测**超不过**（numba
+naive 慢 107x，torch oneDNN/MKL 工业级墙），故底层加速到头，走算法/结构层（DDIM+LoRA）。
+**LoRA 反向实测**：全参反向 5.19ms vs LoRA(r=16) 反向 1.00ms = **+5.2x（反向省 80%）**——只算
+低秩 A/B 梯度，不算整 W 梯度。**训练反向加速 = LoRA**（前向不变，反向省 80%，总训练每步省 ~40%）。
+
+---
+
+## 7.1 全量实测验证：生图 + LLM 各 500 步真实训练（R5，纯 CPU）
+
+> 目的：在真实训练环境下彻查整套 CPU 训练链（DLL 内核 + 8bit 优化器 + LoRA）的功能
+> 正确性，并记录速度 / 内存 / loss。设备：R5-4500U（6C6T / 16GB / AVX2），torch
+> 2.13.0+cpu，transformers 5.15.0。
+
+### 7.1.1 全面检查发现并修复的问题
+
+| 问题 | 根因 | 处置 |
+|------|------|------|
+| `build_manual.bat` 报 `'??具' is not recognized` / `... was unexpected` | 灾难工具 REM 注释为中文（GBK 非 ASCII），cmd 的 GBK 代码页把注释字节当命令解析 | 改为纯 ASCII 英文 |
+| `gpu_scheduler.py` 未入库 | 核显换机自适应（calibrate_gpu / 内存按整机缩放 / 校准门槛）此前仅在文档 | 补提交该功能 |
+| 8 个 `.obj` 编译产物 + `build_release_tmp\` | 编译中间文件残留 | 删除 |
+| LLM 真实文本训练阻塞 | `deepseek-coder-1.3b-base` **缺 tokenizer**（只有 config/model） | 改用有完整 tokenizer 的 `qwen3.5-0.8B`（MoE） |
+| qwen3 系 CPU backward 段错误 | transformers 5.6.0 的 Qwen3 backward bug（纯 torch 也崩） | 升到 5.15.0 根治 |
+
+### 7.1.2 生图 LoRA 训练 500 步（bk-sdm-tiny）
+
+- 模型：bk-sdm-tiny（UNet ~324M），LoRA trainable 0.43M（rank=4）；256px，batch=1，
+  grad_accum=4，fp32，opt=bnb.optim.AdamW8bit，线程 6。
+- **结果**：500/500 步跑完；**平均 ~1.7 s/步**，总 ~19 分钟；峰值 RSS **~2.15 GB**；
+  loss 波动在 0.002~0.80（生图 LoRA 正常收敛）；每 100 步采样出图 + LoRA 存 `final_lora`。
+- **结论**：生图 LoRA 训练在纯 CPU + bnb 8bit 优化器上完全可用，达「可边改边训练不卡」水准。
+
+### 7.1.3 LLM LoRA 训练 500 步（qwen3.5-0.8B）
+
+- 模型：qwen3.5-0.8B（Qwen3_5ForCausalLM，混合注意力 + MoE），752.4M 参数；
+  LoRA（target=q/k/v/o_proj，rank=16），trainable **1.08M**（基座 753.5M 冻结）；
+  真实 jsonl 文本，seq=128，batch=1，纯 CPU fp32，opt=bnb.optim.AdamW8bit。
+- **结果**：500/500 步跑完；**0.25 step/s（~4s/步）**，总 **~33 分钟**；
+  loss **2.999 → 1.8315**（后期稳定在 ~1.1-1.9）；**无崩溃**（此前 qwen 系 backward
+  崩溃已被 5.15.0 根治）。
+- **结论**：MoE 混合注意力 LLM 的 LoRA 训练在纯 CPU + bnb AdamW8bit 上完全可用，
+  500 步稳定收敛。4s/步在同级 CPU 上合理。
+
+### 7.1.4 小结
+
+- 功能正确性：生图 + LLM 两个真实模型各 500 步 CPU 训练**全部成功、loss 收敛、无崩溃**
+  —— 爆改 bnb 的 CPU 训练链在真实数据上可信可用。
+- 速度/内存（R5 6C6T 16GB）：生图 ~1.7s/步、~2.1GB；LLM 0.8B MoE LoRA ~4s/步。
+- 已知边界：**AVX2 禁 bf16（须 fp32）**；`deepseek-coder-1.3b-base` 缺 tokenizer（需自补或联网）。
+- 注：训练用 500 步（非 1000 步）为控制 CPU 时效；若要 1000 步可将步数翻倍。
+
+---
+
+## 7.2 测试发现与修复
+
+> 用 workflow 把 fork 新增的所有组件分成 4 组并行测试（正常/边界/非法输入/极端值），
+> 共发现 20+ 个问题并全部修复。
+
+### 已修复（按严重性）
+
+**数值 / 功能错误（🔴）**
+| 问题 | 根因 | 修复提交 |
+|------|------|---------|
+| `sector_carve` 输出目录不可写时「假报成功」（报共恢复 N 个、exit=0，实际 0 文件） | `CreateFileW` 失败仍 `g_carved++` + 无条件 return 0 | 仅实际完整写出才计数/成功；失败报「无法创建」(`1753c8b`) |
+| `sector_carve` 假头导致死循环 | extractFile 返回 0 时 readPos 不推进 | readPos 至少前进一个扇区 (`1753c8b`) |
+| `quant_lora` nf4u/fp4u + `from_quantized` broken（dtype 不匹配崩溃） | QuantState 用 `dtype=torch.uint8`，dequantize_blockwise 返回 uint8 而非 float32 | 改 `dtype=torch.float32`（与自然量化一致）(`a5e10da`) |
+| `gemm_8bit` 非对齐 K 静默返回错值 | 融合内核要求 K % blocksize == 0 但无校验 | `fused_dequant_linear_8bit` 加 K 对齐校验(`a5e10da`) |
+
+**健壮性（🟡，参数校验缺失）**
+| 问题 | 修复 |
+|------|------|
+| disk_balancer `memory_threshold=1.5` 静默禁用卸载；`None` 崩；`min_free_ratio=1.5` 负缓存 | `DiskBalancerConfig.__post_init__` 校验范围/非 None，非法报错(`d80777a`) |
+| disk_balancer `parse_flash_args` 盘符丢冒号（`c`→应 `C:`），manual 模式匹配不到盘 | re-append `:`(`d80777a`) |
+| efst `apply_efst(None)`/`freeze_all(None)` 崩；`top_k=-1` 静默选反 | None 报错；top_k>=1(`5959855`) |
+| sd_quant `apply_quant_frozen(None)` 崩；`_pick_bs(0)` 返回 256 | None 报错；k<=0 返回 0(`5959855`) |
+| quant_lora `lora_r=0` ZeroDivisionError；`weight=None` 崩；fp16 输入崩 | None/lora_r 校验；非 fp32 weight 转 float(`5959855`) |
+
+**训练脚本（🟢）**
+| 问题 | 修复 |
+|------|------|
+| verify_train_release / train_llm_sft `--steps 0` IndexError 崩 | 校验 steps>=1 / batch>=1 / 非空数据；结果段防空列表(`0e19101`) |
+| verify delta 打印符号错 | 改 `losses[-1]-losses[0]`(`0e19101`) |
+
+### 通过项（无需修）
+- 内核数值：量化往返 / gemm_8bit(对齐) / GDN / 8bit优化器 精度全部达标(normRel ~3e-7，GDN selftest PASSED)。
+- disk_balancer 正常路径、efst / quant_lora / sd_quant 正常调用、灾难工具正常恢复、gpu_scheduler CPU 回退路径。
+- 文档完整性（中英对称、关键章节、无空文档）。
+
+### 备注（环境不可测）
+- GPU/DirectML(WSL 9P / 物理盘 / 显卡)相关路径在 R5 不可测（无 GPU / R5 WSL 坏 / 物理盘缺失），
+  仅验证了 CPU 回退/不崩路径；`gpu_scheduler` 的核显实际调度需 GPU 机验证。
 
 ---
 

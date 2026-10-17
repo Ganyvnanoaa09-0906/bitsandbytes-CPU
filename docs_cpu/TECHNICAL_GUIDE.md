@@ -1,8 +1,5 @@
 # 技术文档：爆改版 bitsandbytes CPU 后端
 
-> 面向对象：技术人员（读得懂 C++/PyTorch 内核的开发者）
-> 目的：说明本 fork 在 upstream bitsandbytes（0.50.2 发布线，main `83364904`，2026-09-03）基础上**改了什么、为什么改、怎么用**。
-
 ---
 
 ## 1. 背景与动机
@@ -145,6 +142,170 @@ void cgemm_8bit_inference_cpu_fp32(A, B_uint8, absmax, out, M,N,K, lda,ldb,ldc, 
 - `data_type` 按内核常量：**FP4=1 / NF4=2**；
 - 修复后 nf4/fp4 与参考实现逐位一致（误差 0）。
 
+### 3.5.1 `gemm_4bit`：**训练/批量前向**路径的 4-bit CPU 注册
+
+> §3.5 修的是**推理**的 `gemv_4bit`（M=1 逐 token）；本节是**另一条路径**。
+
+**上游问题**：`autograd/_functions.py:324/334/462/472` 调的是 `gemm_4bit`，而 CPU 后端**没有注册它**
+⇒ 退到 default 后端「整块反量化 + 稠密线性」⇒ **每一次批量 4-bit 线性前向都在走慢路径**。
+
+**改法：按 M 分档**（不是二选一）。实测 K=N=4096、OMP=6：
+
+| M | 融合内核 ms | default ms | 谁赢 |
+|---|---|---|---|
+| 1 | **1.20** | ~14.5 | 融合 **12×** |
+| 32 | **16.20** | 28.41 | 融合 1.75× |
+| 64 | **28.79** | 31.37 | 融合 1.09× |
+| 96 | 43.45 | **37.01** | default 反超 |
+| 256 | 166.11 | **64.94** | default **2.56×** |
+
+⇒ `_GEMM_4BIT_FUSED_MAX_M = 64`：M ≤ 64 走融合内核，M > 64 交回 oneDNN 稠密。
+⚠️ 该阈值**原先写 16**，于是 M=17~64 被误分给 default、**白慢最多 3.4×**。
+（大 M 融合会输是**结构性**的：融合内核内层 `m0 += 4`，每 4 行重读整块权重 ⇒ 权重流量 O(M/4)。）
+
+**★ 极性澄清（最容易被读反的一处）**：`can_fuse` 的首个条件是
+`gemm_4bit_forward_kernel is None` ——
+**有** AVX512-BF16 且装了 `kernels` 包时它非 None ⇒ `can_fuse=False` ⇒ 走 HuggingFace 外部 kernel；
+**AVX2 机器上它是 None ⇒ 才能用我们自己的融合内核**。
+⇒ 在 AVX2 机器上，`= None` 是「能够走融合内核」的**前提**，**不是**「被迫走慢路」。
+
+**与上游的关系**：上游 `main` 的 `backends/cpu/ops.py` 至今**没有** `gemm_4bit` 的 CPU 注册、
+没有 `cgemv_4bit_inference_cpu_*`、也没有 `_GEMM_4BIT_FUSED_MAX_M`（上游该文件 489 行 / 本 fork 679 行）。
+
+### 3.5.2 融合 elementwise 内核族（本 fork 新增，12 个导出）
+
+**为什么加这一族**（实测，`probe_step_breakdown.py`，R5-4500U 纯 CPU、30M 级模型）：
+```
+训练步 2.819 s = GEMM 63.6% / elementwise 20.8% / attention 7.6% / 其它 ~8%
+GEMM 已达同形状纯 GEMM 基准的 92% ⇒ 唯一还有空间的是 elementwise 20.8%
+```
+`RMSNorm` 在 eager 下展开成 **6 个 aten 算子**（`pow/mean/add/rsqrt/mul/mul`），
+每个都要完整读写一遍激活 ⇒ **纯带宽浪费**（激活本身只有 `B×T×D×4` 字节）。
+把 6 趟压成 1 趟，就是这一族内核的全部意义。
+**边界**：它优化的是**带宽**，不是算力；对算术强度已远高于拐点的负载
+（例如卷积为主的 UNet）没有收益，那类负载要用别的办法（见 §3.5.1 与 `TECH_REPORT.md` §3.5.1）。
+
+#### 12 个 C 侧导出
+
+`csrc/pythonInterface.cpp` 的 `cfused_*` 包装（`c` 前缀为导出符号）：
+
+```c
+long long cfused_rmsnorm_fwd_cpu(const float* x, const float* res, const float* weight,
+                                 float* out, float* xs, long long M, long long D, float eps);
+long long cfused_rmsnorm_bwd_cpu(const float* x, const float* weight, const float* dout,
+                                 const float* xs, float* dx, float* dw,
+                                 long long M, long long D);
+long long cfused_swiglu_fwd_cpu(const float* gate, const float* up, float* out, long long n);
+long long cfused_swiglu_bwd_cpu(const float* gate, const float* up, const float* dout,
+                                float* dgate, float* dup, long long n);
+long long cfused_add_scale_cpu(const float* x, const float* y, const float* scale,
+                               float* out, long long M, long long D);
+long long cfused_add_scale_inplace_cpu(const float* x, const float* y, const float* scale,
+                                       long long M, long long D);          /* 原地，省一趟 */
+long long cfused_add_scale_rmsnorm_cpu(const float* x, const float* y, const float* scale,
+                                       const float* weight, float* out, float* xs,
+                                       long long M, long long D, float eps);
+/* strided 版：gate/up/out 的行跨步与列跨步可不同（吃 chunk 视图，零拷贝） */
+long long cfused_swiglu_strided_fwd_cpu(const float* gate, long long gs0, long long gs1,
+                                        const float* up,  long long us0, long long us1,
+                                        float* out, long long os0, long long M, long long D);
+long long cfused_swiglu_strided_bwd_cpu(...);
+/* fp16 权重 GEMV/GEMM，三个变体按输出精度分（见下） */
+void gemv_fp16w_inference_cpu_fp32(const void* A, const void* W, void* out,
+                                   long long M, long long N, long long K,
+                                   long long lda, long long ldb, long long ldc);
+```
+
+| C 符号 | 语义 |
+|---|---|
+| `cfused_rmsnorm_fwd_cpu` / `_bwd_cpu` | `(x+res)·rsqrt(mean((x+res)²)+eps)·w` 前/反向 |
+| `cfused_swiglu_fwd_cpu` / `_bwd_cpu` | `silu(gate)·up` 前/反向 |
+| `cfused_add_scale_cpu` / `_inplace_cpu` | `x + scale·y`（inplace 版再省一趟） |
+| `cfused_add_scale_rmsnorm_cpu` | `RMSNorm(x + scale·y)` 一步出 |
+| `cfused_swiglu_strided_fwd_cpu` / `_bwd_cpu` | 同上，但行/列跨步可不同 ⇒ 直接吃 chunk 视图，零拷贝 |
+| `gemv_fp16w_inference_cpu_{fp32,bf16,fp16}` | fp16 权重 GEMV/GEMM（**已导出，未接 Python**，见下） |
+
+#### 参数约定（容易踩的两个）
+
+- `M` 是**行数**（`B*T`），`D` 是**最后一维**；要求 `x` 行主序、`D` 连续。
+- `xs` 是 RMSNorm 前向**必须**输出的中间量（`rsqrt(mean(x²)+eps)`，长度 `M`），
+  反向要用它 —— 不能省，也不要用 `torch` 的 `save_for_backward` 重复存。
+
+**strided 版的意义**：`F.silu(a) * b` 里的 `a`、`b` 常常是同一个大张量切出来的
+chunk（QKV 融合后的视图）。strided 版直接吃这个视图，**不复制**。
+
+#### Python 侧两条接法
+
+```python
+import fused_cpu                       # 显式调用，四个都有 autograd
+h = fused_cpu.fused_add_scale_rmsnorm(x, attn_out, self.ls1, self.ln1_w, eps=1e-6)
+
+import enable_fused                    # 一键 monkey-patch 到模型类方法
+enable_fused.enable()                  # 只融合 RMSNorm：实测 +5.0~8.0%
+enable_fused.enable(block=True)        # 再加残差+LayerScale：+5.5~7.1%
+```
+★ 收益来自**带宽**：对算术强度远高于拐点的负载（卷积为主的 UNet）≈ 0。
+★ `enable_fused` 必须在**建模型之前**调用（patch 的是类方法）；DLL 里没有 `cfused_*`
+导出时会直接抛 `RuntimeError`，需先按 `QUICKSTART.md` §2 重新编译。
+★ 数值：与 eager 对拍 `max|Δ| ~1e-7`，`state_dict` 键名不变 ⇒ checkpoint 可互载。
+
+#### NT store（非临时存储）
+
+这族里凡"大数组纯写"的地方（8-bit 反量化写出、`fused_add_scale`、`fused_swiglu`），
+都会在满足条件时走 `_mm256_stream_ps`。
+
+**原理**：普通存储触发 write-allocate（RFO，先把目标 cache line 读进来再写回），
+凭空多出 1/3 的内存流量；NT store 绕过 cache，目标行不读直接写。
+
+**实测（`membw3.c`，纯 AVX2，48/192 MB 足迹，6 线程）**：
+
+| kernel | 普通存储 | NT store | 比值 |
+|---|---|---|---|
+| copy | 13.40 GB/s | **25.40** | 1.90× |
+| triad | 16.09 | **23.86** | 1.48× |
+
+**阈值是运行时发现的，不要硬编码**：
+
+```c
+use_nt = bnb_is_aligned_for_nt(out)                        /* 32 字节对齐 */
+      && (n * sizeof(T) >= bnb_nt_threshold_bytes());      /* 输出够大 */
+```
+```
+· 输出 <= 1.0 MB : 普通存储赢（NT 亏 0.69~0.73×）—— 因为它把还要用的数据踢出 cache
+· 输出 >= 4.2 MB : NT 赢 2.0~3.1×
+· 阈值按【运行时 L3 大小】推导（L3 在 8/12/32+ MB 之间变）
+```
+
+⚠️ **反面教材**：优化器的 `p` 写入**不能**用 NT —— 那里是读-改-写，
+cache line 已经被读过，普通 store 只是标脏，NT 反而强制刷出 ⇒ **倒退 21%**。
+
+#### `gemv_fp16w_inference_cpu_*`：已导出，**尚未接 Python**
+
+三个变体按输出精度分（`_fp32` / `_bf16` / `_fp16`）。
+
+**用途**：权重存 fp16、算子在 fp32 里累加 —— 权重流量减半，而 fp32 的 FMA 吞吐不变。
+这是「4-bit 推理在 AVX2-only CPU 上净亏」那个结论的**替代解**：4-bit 需要解包指令
+（AVX2 上没有 VNNI，解包反而成为瓶颈），fp16 不需要。
+
+**当前状态必须说清**：
+```
+· C 侧：已实现、已导出（pythonInterface.cpp L886-904）、已编进 DLL
+· Python 侧：没有调用点（全仓 grep `gemv_fp16w` 只命中 C 侧）
+⇒ 目前只能从 C/C++ 或 ctypes 直接调用；还没有 LinearFP16W 之类的 nn.Module 封装。
+   若要在 Python 里用，最小做法是照 fused_cpu.py 的样子写个 ctypes 绑定。
+```
+★ 记录这一条的目的：**不要让读者以为它已经能用** —— 已导出 ≠ 已接线。
+
+#### 复跑这些数字
+
+```bat
+py -3.11 test_fused_kernels.py        :: 四个核的对拍（前向+反向）+ 计时
+py -3.11 bench_fused_final.py         :: 端到端（RMSNorm + 残差都走融合）
+py -3.11 bench_fused_e2e3.py          :: v1/v2/v3 三种接法对比
+py -3.11 bench_l3_vs_swiglu.py        :: 融合 vs 单独算（隔离对照）
+py -3.11 bench_r5_threads.py          :: 线程数（本机 5 线程最优，6 反而慢 5.9%）
+```
+
 ### 3.6 GDN 接入 Transformers（gdn_cpu.py）
 
 - Transformers 5.15 中 Qwen3-Next/3.5 的 GDN 慢路径符号为
@@ -204,7 +365,7 @@ void cgemm_8bit_inference_cpu_fp32(A, B_uint8, absmax, out, M,N,K, lda,ldb,ldc, 
 同步**：冻结基座权重常驻核显（每步 0 权重传输）、前向+反向整步在核显上执行、每步
 只同步一次。
 
-**关键实验结论（决定架构）**：
+**结论**：
 
 | 形态 | 结果 |
 |---|---|
@@ -234,6 +395,22 @@ void cgemm_8bit_inference_cpu_fp32(A, B_uint8, absmax, out, M,N,K, lda,ldb,ldc, 
   本机（Vega 6）稳态校准 1.2~1.5x → 启用；UHD 630 预期低于门槛 → 自动回退，
   即「弱核显机器开 --igpu 无害，只是自动不生效」。换机自查：
   `python gpu_scheduler.py` 末行直接打印校准值与判定。
+
+**CPU/核显异步并发：技术成立、训练负收益（R9，收关）**：torch-directml 为
+「排空时才执行」的懒执行模型（入队 ~0.3ms，CPU 空转 800ms 后排空仍需完整执行
+时间），普通「入队后 CPU 干活」天然串行；唯一能触发真并发的形态是**后台排空
+线程**（主线程入队 + 后台线程 `.cpu()` 排空 + 主线程并发算 CPU，混合负载实测
+1.32×，两端共享 DDR4 各劣化 ~1.6×）。但用于训练（微批数据并行半 CPU 半 DML）
+实测 0.83× vs 常驻——本机 DML 快于 CPU，分给 CPU 的批量连带宽争用一起坐上
+关键路径，最优分配＝全部给 DML（即常驻执行器）。非主线程入队为竞态行为
+（曾触发裸 RuntimeError），不可依赖。探针：`jiaoben/igpu_async_probe.py` /
+`igpu_async_drain_probe.py`。
+
+**普适准则**：CPU/核显并发只在**两设备算力接近**、或**负载天然分属各自强项**时才有正
+收益；若一设备明显更快（本机 DML ≈ 1.6× CPU），最优分配＝**全部给快设备**（常驻执行器），
+任何「半 CPU 半核显」都会让慢的那半连同带宽争用坐上关键路径。适用于任何「主快副慢」
+的异构加速：先测两设备吞吐比，明显 >1（如 1.2~1.5×）就别拆给慢设备；接近 1 或某类算子
+本就是慢设备强项时才值得异步，且必须块级/整步一次同步。
 
 **生图（SD）训练不用核显（R8 实测，方向关闭）**：SD UNet 主力算子在 DML 上全面
 落后——conv3×3 主力形状 0.50~0.90×、S=1024 自注意力 0.14×（7 倍慢）、投影 GEMM
@@ -270,189 +447,81 @@ CPU 更弱，预期收益低于 AMD 机型。`prepare()` 会在检测到软件�
 
 ---
 
-### 3.9 4-bit 块优化器（AdamW4bit，本 fork 新增）
+### 3.9 核显后端（OpenCL/CLBlast）：调用约定、fp16 与设备常驻步
 
-**状态：已实现、已验证、已发布（`0.50.2.dev3`）。**
+**为什么另起一条路**：DirectML 执行器（§3.8）只能在 Windows 上跑，且受驱动算子支持限制。
+OpenCL + CLBlast 用来把"核显能算什么、算到多快"测量清楚——它不依赖 torch_directml。
 
-**入口：`from bitsandbytes.optim.adamw4bit import AdamW4bit`（或 `bitsandbytes.optim` 已导出时直接导入）。**
+**列主序调用约定（核心修复）**：CLBlast 的 C API 按列主序解释矩阵。行主序思维下，立方矩阵
+碰巧能对（转置后仍立方），**非立方矩阵则返回参数校验错误**（-1011/-1015/-1016，不是内核崩溃）。
+正确做法是把"行主序的 C=A@B"映射成一次列主序 Sgemm（零拷贝，转置只体现在 m/n 与 lda/ldb/ldc 上，
+见 QUICKSTART §4.11 的映射式）。这解释了整整一轮"CLBlast 在真实形状上不能用"的误判。
 
-#### 3.9.1 它买什么
+**fp16 纯运算**：AMD 驱动下编译器不会为 `mad` 生成 packed f16 指令，但 ISA 里有
+`v_pk_add_f16`。用 unroll ×4 + 16~24 个独立累加器 + worksize 98304 的 OpenCL 内核，实测
+**1290 GFLOPS**（= GT 1030 理论值 1127 的 1.14×）。GEMM 另算：fp16 GEMM 最高 1039（0.92×），
+fp32 GEMM 655（0.58×）——纯运算峰值不等于 GEMM 峰值。
 
-| 对手 | 内存 | 速度 |
-|---|---|---|
-| **对 fp32 AdamW** | **7.8×** 少（1.031 对 8.000 字节/参数） | 0.96× |
-| **对 AdamW8bit** | ★ **2.06×** 少（1.031 对 2.125） | ★ **1.74× 更快**（≥64M；1M 上 2.63×，见 3.9.2） |
+**设备常驻训练步**：早期版本每步都在 host 与 device 之间来回（下载 y 47 ms、torch 里算 loss
+16 ms、numpy 转置 32 ms、上传 4 ms），host 胶水吃掉收益。常驻版的形态是：y 留在设备缓冲、
+一个小内核算 `d = y - target` 并同时写出梯度与其转置、一个工作组归约 `sum(d²)`；host 每步只见
+4 字节 loss 和下一批数据。2048 宽层实测 CPU 202.9 ms → 设备 135.1 ms（1.50×），权重对拍 7.6e-05。
 
-**★ 注意基线。通常引用的 7.8× 是【对 fp32】；而 bnb 用户手里已经是 8-bit，
-对他的实际收益是 2.06×。两个都对，回答的是不同的问题。**
+**为什么不能用"CPU+核显并发"**：两者共享 8 MB L3，CPU 工作集把核显的工作集挤出去。
+三档对照（CPU 单线程负载 → 核显相对空闲时的吞吐）：纯 ALU 自旋（工作集 0）**1.03×**、
+`torch.mm` 256³（0.8 MB）**1.96×**、`torch.mm` 2048³（48 MB）**6.08×**。
+⇒ 一个满功耗零访存的负载只让核显掉 3%，而工作集越大掉得越多 —— **机制是共享 L3 被挤，不是功耗仲裁**
+（功耗仲裁是开关式的，缓存争抢是连续可调的）。
 
-#### 3.9.2 而它是【两边都赢】，不是"用速度换内存"
 
-**早期版本的文档写着"没有 AVX2 路径、约慢 4×"，而那两句都是错的。实测：**
+**边界**：脚本级、未进 wheel；需要 `pyopencl` 与 CLBlast 动态库；M=1 归 CPU、M≥64 才归核显。
 
-```
-25 轮交替 × 10 次 · 1M 参数:
-  8-bit 中位 1.485 ms · 4-bit 中位 0.513 ms
-  配对比较比值中位 2.627 · 标准误 0.253 · 95% CI 2.131 ~ 3.123
-⇒ ★ 4-bit 快 2.63×（CI 排除 1）
-```
+### 3.10 4-bit 优化器内核：块级 4-bit 状态 + AVX2 打包
 
-**⇒ 而 AVX2 路径是【存在】的：`optimizer_4bit_blockwise_avx2` 在 `cpu_ops.cpp:3056`，
-而分派器 `cpu_ops.cpp:3707` 对【两状态家族】（adam / ademamix）选它 —— 而 `AdamW4bit` 用的正是 adam。
-一状态家族（sgd/lion）走标量，那是【刻意的设计】以缩小新代码面。**
+**只换存储层**：8-bit 优化器的模板已把"AdamW 数学"与"状态存储"分开，4-bit 版本只替换存储
+（`state1/state2` 每元素 4 bit，另加每 256 元素一个 fp32 absmax）。码表是 16 个对称电平，
+码 0 = −1、码 15 = +1。
 
-**★ 而那个 2.63× 是在【1M 参数】上测的 —— 1M 的工作集在 L3 里，而 300M 的优化器状态在 DRAM。
-2026-10-17 把参数量扫了一遍（同一对内核、交替测量、五次独立运行）：**
+**两个实现细节**：① 打包必须用 `pshufb` 而不是饱和加法（`packus` 会把负数饱和掉，状态码
+静默错）；② 舍入不调用库函数（call-free rounding），否则每个参数两次函数调用的开销会把
+"少一半字节"的收益吃掉。标量参考实现与独立 numpy 版本 50 步逐位一致。
 
-| N | 4-bit 对 8-bit 步时比（五次运行，中位） |
-|---|---|
-| 1M | 2.87× |
-| 4M | 1.72× |
-| 16M | 1.63× |
-| 64M | 1.71× |
-| 256M | 1.74× |
-| 384M | 1.74× |
+**速度的两个区间**：1M 参数时 0.658 ms vs 8-bit 1.682 ms（2.56×，内核比较隔离了状态宽度）；
+参数规模 ≥64M 时收益降到 1.74×（5 次 1.69~1.81）——状态流量与参数/梯度流量的比例随规模变化，
+说明"2.63×"只是 1M 参数的数字，不能外推。
 
-**⇒ ★【≥64M 稳定在约 1.7×（1.69~1.81）；2.63× 是缓存内的小规模数。】
-对训练步时的影响仍可忽略（优化器占一步 1~3%）。**
+### 3.11 NF2/NF3：N-bit 打包格式与"按测量选 level"
 
-#### 3.9.3 正确性
+**打包**：n 个值每个 `bits` 位，从 LSB 开始连续写入 `ceil(n*bits/8)` 字节；值 k 从 bit
+`k*bits` 开始，**3-bit 会跨字节边界**（2/4-bit 不会）。写错是静默的，所以模块自带
+"打包已知索引序列→读回比对"的自检。
 
-**内核与 numpy 参考【逐码一致】（`test_optimizer_4bit_cpu.py`）。**
+**电平选择由测量决定**：在 32×32 AR 模型上，2-bit 时 NF 比 uniform 好 11%（5.6206 vs
+5.6354）；3-bit 时 NF 只领先 0.0003（噪声内）⇒ 3-bit 用 uniform，让解码保持一次乘加。
+存储公式是 `bits + 32/block`：block=64 时 2-bit 为 2.5 bit/权重、3-bit 为 3.5 bit/权重。
 
-**⇒ 而正确性有一个前提不能省：状态按【成对处理】。
-逐元素 get/set 会对同一个字节做"读-改-写"，产生 store-to-load forwarding 停顿，
-实测比 8-bit 版【慢 4.6×】（7.385 ms 对 1.591 ms / 1M 参数）。
-⇒ ★ 所以"一次读字节、拆两个码、算完打包写一次"是性能关键，不是风格。**
+**为什么不用现成的 8-bit 索引路径**：通用路径按 8-bit 索引查任意码表，**存储不省**；
+要省存储必须把索引位宽本身降下来——这就是两个模块存在的理由。
 
-#### 3.9.4 在什么规模上用
+### 3.12 AVX-512 后端：分派、守卫与"为什么需要构建机自己支持"
 
-**⇒ 用户须知：它的收益随参数量线性放大。**
+**代码形态**：手写 AVX-512 内核包在 `#if defined(__AVX512F__)` 里，入口再套一层运行时守卫
+`if (has_avx512f())`；基础路径则用 `#pragma GCC target("avx2,fma,no-avx512f")` 防止编译器在
+普通函数里发射 EVEX 编码。`CMakeLists.txt` 的 `BNB_ENABLE_AVX512` 默认 OFF。
 
-```
-30.5M 参数  ⇒ 优化器状态省 203 MB = 内存的 1.3%  ⇒ ★【收益很小】
-300M 参数   ⇒ 约省 2 GB = 约 13%                ⇒ ★【才是它的战场】
-```
+**为什么必须"构建机自己跑得动 AVX-512"**：`-mavx512f` 是**整 TU** 级编译开关。实测在本机
+（AVX2-only）强行编译：产物 330 KB、1861 条 zmm 指令，一跑自检就 `Illegal instruction (132)`；
+把 zmm 归属到函数后发现，崩溃点不是手写内核，而是 `dequantizeBlockwise4bit/8bitCpu`、
+`fused_rmsnorm_bwd_cpu`、`optimizer_update_8bit_blockwise_cpu` 这些**每台机器都会调用**的普通
+函数被自动向量化了。⇒ 这就是 CMake 要求"探针在构建机上真跑一遍"的物理原因。
 
-**⇒ 在 30.5M 这个规模上，"换成更大 batch"的收益本来就小。它是为【大模型】准备的，
-而不是一个"到处都该换"的默认。**
+**数值与分派已验证**：在真正的 AVX-512 机器上，5 个内核与 AVX2 构建逐位一致；AVX-512 库自己的
+`has_avx512f_cpu()` 返回 True（即守卫成立）。
 
-#### 3.9.5 用法
-
-```python
-from bitsandbytes.optim.adamw4bit import AdamW4bit
-opt = AdamW4bit(model.parameters(), lr=1e-4)
-```
-
-**⇒ 与 `torch.optim.AdamW` 同签名。实测在 30.5M 模型上训 300 步，
-loss 轨迹与 `AdamW8bit` 差 0.53%（最差一格）/ −0.10%（末步）。**
-
----
-
-### 3.10 2-bit / 3-bit 量化（`quant2bit.py` / `quantnbit.py`）
-
-#### 3.10.1 它们在哪
-
-| 文件 | 覆盖 |
-|---|---|
-| `quant2bit.py` | 2-bit 专用路径 |
-| `quantnbit.py` | 通用 N-bit（2/3/4/5 位），带自检往返 |
-| `quant_lora.py` | 接入训练（`nf2` / `uni3` / `nf3` 等分支），冻结基座 + LoRA |
-| `linear2bit.py` · `embed2bit.py` | 层替换入口 |
-
-**⇒ 每字节 4 个索引，位序：字节内第 k 个值占 `[2k, 2k+1]` 位。**
-
-#### 3.10.2 ★ 而一条重要的负面结论（已有记录，此处重申）
-
-**"把基座权重降精度【存储】"这条路的实测结论是【负面的】——
-详见 `TECH_REPORT.md` §3.5。而它与 4-bit 【优化器】状态的结论【不冲突】，因为两者改的不是同一个东西：**
-
-```
-✗ 降【权重】精度  ⇒ 影响【每次前向】的数值与解量化开销 ⇒ 实测负面
-✓ 降【优化器状态】精度 ⇒ 只影响【更新步】的量化误差 ⇒ 而它被证明是快的
-⇒ ★【所以"4-bit 好"这个说法必须带主语:4-bit 的是【优化器状态】,不是权重】
-```
-
----
-
-### 3.11 ★★ 核显：从"逐算子负优化"到"设备常驻 + 有明确适用区间"
-
-**§3.8 记录的是 DirectML 块级常驻执行器（实验性，默认关闭）。
-此后对这颗核显（Vega 6 / gfx902，6 CU，384 shader）的测量推翻了一条、建立了一条，两者都写在这里。**
-
-#### 3.11.1 ★ 被推翻的：不是功耗仲裁，是共享 L3
-
-**早期结论把"CPU 一忙核显就掉 5×"归因为【15W 封装里的功耗仲裁】（一个开关式约束）。
-而那个归因是错的，而错在读错了曲线形状。**
-
-实测（线程数固定为 1，只改 CPU 的工作集）：
-
-| CPU 负载（1 线程） | 工作集 | 核显相对空闲 |
-|---|---|---|
-| `torch.mm` 256³ | 0.8 MB | **1.96×** |
-| `torch.mm` 1024³ | 12 MB | **3.76×** |
-| `torch.mm` 2048³ | 48 MB | ★ **6.08×** |
-| 纯 ALU 自旋（无访存） | 0 | ★ **1.03×** |
-
-**⇒ ★【满功耗的纯计算只掉 3%，而工作集越大掉得越多
-⇒ 机制是【共享的 8 MB L3 被 CPU 的工作集挤掉】，不是功耗。】**
-
-**⇒ 而它的意义完全不同：一个开关式的功耗约束只能靠"加功率"绕开（那对本机不可接受），
-而一个连续的缓存效应是【可调的量】。**
-
-#### 3.11.2 ★ 而建立的：不是分工，是换手
-
-**扫 M（N=6144, K=2048，Qwen3 gate_proj 的真实形状）：**
-
-| M | 核显单独 | CPU 单独 |
-|---|---|---|
-| 1 | 5.3 | ★ **11.7** |
-| 64 | ★ **356.8** | 56.7 |
-| 512 | ★ **409.2** | 159.8 |
-| 2048 | ★ **425.3** | 199.7 |
-
-**⇒ ★【M=1 给 CPU（单 token 无法并行），M≥64 给核显（约 2 倍）。
-而"两者一起"只比核显单独高 7% —— 因为共享 L3 是【零和的】。】**
-
-**⇒ ★ 所以正确的形态是【换手】，不是【分工】**：
-**小 M 用 CPU，大 M 用核显，而【不要让它们同时干同一份活】。**
-
-#### 3.11.3 ★★★ 而设备常驻训练：技术上成立，适用区间明确
-
-**已实现并验证：**
-* OpenCL GEMM 作为 `torch.autograd.Function`，前向与反传都在核显
-* **梯度等价：`dX` 1.3e-06 · `dW` 1.0e-06（对 torch 的 autograd）**
-* Adam 内核：与 torch 逐步对拍 5 步，误差 1.7e-07；**转置副本【逐位精确】**
-* **端到端训练与 CPU 【逐位一致】（loss 轨迹与权重变化量完全相同）**
-* 设备常驻后，每步主机流量从 **O(NK)** 降到 **O(BK+BN)**
-
-**→ 而它的适用区间是被测过的，不是估计的：**
-
-| N × K × B | 参数 | CPU ms | 设备 ms | 判定 |
-|---|---|---|---|---|
-| 512×512×1024 | 1.0 MB | 7.24 | 13.28 | ★ **CPU 赢 1.84×** |
-| 1024×1024×1024 | 4.2 MB | 40.68 | 37.69 | 平 |
-| **2048×2048×1024** | 16.8 MB | 152.56 | **117.42** | ★ **设备赢 1.30×** |
-| **2048×2048×4096** | 16.8 MB | 456.01 | **347.71** | ★ **设备赢 1.31×** |
-| 4096×1024×4096 | 16.8 MB | 570.55 | 594.87 | 平 |
-
-**⇒ ★【而三条读数各有含义：**
-* **参数越大越有利**（省的是 O(NK)）
-* **batch 几乎无影响**（1024 → 4096 时 1.30 → 1.31）
-* ★ **而 4096×1024 平 ⇒ 还要 K 也大**（核显需要长的归约维）
-**⇒ 所以适用区间是：【参数 ≥ 16 MB 且 K 大】。**
-
-#### 3.11.4 ★ 一条使用提醒
-
-**这颗核显的结论【必须以"形状 × 内核 × 状态"三维读】，不能压成一个数。
-本项目在同一条线上量错过四次，而两次的方向还相反：**
-
-```
-入队时间当执行时间   ⇒ 高估 40 倍（46787 GFLOPS，而设备峰值 1150）
-每步重传权重当常态   ⇒ 低估 5.8 倍（64.5 对 374 GFLOPS）
-```
-
-**⇒ ★【判据：任何超过设备标称峰值的核显数字，先当测量错误处理，而不是当发现。】**
+**收益边界**：硬件峰值是真的（全宽 512 位机器 fp32 2.02×、BF16 点积 2.71×），但现有 AVX-512
+内核都是 memory-bound 的（反量化、优化器状态更新、4-bit GEMV），实测只有 0.97~1.02×。
+**要拿到峰值收益，必须新写 compute-bound 的 AVX-512 内核（BF16 / VNNI / GEMM），而不是把现有
+内核用 AVX-512 编译一遍。**
 
 ## 4. 内存策略：为什么「量化冻结层」而不是「降权重存储精度」
 
@@ -483,6 +552,14 @@ bash build_linux.sh --selftest
 # 覆盖: quantize 往返 / gemm_8bit / 4bit GEMV / 8bit 优化器
 ```
 
+Windows 侧等价入口（MSVC 没有 `clang++ a.c` 这种形式，见脚本头注释）：
+```
+build_manual\selftest_win.bat        REM 在 VS x64 终端里运行；实测 4/4 PASS，退出码 0
+```
+该脚本带 `/TP`（把 `.c` 当 C++ 编译，与 Linux 行交给 `g++` 的效果一致），
+并带 `/we4556`：把「intrinsic 立即数越界」从警告升级为错误——**这正是 GCC/Clang 的默认行为**，
+所以在 MSVC 上干净通过，才是「内核可移植到 gcc/clang」的真证据，而不是假通过。
+
 **完整自检**（需 torch）：
 ```
 python -m bitsandbytes.gdn_cpu    # 应输出 selftest PASSED
@@ -491,7 +568,7 @@ python stress_opt.py             # 210 组合 0 失败（LLM 侧回归）
 
 ---
 
-## 6. 已知约束与坑
+## 6. 已知约束与问题
 
 1. **AVX2 机器禁用 bf16**：bf16 GEMM 由 oneDNN 软件模拟，单次 >90s 近乎卡死——训练务必 fp32。
 2. **gemm_8bit 与线性 code map**：默认 `create_dynamic_map()` 是非线性映射，无法 FMA 折叠；8bit 量化请传 `code=torch.arange(256)*(2/255)-1`。
@@ -501,3 +578,4 @@ python stress_opt.py             # 210 组合 0 失败（LLM 侧回归）
 6. **非 AVX2 CPU（实验性）**：所有 AVX2 内核都有运行时 `has_avx2_cpu()`（CPUID）保护 + `BNB_CPU_NO_AVX2=1` 环境变量强制关。非 AVX2 机器运行时走 scalar fallback——**能跑（慢），但不保证性能**。`build_linux.sh` 会自动检测（无 AVX2 则编译 `-march=x86-64` 不定义 `__AVX2__`）。**实验性：无 AVX2 设备实测，理论可跑，遇崩设 `BNB_CPU_NO_AVX2=1` 或 `build_linux.sh --no-avx2`。**
 7. **disk_balancer 在 WSL 里对宿主 NTFS 做 9P 卸载 = 严重风险（会扰 MFT，务必排除）**：在 **WSL** 上跑 disk_balancer（`--flash`）时，它的 **Linux 分支（`detect_disks`）会把宿主 Windows 的 NTFS 挂载（`/mnt/c`、`/mnt/d`，经**微软 9P 协议**）当成普通磁盘**，去对它们做冷参数卸载（SSD/HDD 读写）。**9P（网络文件系统语义）在高负载/逼近内存极限下对 NTFS 做高频读写/删除 → NTFS MFT 元数据经 9P 未正确落盘 → 文件系统异常 / 数据丢失**（实测案例：i5 WSL 生图高负载跑 `--flash -a` 后，宿主 D 盘疑似 MFT 紊乱、文件丢失、C 盘受影响）。**根因已定位：disk_balancer 的 Linux 分支未排除 WSL 的 9P/NTFS 挂载点。** **修复：`detect_disks`/`_get_disk_io` 必须排除 `9p`/`fuse`/宿主 NTFS 挂载**（fstype 非 `vfat`/`ntfs`/`9p`/`fuse`，mountpoint 非 `/mnt/[a-z]`），**绝不对宿主 NTFS（`/mnt/c`、`/mnt/d`）做冷参数卸载**；WSL 里遇到 9P/fuse 挂载应跳过/降级（不卸载冷参数，宁可不做也要安全）。**若已出现文件丢失**：① 立即停止 D 盘写入；② **先只读 `chkdsk <盘>:`（不带 /f）**；③ **不要 `chkdsk /f` / 格式化**（会把可恢复数据标记丢失）；④ 优先备份能读出的数据，数据恢复工具（TestDisk/Recuva）装 C 盘/另一盘运行、别写 D 盘。
 8. **Qwen3/Qwen3.5 训练需 `transformers>=5.15.0`（否则 CPU backward 段错误）**：实测 **`transformers 5.6.0` + torch 2.13+cpu 在 R5 (AVX2) 上对 `Qwen3ForCausalLM` 做 `loss.backward()` 会触发 `Windows fatal exception: access violation`**（前向正常，纯 torch(不经过 bnb) 也一样崩——是 transformers 5.6.0 的 Qwen3 CPU backward bug，**与 bnb DLL 无关**）。**换 `transformers==5.15.0` 后 backward 恢复正常**。→ **环境要求：`pip install "transformers>=5.15.0"`**。验证脚本：`python tools/verify_train_release.py --model <本地模型目录>`（免联网、免 tokenizer）。注意：`llamafactory 0.9.5` 与 transformers>5.6.0 存在依赖冲突，若同时用 llamafactory 需单独评估版本。
+9. **AVX512 / AVX512-BF16 守卫：5 处全部合法、0 雷 —— 但其中一处极易读反**。逐处判定（读源码原文，不看注释结论）：① `ops.py:20` 的 `_has_avx512` 只是标志位；② `ops.py:29` `if torch.__version__>=(2,6) and _has_avx512:` 才注册 `int8_linear_matmul`——这是**避免**掉进 `torch._int_mm` 在无 AVX-512 时的 **scalar 回退（源码注释：比 fp32 matmul 慢得多）**，守卫方向是对的；③ `ops.py:153` `avx512_fallback = _has_avx512 and blocksize>=2048` 是 **AVX512 实现自身**在大 blocksize 时的精度回退，AVX2 机器上短路、不受影响；④ `ops.py:253` `if has_avx512bf16():` 现在**只包住 HuggingFace `kernels-community` 外部 kernel 的动态加载**，而 `@register_kernel("bitsandbytes::gemv_4bit","cpu")` 在 `:268`、**缩进与 `:253` 同级 ⇒ 无条件注册**；⑤ `nn/modules.py:573` 的 `support_avx512bf16_for_cpu` 只在 `forward` 里决定是否做 `_convert_weight_packed_for_cpu`（AVX512-BF16 专用打包），且**额外要求 `not self.training` 且 `x.requires_grad == False`** ⇒ **训练路径永不触发**。**★ 最易读反的一处**：`backends/cpu/ops.py` 的 `gemm_4bit_forward_kernel = None` 是 `can_fuse` 的**首个条件**（`gemm_4bit_forward_kernel is None`）⇒ 在 **AVX2 机器上它正是 None，才使 `can_fuse` 可能为 True、才用上本 fork 自己的融合内核**（见 §3.5.1）；而有 AVX512-BF16 且装了 `kernels` 包时它非 None，反而去走外部 kernel。**⇒ 那个 `= None` 是"能够走融合内核"的前提，不是"被迫走慢路"。** **另有两条真实存在、但互不相同的事故，别再混为一谈**：① §3.5 的**回退调错 C 符号**（`gemv_4bit_inference_cpu_fp4/nf4_bf16` 只在 AVX512+BF16 构建下存在 ⇒ AVX2 上 AttributeError；且 nf4 传 `data_type=0` ⇒ 内核早退、**输出全 0 且无报错**）；② `@register_kernel("bitsandbytes::gemv_4bit","cpu")` 曾被 `if has_avx512bf16():` **整块包住** ⇒ AVX2 上**根本没有 CPU 注册**、静默退到 default 后端「整块反量化 + 稠密线性」，实测 **12.3 ms vs 1.16 ms（10.6×）**。②已于 **2026-09-22** 修复（注册移出守卫、改为无条件），修复前快照留在 `backends/cpu/ops.py.bak_gemvfix`。

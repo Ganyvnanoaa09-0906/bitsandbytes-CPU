@@ -1,10 +1,5 @@
 # Technical Guide: the Modified bitsandbytes CPU Backend
 
-> Audience: engineers (developers comfortable reading C++ / PyTorch kernels).
-> Purpose: explain what this fork **changed relative to upstream bitsandbytes (0.50.2 release line,
-> main `83364904`, 2026-09-03),
-> why, and how to use it**.
-
 ---
 
 ## 1. Background & Motivation
@@ -159,6 +154,185 @@ This fork:
 - uses the kernel constants **FP4=1 / NF4=2** for `data_type`;
 - after the fix, nf4/fp4 are bit-identical to the reference (error 0).
 
+### 3.5.1 `gemm_4bit`: CPU registration for the **training / batched-forward** 4-bit path
+
+> §3.5 fixes the **inference** `gemv_4bit` (M=1, one token at a time); this section is a **different path**.
+
+**Upstream problem**: `autograd/_functions.py:324/334/462/472` calls `gemm_4bit`, but the CPU backend
+**never registered it** ⇒ it fell through to the default backend's "dequantize the whole block + dense linear"
+⇒ **every batched 4-bit linear forward took the slow path**.
+
+**Fix: dispatch by M** (not either/or). Measured at K=N=4096, OMP=6:
+
+| M | fused kernel ms | default ms | winner |
+|---|---|---|---|
+| 1 | **1.20** | ~14.5 | fused **12×** |
+| 32 | **16.20** | 28.41 | fused 1.75× |
+| 64 | **28.79** | 31.37 | fused 1.09× |
+| 96 | 43.45 | **37.01** | default overtakes |
+| 256 | 166.11 | **64.94** | default **2.56×** |
+
+⇒ `_GEMM_4BIT_FUSED_MAX_M = 64`: M ≤ 64 uses the fused kernel, M > 64 goes back to oneDNN dense.
+⚠️ The threshold **used to be 16**, so M=17–64 was misrouted to default and was up to **3.4× slower than necessary**.
+(Losing at large M is **structural**: the fused inner loop is `m0 += 4`, re-reading the whole weight block
+every 4 rows ⇒ weight traffic O(M/4).)
+
+**★ Polarity note (the easiest thing to read backwards)**: the first condition of `can_fuse` is
+`gemm_4bit_forward_kernel is None` —
+when AVX512-BF16 **is** present and the `kernels` package is installed it is non-None ⇒ `can_fuse=False`
+⇒ the HuggingFace external kernel is used; on an **AVX2** machine it **is** None ⇒ which is what makes
+`can_fuse` able to be True and lets this fork's own fused kernel run.
+⇒ On AVX2, `= None` is the **precondition for using the fused kernel**, **not** "being forced onto a slow path".
+
+**Relation to upstream**: upstream `main`'s `backends/cpu/ops.py` still has **no** `gemm_4bit` CPU registration,
+no `cgemv_4bit_inference_cpu_*`, and no `_GEMM_4BIT_FUSED_MAX_M` (upstream 489 lines / this fork 679 lines).
+
+### 3.5.2 Fused elementwise kernel family (new in this fork, 12 exports)
+
+**Why it exists** (measured, `probe_step_breakdown.py`, R5-4500U pure CPU, ~30M model):
+```
+one step = 2.819 s = GEMM 63.6% / elementwise 20.8% / attention 7.6% / other ~8%
+GEMM is already at 92% of a same-shape pure-GEMM baseline => elementwise 20.8% is the only block left
+```
+In eager mode `RMSNorm` expands into **6 aten operators** (`pow/mean/add/rsqrt/mul/mul`), each
+reading and writing the whole activation => **pure bandwidth waste** (the activation itself is
+only `B x T x D x 4` bytes). Collapsing those 6 passes into 1 is the entire point of the family.
+**Boundary**: it optimises **bandwidth**, not FLOPs, so it gives ~0 on loads whose arithmetic
+intensity is already far above the crossover (e.g. convolution-dominated UNets); those need
+different work (see section 3.5.1 and `TECH_REPORT_EN.md` section 3.5.1).
+
+#### The 12 C-side exports
+
+Wrappers exported from `csrc/pythonInterface.cpp` (note the `c` prefix on the export symbol):
+
+```c
+long long cfused_rmsnorm_fwd_cpu(const float* x, const float* res, const float* weight,
+                                 float* out, float* xs, long long M, long long D, float eps);
+long long cfused_rmsnorm_bwd_cpu(const float* x, const float* weight, const float* dout,
+                                 const float* xs, float* dx, float* dw,
+                                 long long M, long long D);
+long long cfused_swiglu_fwd_cpu(const float* gate, const float* up, float* out, long long n);
+long long cfused_swiglu_bwd_cpu(const float* gate, const float* up, const float* dout,
+                                float* dgate, float* dup, long long n);
+long long cfused_add_scale_cpu(const float* x, const float* y, const float* scale,
+                               float* out, long long M, long long D);
+long long cfused_add_scale_inplace_cpu(const float* x, const float* y, const float* scale,
+                                       long long M, long long D);   /* in place, saves a pass */
+long long cfused_add_scale_rmsnorm_cpu(const float* x, const float* y, const float* scale,
+                                       const float* weight, float* out, float* xs,
+                                       long long M, long long D, float eps);
+/* strided variant: gate/up/out may have different row and column strides
+   (consumes chunk views with zero copies) */
+long long cfused_swiglu_strided_fwd_cpu(const float* gate, long long gs0, long long gs1,
+                                        const float* up,  long long us0, long long us1,
+                                        float* out, long long os0, long long M, long long D);
+long long cfused_swiglu_strided_bwd_cpu(...);
+/* fp16-weight GEMV/GEMM, three variants by output precision (see below) */
+void gemv_fp16w_inference_cpu_fp32(const void* A, const void* W, void* out,
+                                   long long M, long long N, long long K,
+                                   long long lda, long long ldb, long long ldc);
+```
+
+| C symbol | Semantics |
+|---|---|
+| `cfused_rmsnorm_fwd_cpu` / `_bwd_cpu` | `(x+res)*rsqrt(mean((x+res)^2)+eps)*w`, fwd/bwd |
+| `cfused_swiglu_fwd_cpu` / `_bwd_cpu` | `silu(gate)*up`, fwd/bwd |
+| `cfused_add_scale_cpu` / `_inplace_cpu` | `x + scale*y` (in-place version saves another pass) |
+| `cfused_add_scale_rmsnorm_cpu` | `RMSNorm(x + scale*y)` in one pass |
+| `cfused_swiglu_strided_fwd_cpu` / `_bwd_cpu` | same, but row/col strides may differ => consumes chunk views, zero copies |
+| `gemv_fp16w_inference_cpu_{fp32,bf16,fp16}` | fp16-weight GEMV/GEMM (**exported, not wired to Python** — see below) |
+
+#### Argument contract (two easy traps)
+
+- `M` is the **row count** (`B*T`) and `D` is the **last dimension**; `x` must be
+  row-major with a contiguous `D`.
+- `xs` is a **required** forward output of RMSNorm (`rsqrt(mean(x^2)+eps)`, length `M`)
+  that the backward pass needs. Do not drop it, and do not store it again via
+  `save_for_backward`.
+
+**Why the strided variant exists**: in `F.silu(a) * b`, `a` and `b` are often chunks
+viewed out of one larger tensor (e.g. after a fused QKV projection). The strided variant
+consumes that view directly and copies nothing.
+
+#### Two ways to use it from Python
+
+```python
+import fused_cpu                       # explicit calls; all four carry autograd
+h = fused_cpu.fused_add_scale_rmsnorm(x, attn_out, self.ls1, self.ln1_w, eps=1e-6)
+
+import enable_fused                    # one-liner monkey-patch onto model class methods
+enable_fused.enable()                  # RMSNorm only: measured +5.0~8.0%
+enable_fused.enable(block=True)        # plus residual+LayerScale: +5.5~7.1%
+```
+* The gain is **bandwidth**: ~0 on loads whose arithmetic intensity is far above the crossover
+  (convolution-dominated UNets).
+* `enable_fused` must run **before** model construction (it patches class methods); if the DLL
+  lacks the `cfused_*` exports it raises `RuntimeError`, so rebuild first per
+  `QUICKSTART_EN.md` section 2.
+* Numerics: `max|delta| ~1e-7` against eager, `state_dict` keys unchanged => checkpoints interload.
+
+#### NT store (non-temporal)
+
+Wherever these kernels do a **large pure write** (8-bit dequantisation output,
+`fused_add_scale`, `fused_swiglu`), they use `_mm256_stream_ps` when the conditions hold.
+
+**Why**: a normal store triggers write-allocate (RFO — the target cache line is read in
+before being written back), which adds a gratuitous third of the memory traffic. NT store
+bypasses the cache and writes the line without reading it.
+
+**Measured (`membw3.c`, pure AVX2, 48/192 MB footprint, 6 threads)**:
+
+| kernel | normal store | NT store | ratio |
+|---|---|---|---|
+| copy | 13.40 GB/s | **25.40** | 1.90x |
+| triad | 16.09 | **23.86** | 1.48x |
+
+**The threshold is discovered at runtime — do not hard-code it**:
+
+```c
+use_nt = bnb_is_aligned_for_nt(out)                        /* 32-byte aligned */
+      && (n * sizeof(T) >= bnb_nt_threshold_bytes());      /* output large enough */
+```
+
+```
+output <= 1.0 MB : normal store wins (NT loses 0.69~0.73x) -- it evicts data still in use
+output >= 4.2 MB : NT wins 2.0~3.1x
+threshold derived from the RUNTIME L3 size (L3 varies between 8/12/32+ MB)
+```
+
+**Counter-example**: the optimizer's `p` write must **not** use NT.
+That is a read-modify-write; the cache line was already read, so a normal store only marks
+it dirty, while NT forces an eviction => **21% regression**.
+
+#### `gemv_fp16w_inference_cpu_*`: exported, **not yet wired to Python**
+
+Three variants, one per output precision (`_fp32` / `_bf16` / `_fp16`).
+
+**Purpose**: keep weights in fp16 and accumulate in fp32 — halve weight traffic while fp32
+FMA throughput is unchanged. This is the **alternative** to the conclusion that "4-bit
+inference is a net loss on AVX2-only CPUs": 4-bit needs unpack instructions, and with no
+VNNI on AVX2 the unpack itself becomes the bottleneck. fp16 does not.
+
+**Current status, stated plainly**:
+```
+C side      : implemented, exported (pythonInterface.cpp L886-904), compiled into the DLL.
+Python side : NO call site (a repo-wide grep for `gemv_fp16w` hits only the C side)
+=> today it is callable only from C/C++ or via ctypes; there is no `LinearFP16W`
+   nn.Module wrapper yet. The minimal path to Python is a ctypes binding modelled on
+   fused_cpu.py.
+```
+This note exists so nobody assumes it already works: **exported is not the same as wired up**.
+
+#### Reproducing these numbers
+
+```bat
+py -3.11 test_fused_kernels.py        :: all four kernels checked against eager (fwd+bwd) + timing
+py -3.11 bench_fused_final.py         :: end to end (RMSNorm and residual both fused)
+py -3.11 bench_fused_e2e3.py          :: three wiring variants compared
+py -3.11 bench_l3_vs_swiglu.py        :: fused vs unfused, isolated
+py -3.11 bench_r5_threads.py          :: thread count (5 is optimal here; 6 is 5.9% SLOWER)
+```
+
 ### 3.6 GDN integration into Transformers (gdn_cpu.py)
 
 - In Transformers 5.15 the Qwen3-Next/3.5 GDN slow-path symbols are
@@ -228,7 +402,7 @@ theoretical), there is no bandwidth slack to "schedule". The only viable form is
 (zero weight transfer per step), forward and backward run on the iGPU for the whole
 step, and the device is synchronized once per step.
 
-**Key measured results (they shape the architecture)**:
+**Conclusion**:
 
 | Form | Result |
 |---|---|
@@ -238,48 +412,72 @@ step, and the device is synchronized once per step.
 | Same chain, seq=512 | 0.70x (DML's `F.sdpa` is 3-7x slower than CPU at long sequences; the specialized `multi_head_attention` kernel needs a newer driver, unsupported on 27.20.11032) |
 
 **Implementation notes** (`IgpuExecutor`, the engine behind `train.py --igpu`):
-- `prepare(tokens=)`: preconditions (DirectML available / all-fp32 / base memory ≤
-  `GPU_SCHED_MEM_MB` (adaptive cap, see below) / tokens per step ≤ `GPU_SCHED_MAX_TOKENS`,
-  default 256 / startup GEMM calibration passed); on success moves the whole model with
-  `model.to(DML)` and builds CPU
-  mirrors for trainable parameters; returns a reason on failure so the caller can
-  fall back to pure CPU;
+- `prepare(tokens=)`: preconditions (DirectML available / all-fp32 / base memory within
+  the adaptive cap / tokens per step ≤ `GPU_SCHED_MAX_TOKENS`, default 256 / a passing
+  startup GEMM calibration); on success moves the whole model with `model.to(DML)` and
+  builds CPU mirrors for trainable parameters; returns a reason on failure so the
+  caller can fall back to pure CPU;
 - `grad_to_cpu()`: copies trainable gradients to the CPU mirrors (for the bnb 8-bit
   optimizer) and clears the iGPU-side gradients — the only DML sync point in training;
 - `weights_from_cpu()`: copies optimizer-updated weights back to the iGPU; both round
   trips are adapter-sized and negligible;
 - the caller (train.py) runs one `loss.item()` per step — the single queue drain point.
 
-**Machine self-adaptation (Intel UHD 630 etc., R8)**: iGPU compute varies enormously, so fixed
-parameters cannot be reused across machines; the executor adapts by default and needs no per-machine
-hand tuning:
-- **the memory cap scales with total RAM**: 16GB→7000MB, 12GB→5250MB, 8GB→3500MB
-  (`min(7000, RAM×7/16)`; the iGPU shares system memory and the DML runtime adds ~0.5-1GB of
-  overhead, so low-memory machines must be tightened; an explicit `--igpu_mem_mb` /
-  `GPU_SCHED_MEM_MB` overrides it);
-- **startup GEMM calibration** (`calibrate_gpu()`): measures the iGPU/CPU throughput ratio with a
-  2048² pipelined GEMM (two rounds, take the better one; a long warm-up lets the iGPU ramp its
-  clocks — a single round shows ±0.1 jitter); if the ratio is below `GPU_SCHED_CALIB_MIN`
-  (default 1.10, `--igpu_min_gain 0` skips) it falls back automatically and prints the measured
-  value. On this machine (Vega 6) the steady-state calibration is 1.2-1.5x → enabled; UHD 630 is
-  expected to be below the threshold → automatic fallback, i.e. "on weak-iGPU machines `--igpu` is
-  harmless, it just does not take effect". Machine self-check: the last line of
-  `python gpu_scheduler.py` prints the calibration value and the verdict.
+**Machine adaptivity (Intel UHD 630 etc., R8)**: iGPU compute varies hugely across
+machines and fixed knobs cannot be reused as-is, so the executor adapts by default —
+no per-machine tuning required:
+- **the base-memory cap scales with total system RAM**: 16GB→7000MB, 12GB→5250MB,
+  8GB→3500MB (`min(7000, RAM×7/16)`; the iGPU shares system memory and the DML runtime
+  adds ~0.5-1GB, so small-RAM machines must tighten; explicit `--igpu_mem_mb` /
+  `GPU_SCHED_MEM_MB` overrides);
+- **a startup GEMM calibration** (`calibrate_gpu()`): a 2048² pipelined GEMM (best of
+  two rounds, long warmup to let the iGPU reach clock — a single round measured ±0.1
+  jitter) measures the iGPU/CPU throughput ratio; below `GPU_SCHED_CALIB_MIN`
+  (default 1.10, `--igpu_min_gain 0` to skip) it falls back automatically and prints
+  the measured value. This machine (Vega 6) steadies at 1.2-1.5x → enabled; UHD 630 is
+  expected below the gate → automatic fallback, i.e. "turning on --igpu on a weak-iGPU
+  machine is harmless; it simply does not engage". On a new machine run
+  `python gpu_scheduler.py`: the last line prints the calibration value and verdict.
 
-**Image-generation (SD) training does not use the iGPU (R8 measurement, direction closed)**: the SD
-UNet's main operators are all behind on DML — the main conv3×3 shape 0.50-0.90×, S=1024
-self-attention 0.14× (7× slower), projection GEMMs 0.38-0.65× (oneDNN's conv/small GEMM on 6-core
-AVX2 is too strong, and the weak iGPU has no compute advantage); moreover torch-directml and
-diffusers 0.40 have a version wall (next item), and a full-chain DML backward also triggers a plugin
-crash. Image-generation training stays on the pure-CPU (fp32) route.
+**CPU/iGPU asynchronous concurrency: technique works, training gain negative (R9,
+closed)**: torch-directml uses a lazy execution model — kernels run only at the drain
+(enqueue ~0.3ms; after 800ms of idle CPU the drain still needs the full execution
+time), so plain "enqueue then compute on CPU" is inherently serial. The only form that
+triggers true concurrency is a **background drain thread** (main thread enqueues +
+background thread `.cpu()` drains + main thread computes on CPU concurrently; mixed
+workload measured 1.32x, each side degraded ~1.6x by the shared DDR4 bandwidth). But
+applied to training (micro-batch data parallel, half CPU half DML) it measured 0.83x
+vs resident — on this machine the DML is faster than the CPU, so any batch fraction
+given to the CPU lands on the critical path together with bandwidth contention; the
+optimal assignment is everything on the DML (the resident executor). Enqueueing from
+a non-main thread is racy (once hit a bare RuntimeError) and must not be relied on.
+Probes: `jiaoben/igpu_async_probe.py` / `igpu_async_drain_probe.py`.
 
-**torch-directml version wall (torch241_compat.py)**: installing torch-directml downgrades torch to
-2.4.1 (its hard dependency), which makes diffusers 0.40 crash on import (three incompatibilities:
-`infer_schema` on string annotations, missing `flex_attention`, `sdpa` without `enable_gqa`). The
-project provides the `torch241_compat.py` runtime compatibility layer (idempotent, skips itself on
-torch≥2.5); any environment with torch-directml installed must import it before `import diffusers`
-when running SD/image-generation scripts. Also note: on DML, "`model.to(DML)` first, then change
-`requires_grad`" **silently loses the gradient graph** — set requires_grad first, then migrate.
+**Portable rule of thumb**: CPU/GPU concurrency only pays when the two devices are
+**comparable in throughput** or the workload **naturally splits into each device's
+strength**. If one is clearly faster (here DML ≈ 1.6× CPU), the optimal assignment is
+**everything on the fast device** (the resident executor) — any "half CPU, half iGPU"
+puts the slower half plus bandwidth contention on the critical path and is slower. For
+any "fast primary + slow secondary" heterogeneous setup: measure the throughput ratio
+first; if clearly >1 (e.g. 1.2~1.5×) don't offload to the slow device; only when ~1, or a
+class of operators is naturally the slow device's strength, is async splitting worth it —
+and then block-level / one-sync-per-step.
+
+**Image-generation (SD) training does not use the iGPU (R8, direction closed)**: every
+dominant SD UNet operator loses on DML — mainstream conv3×3 shapes 0.50-0.90x, S=1024
+self-attention 0.14x (7x slower), projection GEMMs 0.38-0.65x (oneDNN's conv/small-GEMM
+kernels are too strong on a 6-core AVX2 CPU for a weak iGPU to beat); torch-directml
+and diffusers 0.40 additionally face a version wall (below), and the full-chain DML
+backward crashes inside the plugin. Image-generation training stays pure-CPU (fp32).
+
+**The torch-directml version wall (torch241_compat.py)**: installing torch-directml
+downgrades torch to 2.4.1 (its hard dependency), which breaks diffusers 0.40 at import
+(string annotations in `infer_schema`, missing `flex_attention`, no `enable_gqa` in
+`sdpa` — three incompatibilities). The project ships `torch241_compat.py`, a runtime
+shim (idempotent, skipped automatically on torch≥2.5); any environment with
+torch-directml installed must import it before `diffusers` when running SD/image
+scripts. Also note: on DML, changing `requires_grad` after `model.to(DML)` **silently
+drops the autograd graph** — always set requires_grad before the move.
 
 **Operator compatibility** (DML autograd matrix, each probe in its own process to avoid
 queue-deadlock cascades): matmul / gelu / `F.softmax` / `F.rms_norm` / SDPA / causal
@@ -294,8 +492,8 @@ queue-deadlock cascades): matmul / gelu / `F.softmax` / `F.rms_norm` / SDPA / ca
 **Limits**: quantized bases (QuantLinear etc.) and combinations with `--flash`
 (disk_balancer) are unsupported; small models (H<1024) and long sequences (seq>256)
 are in the negative-gain region — the executor refuses and falls back to pure CPU;
-image-generation (SD) training is a proven negative-gain plus environment-incompatible
-direction and does not use the iGPU (see above).
+image-generation (SD) training is a proven negative-gain + environment-incompatible
+direction and stays off the iGPU (see above).
 
 **Device compatibility**: the executor uses the generic DirectML (D3D12) interface
 and was measured on AMD Radeon(TM) Graphics (R5-4500U); Intel UHD 630 (i5-10400 etc.)
@@ -308,210 +506,96 @@ device name and availability).
 
 ---
 
-### 3.9 4-bit block optimizer (AdamW4bit, new in this fork)
+### 3.9 iGPU backend (OpenCL/CLBlast): call convention, fp16, and the resident step
 
-**Status: implemented, verified, released (`0.50.2.dev3`).**
+**Why a second path**: the DirectML executor (3.8) only runs on Windows and is limited by driver
+operator coverage. OpenCL + CLBlast exists to measure what the iGPU can compute and how fast, without
+depending on torch_directml.
 
-**Entry point: `from bitsandbytes.optim.adamw4bit import AdamW4bit` (or import it
-directly when `bitsandbytes.optim` already exports it).**
+**The column-major call convention (the core fix)**: CLBlast's C API interprets matrices column-major.
+With a row-major mindset a cubic matrix accidentally works (transposing a cube leaves a cube), while
+**non-cubic shapes return argument-validation errors** (-1011/-1015/-1016, not a crashing kernel). The
+fix maps row-major "C = A @ B" onto one column-major Sgemm with zero copies -- only m/n and
+lda/ldb/ldc change (the mapping is written out in QUICKSTART 4.11). This explains a whole round of
+"CLBlast does not work on real shapes" that was really a wrong call.
 
-#### 3.9.1 What it buys you
+**fp16 pure compute**: under the AMD driver the compiler does not emit packed f16 for `mad`, but the
+ISA has `v_pk_add_f16`. An OpenCL kernel with unroll x4, 16-24 independent accumulators and worksize
+98304 measures **1290 GFLOPS** (1.14x the GT 1030 theoretical 1127). GEMM is separate: fp16 GEMM peaks
+at 1039 (0.92x), fp32 GEMM at 655 (0.58x) -- pure-compute peak is not GEMM peak.
 
-| Comparison | Memory | Speed |
-|---|---|---|
-| **vs fp32 AdamW** | **7.8×** less (1.031 vs 8.000 bytes/param) | 0.96× |
-| **vs AdamW8bit** | ★ **2.06×** less (1.031 vs 2.125) | ★ **1.74× faster** (≥64M; 2.63× at 1M, see 3.9.2) |
+**Device-resident training step**: the early version round-tripped per step (download y 47 ms, compute
+the loss in torch 16 ms, transpose in numpy 32 ms, upload 4 ms) and the host glue ate the gain. The
+resident version keeps y in its device buffer, one small kernel computes `d = y - target` and writes the
+gradient together with its transpose, and one workgroup reduces `sum(d^2)`; the host sees a 4-byte loss
+and the next batch. A 2048-wide layer measures CPU 202.9 ms -> device 135.1 ms (1.50x), weights agree
+to 7.6e-05.
 
-**★ Mind the baseline.** The commonly quoted 7.8× is **vs fp32**; a bnb user already has
-8-bit, so the actual gain for him is 2.06×. Both are right — they answer different
-questions.
+**Why CPU+iGPU concurrency does not work**: the two share the 8 MB L3, and the CPU working set
+evicts the iGPU's. Three CPU loads (single thread) against the idle-iGPU throughput: pure ALU spin
+(working set 0) **1.03x**, `torch.mm` 256^3 (0.8 MB) **1.96x**, `torch.mm` 2048^3 (48 MB) **6.08x**.
+=> a full-power, zero-memory load only costs the iGPU 3%, while a larger working set costs more --
+**the mechanism is L3 sharing, not power arbitration** (power arbitration is a switch, cache
+contention is a continuous knob).
 
-#### 3.9.2 And it wins on both sides, not "trading speed for memory"
+**Limits**: script-level, not in the wheel; needs `pyopencl` and the CLBlast shared library; M=1 belongs
+to the CPU, only M>=64 belongs to the iGPU.
 
-**Earlier versions of this doc said "no AVX2 path, about 4× slower", and both of those
-statements were wrong. Measured:**
+### 3.10 The 4-bit optimizer kernel: block-wise 4-bit state + AVX2 packing
 
-```
-25 alternating rounds × 10 times · 1M params:
-  8-bit median 1.485 ms · 4-bit median 0.513 ms
-  paired-ratio median 2.627 · standard error 0.253 · 95% CI 2.131 ~ 3.123
-⇒ ★ 4-bit is 2.63× faster (the CI excludes 1)
-```
+**Only the storage layer changes**: the 8-bit template already separates the AdamW math from the state
+storage, so the 4-bit version replaces the storage only (`state1/state2` at 4 bits per element plus one
+fp32 absmax per 256 elements). The code table is 16 symmetric levels, code 0 = -1, code 15 = +1.
 
-**⇒ The AVX2 path does exist**: `optimizer_4bit_blockwise_avx2` is at `cpu_ops.cpp:3056`,
-and the dispatcher at `cpu_ops.cpp:3707` selects it for the **two-state family**
-(adam / ademamix) — and `AdamW4bit` uses exactly adam.
-One-state families (sgd / lion) take the scalar path, which is **deliberate design** to
-keep the new code surface small.
+**Two implementation details**: (1) packing must use `pshufb`, not saturating adds (`packus` saturates
+negative values away and the state codes go silently wrong); (2) rounding is call-free -- two library
+calls per parameter would eat the gain from moving half the bytes. The scalar reference is bit-identical
+to an independent numpy implementation over 50 steps.
 
-**★ But that 2.63× was measured at 1M params** — a 1M working set sits in L3, while 300M
-of optimizer state lives in DRAM. On 2026-10-17 the parameter count was swept (the same
-kernel pair, alternating measurement, five independent runs):
+**Two speed regimes**: at 1M parameters 0.658 ms vs 1.682 ms for the 8-bit kernel (2.56x, the comparison
+isolates state width); at >=64M parameters the gain drops to 1.74x (5 runs 1.69-1.81) -- the ratio of
+state traffic to parameter/gradient traffic changes with size, so "2.63x" is a 1M-parameter number and
+must not be extrapolated.
 
-| N | 4-bit vs 8-bit step-time ratio (five runs, median) |
-|---|---|
-| 1M | 2.87× |
-| 4M | 1.72× |
-| 16M | 1.63× |
-| 64M | 1.71× |
-| 256M | 1.74× |
-| 384M | 1.74× |
+### 3.11 NF2/NF3: the packed N-bit format and choosing levels by measurement
 
-**⇒ ★ ≥64M is stable at about 1.7× (1.69~1.81); 2.63× is a small, in-cache number.
-The impact on the training step remains negligible (the optimizer is 1~3% of a step).**
+**Packing**: n values of `bits` bits are written consecutively from the LSB into `ceil(n*bits/8)`
+bytes; value k starts at bit `k*bits`, so **3-bit crosses byte boundaries** (2- and 4-bit do not).
+Getting it wrong is silent, so the module ships a self-test that packs a known index sequence and reads
+it back.
 
-#### 3.9.3 Correctness
+**Level choice comes from measurement**: on the 32x32 AR model NF beats uniform by 11% at 2 bits
+(5.6206 vs 5.6354); at 3 bits NF leads by 0.0003 (inside noise), so 3-bit uses uniform and decoding
+stays a multiply-add. Storage is `bits + 32/block`: at block=64 that is 2.5 bits/weight for 2-bit and
+3.5 for 3-bit.
 
-**The kernel matches the numpy reference code-for-code (`test_optimizer_4bit_cpu.py`).**
+**Why not reuse the existing 8-bit index path**: the general path indexes an arbitrary code table with
+8-bit indices, which **saves no storage**; saving storage requires narrowing the index width itself --
+that is the reason both modules exist.
 
-**⇒ And correctness carries one precondition that cannot be dropped: state is handled in
-pairs.** Element-wise get/set performs a read-modify-write on the same byte, producing
-store-to-load forwarding stalls; measured **4.6× slower** than the 8-bit version
-(7.385 ms vs 1.591 ms / 1M params).
-⇒ ★ So "read the byte once, split the two codes, compute, then pack and write once" is
-the performance key, not a style point.
+### 3.12 The AVX-512 backend: dispatch, guards, and why the build host must support it
 
-#### 3.9.4 At what scale to use it
+**Code shape**: the hand-written AVX-512 kernels sit inside `#if defined(__AVX512F__)` and their entry
+points are additionally guarded at run time by `if (has_avx512f())`; baseline functions are wrapped in
+`#pragma GCC target("avx2,fma,no-avx512f")` so the compiler cannot emit EVEX-encoded instructions in
+code that every CPU calls. `BNB_ENABLE_AVX512` in `CMakeLists.txt` defaults to OFF.
 
-**⇒ User-facing note: the gain scales linearly with the parameter count.**
+**Why the build host itself must be able to run AVX-512**: `-mavx512f` is a **per-translation-unit**
+switch. Compiling it on the AVX2-only development machine produces a 330 KB library with 1861 zmm
+instruction lines, and the self-test dies with `Illegal instruction (132)`; attributing the zmm lines
+to functions shows the crash sites are not the hand-written kernels but the ordinary functions every
+machine calls -- `dequantizeBlockwise4bit/8bitCpu`, `fused_rmsnorm_bwd_cpu`,
+`optimizer_update_8bit_blockwise_cpu` -- all auto-vectorised. That is the physical reason the CMake
+option requires a probe that actually runs on the build host.
 
-```
-30.5M params  ⇒ optimizer state saves 203 MB = 1.3% of memory  ⇒ ★ [gain is tiny]
-300M params   ⇒ saves about 2 GB = about 13%                   ⇒ ★ [this is the battlefield]
-```
+**Numerics and dispatch are verified**: on a real AVX-512 machine five kernels are bit-identical to the
+AVX2 build, and the AVX-512 library's own `has_avx512f_cpu()` returns True (the guard holds).
 
-**⇒ At the 30.5M scale, the gain from "switch to a larger batch" is small to begin with.
-It is built for large models, not a default that "should be switched on everywhere".**
-
-#### 3.9.5 Usage
-
-```python
-from bitsandbytes.optim.adamw4bit import AdamW4bit
-opt = AdamW4bit(model.parameters(), lr=1e-4)
-```
-
-**⇒ Same signature as `torch.optim.AdamW`. Measured on a 30.5M model, 300 training steps:
-the loss trajectory differs from `AdamW8bit` by 0.53% (worst point) / −0.10% (final
-step).**
-
----
-
-### 3.10 2-bit / 3-bit quantization (`quant2bit.py` / `quantnbit.py`)
-
-#### 3.10.1 Where they live
-
-| File | Coverage |
-|---|---|
-| `quant2bit.py` | dedicated 2-bit path |
-| `quantnbit.py` | generic N-bit (2/3/4/5-bit), with a self-check round trip |
-| `quant_lora.py` | wired into training (`nf2` / `uni3` / `nf3` and other branches), frozen base + LoRA |
-| `linear2bit.py` · `embed2bit.py` | layer-replacement entry points |
-
-**⇒ 4 indices per byte, bit order: the k-th value within a byte occupies bits `[2k, 2k+1]`.**
-
-#### 3.10.2 ★ And one important negative result (already recorded, restated here)
-
-**The measured conclusion for the "lower base-weight **storage** precision" route is
-negative** — see `TECH_REPORT_EN.md` §3.5. And it does **not conflict** with the 4-bit
-**optimizer**-state conclusion, because the two do not change the same thing:
-
-```
-✗ lowering [weight] precision          ⇒ affects the values and dequant cost of [every forward] ⇒ measured negative
-✓ lowering [optimizer state] precision ⇒ affects only the quantization error of [the update step] ⇒ and it is proven fast
-⇒ ★ [so "4-bit is good" must carry its subject: 4-bit is [the optimizer state], not the weights]
-```
-
----
-
-### 3.11 ★★ iGPU: from "per-operator negative optimization" to "device-resident + a defined applicability window"
-
-**§3.8 documents the DirectML block-level resident executor (experimental, off by default).
-Since then, measurement of this iGPU (Vega 6 / gfx902, 6 CU, 384 shader) refuted one
-thing and established another; both are written down here.**
-
-#### 3.11.1 ★ Refuted: not power arbitration, it is the shared L3
-
-**The earlier conclusion attributed "the iGPU drops 5× as soon as the CPU is busy" to
-power arbitration inside the 15W package (a switch-like constraint).** That attribution
-was wrong, and it was wrong because the curve shape was misread.
-
-Measured (thread count fixed at 1, only the CPU working set changed):
-
-| CPU load (1 thread) | Working set | iGPU relative to idle |
-|---|---|---|
-| `torch.mm` 256³ | 0.8 MB | **1.96×** |
-| `torch.mm` 1024³ | 12 MB | **3.76×** |
-| `torch.mm` 2048³ | 48 MB | ★ **6.08×** |
-| pure ALU spin (no memory access) | 0 | ★ **1.03×** |
-
-**⇒ ★ Full-power pure compute drops only 3%, while the larger the working set the more it
-drops ⇒ the mechanism is the shared 8 MB L3 being evicted by the CPU working set, not
-power.**
-
-**⇒ And the significance is entirely different: a switch-like power constraint can only be
-worked around by "adding power" (unacceptable on this machine), whereas a continuous
-cache effect is a tunable quantity.**
-
-#### 3.11.2 ★ And established: not division of labour, it is hand-off
-
-**Sweep over M (N=6144, K=2048, the real shape of Qwen3 gate_proj):**
-
-| M | iGPU alone | CPU alone |
-|---|---|---|
-| 1 | 5.3 | ★ **11.7** |
-| 64 | ★ **356.8** | 56.7 |
-| 512 | ★ **409.2** | 159.8 |
-| 2048 | ★ **425.3** | 199.7 |
-
-**⇒ ★ M=1 goes to the CPU (a single token cannot be parallelized), M≥64 goes to the iGPU
-(about 2×). And "both together" is only 7% above the iGPU alone — because the shared L3
-is zero-sum.**
-
-**⇒ ★ So the correct form is hand-off, not division of labour**:
-small M on the CPU, large M on the iGPU, and **do not let both work on the same job at the
-same time**.
-
-#### 3.11.3 ★★★ And device-resident training: technically sound, applicability window well-defined
-
-**Implemented and verified:**
-* OpenCL GEMM as a `torch.autograd.Function`, with forward and backward both on the iGPU
-* **gradient agreement: `dX` 1.3e-06 · `dW` 1.0e-06 (vs torch autograd)**
-* Adam kernel: stepped against torch for 5 steps, error 1.7e-07; **the transposed copy is
-  bit-exact**
-* **end-to-end training is bit-identical to CPU (loss trajectory and weight deltas exactly
-  the same)**
-* with the device resident, per-step host traffic drops from **O(NK)** to **O(BK+BN)**
-
-**→ And its applicability window was measured, not estimated:**
-
-| N × K × B | Params | CPU ms | Device ms | Verdict |
-|---|---|---|---|---|
-| 512×512×1024 | 1.0 MB | 7.24 | 13.28 | ★ **CPU wins 1.84×** |
-| 1024×1024×1024 | 4.2 MB | 40.68 | 37.69 | tie |
-| **2048×2048×1024** | 16.8 MB | 152.56 | **117.42** | ★ **device wins 1.30×** |
-| **2048×2048×4096** | 16.8 MB | 456.01 | **347.71** | ★ **device wins 1.31×** |
-| 4096×1024×4096 | 16.8 MB | 570.55 | 594.87 | tie |
-
-**⇒ ★ And the three readings each carry a meaning:**
-* **the larger the parameter count, the more favourable** (what is saved is O(NK))
-* **batch has almost no effect** (1024 → 4096 gives 1.30 → 1.31)
-* ★ **and 4096×1024 tying ⇒ K must be large too** (the iGPU needs a long reduction dimension)
-
-**⇒ So the applicability window is: params ≥ 16 MB and K large.**
-
-#### 3.11.4 ★ One usage reminder
-
-**Conclusions about this iGPU must be read in three dimensions: shape × kernel × state;
-they cannot be compressed into a single number. This project has mis-measured four times
-on this same line, and two of those were in opposite directions:**
-
-```
-queue time treated as execution time   ⇒ 40× overestimate (46787 GFLOPS, device peak 1150)
-re-sending weights every step as normal ⇒ 5.8× underestimate (64.5 vs 374 GFLOPS)
-```
-
-**⇒ ★ Criterion: any iGPU number above the device's nominal peak should be treated as a
-measurement error first, not as a discovery.**
+**Where the gain stops**: the hardware ceiling is real (on a full-width 512-bit CPU, fp32 2.02x and
+BF16 dot product 2.71x), but today's AVX-512 kernels are all memory-bound (dequantise, optimizer state
+update, 4-bit GEMV), so the measured kernel speedup is only 0.97-1.02x. **Capturing the peak requires
+new compute-bound AVX-512 kernels (BF16 / VNNI / GEMM), not recompiling the existing ones with AVX-512
+flags.**
 
 ## 4. Memory strategy: why "quantized frozen layers" not "lower-precision weight storage"
 
@@ -543,6 +627,15 @@ bash build_linux.sh --selftest
 # covers: quant roundtrip / gemm_8bit / 4-bit GEMV / 8-bit optimizer
 ```
 
+Windows equivalent (MSVC has no `clang++ a.c` form -- see the script header):
+```
+build_manual\selftest_win.bat        REM run inside a VS x64 terminal; measured 4/4 PASS, exit code 0
+```
+It passes `/TP` (compile the `.c` as C++, matching what handing the file to `g++` does on
+Linux) and `/we4556`, which promotes "intrinsic immediate out of range" from a warning to an
+error -- exactly what GCC/Clang do by default. A clean build here is therefore real evidence
+that the kernels port to gcc/clang, not a false pass.
+
 **Full self-test** (requires torch):
 ```
 python -m bitsandbytes.gdn_cpu    # should print "selftest PASSED"
@@ -551,7 +644,7 @@ python stress_opt.py             # 210 combos, 0 failures (LLM-side regression)
 
 ---
 
-## 6. Known Constraints & Pitfalls
+## 6. Known Constraints & Issues
 
 1. **bf16 disabled on AVX2**: bf16 GEMM is software-emulated by oneDNN; a single matmul
    >90 s (effectively hangs) — always use fp32 for training.
@@ -597,3 +690,4 @@ python stress_opt.py             # 210 combos, 0 failures (LLM-side regression)
    `python tools/verify_train_release.py --model <local-model-dir>` (offline, tokenizer-free).
    Note: `llamafactory 0.9.5` conflicts with transformers>5.6.0; evaluate it separately if you
    also use llamafactory.
+9. **AVX512 / AVX512-BF16 guards: all 5 sites are legitimate, 0 landmines — but one is very easy to read backwards.** Judged by reading the source itself, not the comments: ① `ops.py:20` `_has_avx512` is just a flag; ② `ops.py:29` registers `int8_linear_matmul` only under `if torch.__version__>=(2,6) and _has_avx512:` — this **avoids** falling into `torch._int_mm`'s **scalar fallback without AVX-512** (its own comment: much slower than fp32 matmul), so the guard points the right way; ③ `ops.py:153` `avx512_fallback = _has_avx512 and blocksize>=2048` is the **AVX512 implementation's own** precision fallback at large blocksizes ⇒ short-circuits on AVX2 and does not affect us; ④ `ops.py:253` `if has_avx512bf16():` now wraps **only the dynamic load of the HuggingFace `kernels-community` external kernel**, while `@register_kernel("bitsandbytes::gemv_4bit","cpu")` sits at `:268` at the **same indent as `:253` ⇒ registered unconditionally**; ⑤ `nn/modules.py:573`'s `support_avx512bf16_for_cpu` only decides whether `forward` performs `_convert_weight_packed_for_cpu` (an AVX512-BF16-specific packing), and **additionally requires `not self.training` and `x.requires_grad == False`** ⇒ **never triggers on the training path**. **★ The easiest one to invert**: in `backends/cpu/ops.py`, `gemm_4bit_forward_kernel = None` is the **first condition of `can_fuse`** (`gemm_4bit_forward_kernel is None`) ⇒ on an **AVX2 machine it IS None, which is what makes `can_fuse` able to be True and lets this fork's own fused kernel run** (see §3.5.1); with AVX512-BF16 plus the `kernels` package it is non-None and the external kernel is used instead. **⇒ that `= None` is the precondition for using the fused kernel, not "being forced onto a slow path".** **Also: two accidents that really happened but are NOT the same thing — do not conflate them**: ① §3.5's **fallback calling the wrong C symbols** (`gemv_4bit_inference_cpu_fp4/nf4_bf16` exist only in AVX512+BF16 builds ⇒ AttributeError on AVX2; and nf4 passing `data_type=0` ⇒ the kernel's early return ⇒ **all-zero output with no error**); ② `@register_kernel("bitsandbytes::gemv_4bit","cpu")` having been **wrapped entirely inside `if has_avx512bf16():`** ⇒ on AVX2 there was **no CPU registration at all**, silently falling through to the default backend's "dequantize + dense linear", measured at **12.3 ms vs 1.16 ms (10.6×)**. ② was fixed on **2026-09-22** (registration moved out of the guard, now unconditional); the pre-fix snapshot is kept at `backends/cpu/ops.py.bak_gemvfix`.
