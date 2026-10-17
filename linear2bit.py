@@ -33,7 +33,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 sys.path.insert(0, r'D:\work\bnb-quant')
-sys.stdout.reconfigure(encoding='utf-8')
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except AttributeError:
+    pass   # ★ IDLE 的 stdout 是 StdOutputFile,没有 reconfigure
+           #   （正常终端里是 io.TextIOWrapper,有这个方法）
+
 
 from quant2bit import BLOCK, NF2, UNIFORM2, bytes_per_weight, dequantize, quantize  # noqa: E402
 

@@ -30,7 +30,12 @@ import sys
 
 import numpy as np
 
-sys.stdout.reconfigure(encoding='utf-8')
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except AttributeError:
+    pass   # ★ IDLE 的 stdout 是 StdOutputFile,没有 reconfigure
+           #   （正常终端里是 io.TextIOWrapper,有这个方法）
+
 
 # The actual NF4 table, copied from cpu_ops.cpp:275 -- not re-derived.
 NF4 = np.array([-1.0, -0.6961928009986877, -0.5250730514526367, -0.39491748809814453,

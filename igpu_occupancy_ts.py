@@ -43,7 +43,12 @@ import time
 import numpy as np
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-sys.stdout.reconfigure(encoding='utf-8')
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except AttributeError:
+    pass   # ★ IDLE 的 stdout 是 StdOutputFile,没有 reconfigure
+           #   （正常终端里是 io.TextIOWrapper,有这个方法）
+
 
 import pyopencl as cl  # noqa: E402
 from measure_guard import assert_idle, stamp   # noqa: E402

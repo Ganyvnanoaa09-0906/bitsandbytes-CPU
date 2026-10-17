@@ -33,7 +33,12 @@ import torch
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.stdout.reconfigure(encoding='utf-8')
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except AttributeError:
+    pass   # ★ IDLE 的 stdout 是 StdOutputFile,没有 reconfigure
+           #   （正常终端里是 io.TextIOWrapper,有这个方法）
+
 
 from small_vqvae import vqvae_from_ckpt  # noqa: E402
 

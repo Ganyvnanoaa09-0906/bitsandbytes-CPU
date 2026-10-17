@@ -20,7 +20,12 @@ from __future__ import annotations
 import io
 import sys
 
-sys.stdout.reconfigure(encoding='utf-8')
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except AttributeError:
+    pass   # ★ IDLE 的 stdout 是 StdOutputFile,没有 reconfigure
+           #   （正常终端里是 io.TextIOWrapper,有这个方法）
+
 
 # ---------- (a) the docstring, both copies ----------
 OLD_DOC = """What it does NOT buy: speed. The kernel currently has no AVX2 path, so it runs

@@ -22,7 +22,12 @@ import os
 import re
 import sys
 
-sys.stdout.reconfigure(encoding='utf-8')
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except AttributeError:
+    pass   # ★ IDLE 的 stdout 是 StdOutputFile,没有 reconfigure
+           #   （正常终端里是 io.TextIOWrapper,有这个方法）
+
 ROOT = r'D:\work\bitsandbytes-CPU'
 EV = r'D:\work\research\evidence'
 P = r'D:\work\research\CPU_FORGE_TECHNICAL_REPORT.md'

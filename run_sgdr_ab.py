@@ -30,7 +30,12 @@ import subprocess
 import sys
 import time
 
-sys.stdout.reconfigure(encoding='utf-8')
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except AttributeError:
+    pass   # ★ IDLE 的 stdout 是 StdOutputFile,没有 reconfigure
+           #   （正常终端里是 io.TextIOWrapper,有这个方法）
+
 os.chdir(r'D:\work\bitsandbytes-CPU')
 
 TOKENS = r'D:\work\cloud_salvage\ScPeP7\tokens_32x32_full.pt'
