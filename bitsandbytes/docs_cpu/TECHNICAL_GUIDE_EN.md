@@ -23,7 +23,7 @@ from "unusable" to "usable" (seconds per step).
 
 ---
 
-## 2. Change Overview (relative to v0.45.1)
+## 2. Change Overview (relative to upstream 0.50.2 / main)
 
 ```
 csrc/
@@ -505,6 +505,97 @@ vendor graphics driver, and reports the device name via `iGPU_name()` (shown in
 device name and availability).
 
 ---
+
+### 3.9 iGPU backend (OpenCL/CLBlast): call convention, fp16, and the resident step
+
+**Why a second path**: the DirectML executor (3.8) only runs on Windows and is limited by driver
+operator coverage. OpenCL + CLBlast exists to measure what the iGPU can compute and how fast, without
+depending on torch_directml.
+
+**The column-major call convention (the core fix)**: CLBlast's C API interprets matrices column-major.
+With a row-major mindset a cubic matrix accidentally works (transposing a cube leaves a cube), while
+**non-cubic shapes return argument-validation errors** (-1011/-1015/-1016, not a crashing kernel). The
+fix maps row-major "C = A @ B" onto one column-major Sgemm with zero copies -- only m/n and
+lda/ldb/ldc change (the mapping is written out in QUICKSTART 4.11). This explains a whole round of
+"CLBlast does not work on real shapes" that was really a wrong call.
+
+**fp16 pure compute**: under the AMD driver the compiler does not emit packed f16 for `mad`, but the
+ISA has `v_pk_add_f16`. An OpenCL kernel with unroll x4, 16-24 independent accumulators and worksize
+98304 measures **1290 GFLOPS** (1.14x the GT 1030 theoretical 1127). GEMM is separate: fp16 GEMM peaks
+at 1039 (0.92x), fp32 GEMM at 655 (0.58x) -- pure-compute peak is not GEMM peak.
+
+**Device-resident training step**: the early version round-tripped per step (download y 47 ms, compute
+the loss in torch 16 ms, transpose in numpy 32 ms, upload 4 ms) and the host glue ate the gain. The
+resident version keeps y in its device buffer, one small kernel computes `d = y - target` and writes the
+gradient together with its transpose, and one workgroup reduces `sum(d^2)`; the host sees a 4-byte loss
+and the next batch. A 2048-wide layer measures CPU 202.9 ms -> device 135.1 ms (1.50x), weights agree
+to 7.6e-05.
+
+**Why CPU+iGPU concurrency does not work**: the two share the 8 MB L3, and the CPU working set
+evicts the iGPU's. Three CPU loads (single thread) against the idle-iGPU throughput: pure ALU spin
+(working set 0) **1.03x**, `torch.mm` 256^3 (0.8 MB) **1.96x**, `torch.mm` 2048^3 (48 MB) **6.08x**.
+=> a full-power, zero-memory load only costs the iGPU 3%, while a larger working set costs more --
+**the mechanism is L3 sharing, not power arbitration** (power arbitration is a switch, cache
+contention is a continuous knob).
+
+**Limits**: script-level, not in the wheel; needs `pyopencl` and the CLBlast shared library; M=1 belongs
+to the CPU, only M>=64 belongs to the iGPU.
+
+### 3.10 The 4-bit optimizer kernel: block-wise 4-bit state + AVX2 packing
+
+**Only the storage layer changes**: the 8-bit template already separates the AdamW math from the state
+storage, so the 4-bit version replaces the storage only (`state1/state2` at 4 bits per element plus one
+fp32 absmax per 256 elements). The code table is 16 symmetric levels, code 0 = -1, code 15 = +1.
+
+**Two implementation details**: (1) packing must use `pshufb`, not saturating adds (`packus` saturates
+negative values away and the state codes go silently wrong); (2) rounding is call-free -- two library
+calls per parameter would eat the gain from moving half the bytes. The scalar reference is bit-identical
+to an independent numpy implementation over 50 steps.
+
+**Two speed regimes**: at 1M parameters 0.658 ms vs 1.682 ms for the 8-bit kernel (2.56x, the comparison
+isolates state width); at >=64M parameters the gain drops to 1.74x (5 runs 1.69-1.81) -- the ratio of
+state traffic to parameter/gradient traffic changes with size, so "2.63x" is a 1M-parameter number and
+must not be extrapolated.
+
+### 3.11 NF2/NF3: the packed N-bit format and choosing levels by measurement
+
+**Packing**: n values of `bits` bits are written consecutively from the LSB into `ceil(n*bits/8)`
+bytes; value k starts at bit `k*bits`, so **3-bit crosses byte boundaries** (2- and 4-bit do not).
+Getting it wrong is silent, so the module ships a self-test that packs a known index sequence and reads
+it back.
+
+**Level choice comes from measurement**: on the 32x32 AR model NF beats uniform by 11% at 2 bits
+(5.6206 vs 5.6354); at 3 bits NF leads by 0.0003 (inside noise), so 3-bit uses uniform and decoding
+stays a multiply-add. Storage is `bits + 32/block`: at block=64 that is 2.5 bits/weight for 2-bit and
+3.5 for 3-bit.
+
+**Why not reuse the existing 8-bit index path**: the general path indexes an arbitrary code table with
+8-bit indices, which **saves no storage**; saving storage requires narrowing the index width itself --
+that is the reason both modules exist.
+
+### 3.12 The AVX-512 backend: dispatch, guards, and why the build host must support it
+
+**Code shape**: the hand-written AVX-512 kernels sit inside `#if defined(__AVX512F__)` and their entry
+points are additionally guarded at run time by `if (has_avx512f())`; baseline functions are wrapped in
+`#pragma GCC target("avx2,fma,no-avx512f")` so the compiler cannot emit EVEX-encoded instructions in
+code that every CPU calls. `BNB_ENABLE_AVX512` in `CMakeLists.txt` defaults to OFF.
+
+**Why the build host itself must be able to run AVX-512**: `-mavx512f` is a **per-translation-unit**
+switch. Compiling it on the AVX2-only development machine produces a 330 KB library with 1861 zmm
+instruction lines, and the self-test dies with `Illegal instruction (132)`; attributing the zmm lines
+to functions shows the crash sites are not the hand-written kernels but the ordinary functions every
+machine calls -- `dequantizeBlockwise4bit/8bitCpu`, `fused_rmsnorm_bwd_cpu`,
+`optimizer_update_8bit_blockwise_cpu` -- all auto-vectorised. That is the physical reason the CMake
+option requires a probe that actually runs on the build host.
+
+**Numerics and dispatch are verified**: on a real AVX-512 machine five kernels are bit-identical to the
+AVX2 build, and the AVX-512 library's own `has_avx512f_cpu()` returns True (the guard holds).
+
+**Where the gain stops**: the hardware ceiling is real (on a full-width 512-bit CPU, fp32 2.02x and
+BF16 dot product 2.71x), but today's AVX-512 kernels are all memory-bound (dequantise, optimizer state
+update, 4-bit GEMV), so the measured kernel speedup is only 0.97-1.02x. **Capturing the peak requires
+new compute-bound AVX-512 kernels (BF16 / VNNI / GEMM), not recompiling the existing ones with AVX-512
+flags.**
 
 ## 4. Memory strategy: why "quantized frozen layers" not "lower-precision weight storage"
 

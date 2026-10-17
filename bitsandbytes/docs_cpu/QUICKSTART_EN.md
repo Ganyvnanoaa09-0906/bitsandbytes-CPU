@@ -472,6 +472,175 @@ out = F.fused_dequant_linear_8bit(A5d, wq, absmax, blocksize=64)
 
 ---
 
+### 4.11 Integrated-GPU acceleration (OpenCL / CLBlast, experimental)
+
+The iGPU path in 4.8 is the Windows-only DirectML executor. There is a second, **cross-platform**
+path: OpenCL + CLBlast, built to answer "how fast is this iGPU really, and is the result correct".
+
+**The call convention (the trap)**: CLBlast's C API is **column-major**. Passing non-cubic matrices
+with a row-major mindset returns `-1011/-1015/-1016` (argument validation failures, not a crashing
+kernel). The fix is a column-major call with a transpose mapping, zero copies:
+
+```
+C_row(m×n) = A_row(m×k) @ B_row(k×n)
+  <=> Sgemm(COL, NO, NO, m=n, n=m, k=k,
+            A=B_row buffer, lda=n,
+            B=A_row buffer, ldb=k,
+            C=C_row buffer, ldc=n)
+```
+
+**Measured (Vega 6 / R5-4500U, fp32, CLBlast)**:
+
+| Shape | iGPU GFLOPS | CPU, same shape |
+|---|---|---|
+| MLP up (k=2048->n=2048) | 535.0 | 217 |
+| MLP down (k=2048->n=512) | 512.5 | 256 |
+| QKV (k=512->n=2048) | 531.5 | 235 |
+| o proj (k=512->n=512) | 371.5 | 164 |
+| head (k=512->n=1024) | 486.0 | 219 |
+| attn QK / AV | 116.7 / 119.5 | — |
+
+Suite average **505-551 GFLOPS vs CPU 204 => 2.6-2.7x**. fp16 pure compute (unroll x4, 16-24
+accumulators, worksize 98304) measures **1290 GFLOPS = 1.14x the GT 1030's theoretical 1127**; but
+fp16 GEMM peaks at 1039 (0.92x) and fp32 GEMM at 655 (0.58x).
+
+**Device-resident single-layer training step** (weights resident on the device, loss/backward/Adam all
+on-device, the host sees a 4-byte loss per step):
+
+| Layer width | CPU | iGPU resident | Speedup |
+|---|---|---|---|
+| 2048 | 202.9 ms | 135.1 ms | **1.50x** |
+| 1024 | — | — | 1.35x |
+| 512 | — | — | **CPU wins at 1.24x** |
+
+Weights agree to 7.6e-05 relative error -- correctness before speed.
+
+**When to use the iGPU (it is decided by M, not by "which is faster")**: M=1 goes to the CPU;
+**M>=64 goes to the iGPU (about 2x)**. **Do not run CPU and iGPU concurrently**: when both run, the
+iGPU retains only 40-54% and the CPU 53-61% (the shared 8 MB L3 is thrashed by the CPU working set),
+so concurrency gives 1.1-1.3x against 1.51x for sequential execution.
+
+**Scripts to reproduce** (repo root; needs `pyopencl` and the CLBlast shared library):
+
+```bat
+py -3.11 clblast_colmajor_shapes.py     :: column-major fix + real-shape GFLOPS table
+py -3.11 igpu_clblast_resident.py       :: device-resident single-layer step (check, then time)
+py -3.11 igpu_fp16_tune.py              :: fp16 pure-compute tuning (nacc/worksize/unroll)
+```
+
+⚠️ **Status: experimental, not wired into the training/inference path** and not shipped as a Python
+API in the wheel. Treat it as a measurement/verification tool. It is a different path from the
+DirectML executor in 4.8 (DirectML is Windows-only, OpenCL is cross-platform); do not mix conclusions.
+
+### 4.12 The 4-bit optimizer (AdamW4bit: half the state of 8-bit)
+
+The 8-bit optimizer already stores its two moments at about 2.3 B/parameter; `AdamW4bit` takes the
+state down to **about 1.03 B/parameter** (fp32 AdamW is 8.0). Its API has the same shape:
+
+```python
+from bitsandbytes.optim import AdamW4bit
+
+opt = AdamW4bit(model.parameters(), lr=1e-4, weight_decay=0.01)
+opt.zero_grad()
+loss = loss_fn(model(x), y)
+loss.backward()
+opt.step()               # the rest of the training loop is unchanged
+```
+
+**State layout**: each moment is stored as 4-bit codes (two codes per byte, high nibble = even index)
+with one fp32 absmax per 256 elements; 16 symmetric levels (code 0 = -1, code 15 = +1). **Exact zero
+is not in the code table** -- an all-zero block writes code 8 (+1/15), whose dequantised value is
+still 0 because its absmax is 0.
+
+**Measured payoff (on the 30.49M-parameter AR model)**:
+
+| Quantity | Value |
+|---|---|
+| State memory | 232.6 MB -> **29.5 MB** (half of the 8-bit optimizer, 1/8 of fp32) |
+| Kernel step (1M params) | 0.658 ms vs 1.682 ms for 8-bit = **2.56x** |
+| Kernel step (>=64M params) | **1.74x** (5 runs: 1.69-1.81) -- the larger the tensor, the smaller the gain; do not extrapolate the 1M number |
+| Training trajectory (120 AR steps) | the two loss curves stay within **0.27%** (same track, not identical) |
+| State codes | **bit-identical** to an independent numpy implementation over 50 steps |
+
+**Limits** (each one encountered the hard way):
+
+- fp32 parameters only; `blocksize` is compiled in at 256 and any other value raises
+- it is a **separate class**, not a replacement for `torch.optim.AdamW`; quantised state does not
+  promise reproducible runs (same seed and data still take a different path from fp32)
+- if the DLL does not export `coptimizer_update_4bit_blockwise_cpu`, **import fails loudly** instead
+  of falling back to 8-bit
+- release status: available from the `0.50.2.dev3` build onward
+
+### 4.13 2-bit and 3-bit quantisation (quant2bit / quantnbit)
+
+**2-bit (`quant2bit.py`)**: block-wise (block=64) nearest-level quantisation, **four indices packed per
+byte**. Storage is **2.5 bits/weight** (2 + 32/64), against 4.5 bits for the 4-bit path and 32 for fp32.
+
+**3-bit (`quantnbit.py`)**: a general packed N-bit quantiser (LSB first; 3-bit crosses byte
+boundaries) with a built-in pack/unpack self-test. 3-bit uses **uniform** levels rather than NF: the
+difference is 0.0003 (inside noise), and uniform keeps decoding a multiply-add.
+
+**Loss cost** (trained 32x32 AR checkpoint, 512-sample validation slice):
+
+| Storage format | Validation loss | vs fp32 |
+|---|---|---|
+| fp32 | 5.5038 | — |
+| 4-bit (uniform / nf) | 5.5080 / 5.5084 | +0.004 |
+| 3-bit (uniform / nf) | 5.5234 / 5.5231 | +0.019 |
+| **2-bit nf** | **5.6206** | **+0.117 (~2.1%)** |
+| 2-bit uniform | 5.6354 | +0.132 |
+
+=> **at 2 bits NF beats uniform by 11%; at 3 bits and wider NF buys nothing.**
+
+**Two end-to-end verdicts**:
+
+- ⚠️ **SD1.5 full pipeline with 2-bit weights: does not work** -- 39.5% storage saved, but the
+  generated images are destroyed
+- ✓ **Frozen 2-bit base + LoRA training: works** -- replace only `nn.Linear`; the initial validation
+  loss is 5.5538 (matching the format's own number), LoRA parameters train and the loss drops, and the
+  base never needs to be differentiable
+
+```python
+from quant2bit import quantize, dequantize, bytes_per_weight      # 2-bit: 2.5 bits/weight
+from quantnbit import quantize as quantize_n, dequantize as dequantize_n   # any N-bit
+
+packed, absmax, meta = quantize(w, block=64)        # 2-bit, 4 codes per byte
+w2 = dequantize(packed, absmax, *meta)
+print(bytes_per_weight(64))                         # 2.5
+
+packed3, absmax3, meta3 = quantize_n(w, bits=3, block=64)   # 3-bit
+w3 = dequantize_n(packed3, absmax3, meta3)
+```
+
+⚠️ **Status: script-level components (repo root), not in the wheel**; they are the reference
+implementation of the format and its measurements, not part of the training path.
+
+### 4.14 AVX-512 builds (experimental)
+
+Beyond AVX2 the CPU backend has a second set of hand-written AVX-512 kernels (the 16-lane 4-bit
+dequantise path and the bf16 GEMV tinygemm path), off by default. Build them with the opt-in switch
+(the build host must be able to *run* an AVX-512 probe):
+
+```bat
+:: CMake build (Linux/GCC); BNB_ENABLE_AVX512 defaults to OFF
+cmake -DBNB_ENABLE_AVX512=ON ..
+```
+
+**Verified facts (measured on a remote AVX-512 machine)**:
+
+| Item | Result |
+|---|---|
+| Correctness | five kernels **bit-identical** to the AVX2 build (max diff 0.00e+00) |
+| Dispatch | the library reports `has_avx512f_cpu()=True`, so the guarded kernels' guard holds |
+| Hardware ceiling | on a full-width 512-bit CPU: fp32 FMA **2.02x** AVX2, BF16 dot product **2.71x** (same compiler, single thread) |
+| Real kernels | **0.97-1.02x** on today's memory-bound kernels (see `TECH_REPORT_EN.md` 3.11) |
+
+⚠️ **Warning**: `-mavx512f` is a **translation-unit-wide** switch, so ordinary kernels
+(dequantise, optimizer, rmsnorm) get auto-vectorised to zmm and **SIGILL on an AVX2-only CPU** the
+moment they are called. An AVX-512 binary therefore cannot be shipped to AVX2 machines; it has to be
+loaded through a CPUID check (the dual-library selector is not wired into the installer yet -- it is
+on the todo list).
+
 ## 5. Disk load balancer (disk_balancer, SSD protection)
 
 > ### Disclaimer & Usage Restrictions (please read carefully)

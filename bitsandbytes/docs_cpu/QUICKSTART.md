@@ -408,6 +408,165 @@ out = F.fused_dequant_linear_8bit(A5d, wq, absmax, blocksize=64)
 
 ---
 
+### 4.11 核显加速（OpenCL / CLBlast，实验性）
+
+§4.8 的核显路径是 Windows 专用的 DirectML 执行器。另有一条**跨平台**路径：OpenCL + CLBlast，
+用于回答"这块核显到底能算多快、算得对不对"。
+
+**调用约定（踩过的坑）**：CLBlast 的 C API 是**列主序**的。用行主序思维传非立方矩阵会返回
+`-1011/-1015/-1016`（参数校验失败，而不是内核崩溃）。正确做法是"列主序调用 + 转置映射"，
+零拷贝：
+
+```
+C_row(m×n) = A_row(m×k) @ B_row(k×n)
+  ⇔ Sgemm(COL, NO, NO, m=n, n=m, k=k,
+          A=B_row 在显存里的地址, lda=n,
+          B=A_row 在显存里的地址, ldb=k,
+          C=C_row 在显存里的地址, ldc=n)
+```
+
+**实测（Vega 6 / R5-4500U，fp32，CLBlast）**：
+
+| 形状 | 核显 GFLOPS | 同形状 CPU |
+|---|---|---|
+| MLP up (k=2048→n=2048) | 535.0 | 217 |
+| MLP down (k=2048→n=512) | 512.5 | 256 |
+| QKV (k=512→n=2048) | 531.5 | 235 |
+| o proj (k=512→n=512) | 371.5 | 164 |
+| head (k=512→n=1024) | 486.0 | 219 |
+| attn QK / AV | 116.7 / 119.5 | — |
+
+套件平均 **505~551 GFLOPS vs CPU 204 ⇒ 2.6~2.7×**。fp16 纯运算（unroll ×4、16~24 累加器、
+worksize 98304）实测 **1290 GFLOPS = GT 1030 理论值 1127 的 1.14×**；但 fp16 GEMM 最高 1039
+（0.92×），fp32 GEMM 655（0.58×）。
+
+**设备常驻单层训练步**（权重常驻显存、loss/反向/Adam 全在设备上，host 每步只见 4 字节 loss）：
+
+| 层宽 | CPU | 核显常驻 | 加速 |
+|---|---|---|---|
+| 2048 | 202.9 ms | 135.1 ms | **1.50×** |
+| 1024 | — | — | 1.35× |
+| 512 | — | — | **CPU 反而快 1.24×** |
+
+权重对拍相对误差 7.6e-05，先对拍再读速度。
+
+**什么时候用核显（由 M 决定，不是"谁快"）**：M=1 给 CPU；**M≥64 给核显（约 2×）**。
+**异步并发不要做**：CPU 与核显同时跑时，iGPU 只保留 40~54%、CPU 只剩 53~61%（共享的 8 MB L3
+被 CPU 工作集挤掉），并发 1.1~1.3× 反而不如顺序执行 1.51×。
+
+**复跑脚本**（仓库根目录，需要 `pyopencl` + CLBlast 动态库）：
+
+```bat
+py -3.11 clblast_colmajor_shapes.py     :: CLBlast 列主序修复 + 真实形状 GFLOPS 表
+py -3.11 igpu_clblast_resident.py       :: 设备常驻单层训练步（先对拍、后计时）
+py -3.11 igpu_fp16_tune.py              :: fp16 纯运算调参（nacc/worksize/unroll 网格）
+```
+
+⚠️ **状态：实验性，尚未接入训练/推理主路径**，也没有随 wheel 发布 Python API；把它当
+"测量与验证工具"用。它与 §4.8 的 DirectML 执行器是两条不同的路（DirectML 仅 Windows，
+OpenCL 跨平台），结论不能混用。
+
+### 4.12 4-bit 优化器（AdamW4bit：状态再减半）
+
+8-bit 优化器的两阶矩状态已压到约 2.3 B/参数；`AdamW4bit` 再把状态压到 **约 1.03 B/参数**
+（fp32 AdamW 是 8.0）。用法与 8-bit 优化器同形：
+
+```python
+from bitsandbytes.optim import AdamW4bit
+
+opt = AdamW4bit(model.parameters(), lr=1e-4, weight_decay=0.01)
+opt.zero_grad()
+loss = loss_fn(model(x), y)
+loss.backward()
+opt.step()               # 训练循环其余部分不变
+```
+
+**状态布局**：两阶矩各按 4-bit 码保存（每字节两个码，高半字节是偶数下标），每 256 个元素一个
+fp32 absmax；16 个对称电平（码 0 = −1，码 15 = +1）。**精确 0 不在码表里**——全零块写入码 8
+（对应 +1/15），因为 absmax 也是 0，反量化后仍是 0。
+
+**收益（在 30.49M 参数的 AR 模型上实测量）**：
+
+| 项 | 数值 |
+|---|---|
+| 状态内存 | 232.6 MB → **29.5 MB**（8-bit 优化器的 1/2，fp32 的 1/8） |
+| 内核步耗时（1M 参数） | 0.658 ms vs 8-bit 1.682 ms = **2.56×** |
+| 内核步耗时（≥64M 参数） | **1.74×**（5 次：1.69~1.81）——量级越大收益越小，别拿 1M 的数字外推 |
+| 训练轨迹（120 步 AR） | 两条 loss 曲线相差 **0.27%**（不是"一致"，是"同轨"） |
+| 状态码正确性 | 与独立 numpy 实现 50 步**逐位一致** |
+
+**边界**（每条都是踩过的）：
+
+- 只支持 **fp32 参数**；`blocksize` 编译期固定 256，传其它值直接报错
+- 它是**独立类**，不替换 `torch.optim.AdamW`；量化状态**不保证可复现轨迹**（同 seed 同数据，路径与 fp32 不同）
+- DLL 里没有 `coptimizer_update_4bit_blockwise_cpu` 时**导入即报错**，不会静默退回 8-bit
+- 发布状态：`0.50.2.dev3` 起的构建提供
+
+### 4.13 2-bit / 3-bit 量化（quant2bit / quantnbit）
+
+**2-bit（`quant2bit.py`）**：块级（block=64）最近电平量化，**每字节打包 4 个索引**。
+存储 **2.5 bit/权重**（2 + 32/64），对比 4-bit 路径的 4.5 bit 和 fp32 的 32 bit。
+
+**3-bit（`quantnbit.py`）**：通用 N-bit 打包（LSB 优先，3-bit 会跨字节边界），自带
+"打包→解包"自检。3-bit 选 **uniform** 电平而不是 NF：两者损失只差 0.0003（噪声内），
+uniform 让解码回到一次乘加。
+
+**损失代价**（训练好的 32×32 AR 模型，512 条验证样本）：
+
+| 存储格式 | 验证 loss | 相对 fp32 |
+|---|---|---|
+| fp32 | 5.5038 | — |
+| 4-bit（uniform / nf） | 5.5080 / 5.5084 | +0.004 |
+| 3-bit（uniform / nf） | 5.5234 / 5.5231 | +0.019 |
+| **2-bit nf** | **5.6206** | **+0.117（≈2.1%）** |
+| 2-bit uniform | 5.6354 | +0.132 |
+
+⇒ **2-bit 时 NF 比 uniform 好 11%；3-bit 及更宽时 NF 没有意义。**
+
+**两个端到端判决**：
+
+- ⚠️ **SD1.5 全 pipeline 用 2-bit 权重：不成立** —— 存储省 39.5%，但生成的图彻底坏掉
+- ✓ **冻结的 2-bit 基座 + LoRA 训练：成立** —— 只替换 `nn.Linear`，初始验证 loss
+  5.5538（与格式自身的值一致），LoRA 参数可训、loss 下降，基座不需要可微
+
+```python
+from quant2bit import quantize, dequantize, bytes_per_weight      # 2-bit：2.5 bit/权重
+from quantnbit import quantize as quantize_n, dequantize as dequantize_n   # 任意 N-bit
+
+packed, absmax, meta = quantize(w, block=64)        # 2-bit 打包（4 码/字节）
+w2 = dequantize(packed, absmax, *meta)
+print(bytes_per_weight(64))                         # 2.5
+
+packed3, absmax3, meta3 = quantize_n(w, bits=3, block=64)   # 3-bit
+w3 = dequantize_n(packed3, absmax3, meta3)
+```
+
+⚠️ **状态：脚本级组件（仓库根目录），尚未进 wheel**；它是"格式与测量"的参考实现，
+不是训练主路径的一部分。
+
+### 4.14 AVX-512 构建（实验性）
+
+CPU 后端在 AVX2 之外还有一套手写 AVX-512 内核（4-bit 反量化的 16-lane 路径、bf16 GEMV 的
+tinygemm 路径），默认关闭。构建方式（要求构建机自己能执行 AVX-512 探针）：
+
+```bat
+:: CMake 构建（Linux/GCC），BNB_ENABLE_AVX512 默认 OFF
+cmake -DBNB_ENABLE_AVX512=ON ..
+```
+
+**已验证的事实（远程 AVX-512 机器实测）**：
+
+| 项 | 结果 |
+|---|---|
+| 数值正确性 | 5 个内核与 AVX2 构建**逐位一致**（误差 0.00e+00） |
+| 分派 | 库内 `has_avx512f_cpu()=True`，受保护内核的守卫成立 |
+| 硬件峰值 | 全宽 512 位机器：fp32 FMA **2.02×** AVX2、BF16 点积 **2.71×**（同编译器、单线程） |
+| 真实内核 | 现有 memory-bound 内核 **0.97~1.02×**（见 `TECH_REPORT.md` §3.11） |
+
+⚠️ **注意**：`-mavx512f` 是**整编译单元**级开关，会让普通内核（dequantize、优化器、rmsnorm）
+被编译器自动向量化成 zmm → 在 AVX2 机器上**一调用就 SIGILL**。所以 AVX-512 二进制不能发给
+AVX2 机器，必须按 CPUID 选择加载（本 fork 尚未把"双库+选路"接入安装包，属于待办）。
+
 ## 5. 硬盘均衡负载（disk_balancer，SSD 保护）
 
 > ### 免责声明与使用限制（请务必阅读）

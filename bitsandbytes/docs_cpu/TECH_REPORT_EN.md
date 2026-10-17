@@ -372,6 +372,84 @@ device name.
 
 ---
 
+### 3.8 iGPU (OpenCL/CLBlast): 2.6-2.7x the CPU on real shapes, while concurrency loses to sequential
+
+**The column-major root cause**: every CLBlast failure on non-cubic shapes (-1011/-1015/-1016) was
+**row-major call style** violating its column-major API, not a kernel problem. After switching to the
+zero-copy "column-major + transpose mapping" call, every real model shape works.
+
+**Measured (Vega 6 / R5-4500U, fp32)**: MLP up 535.0, MLP down 512.5, QKV 531.5, o proj 371.5,
+head 486.0, attn QK/AV 116.7/119.5 GFLOPS; the CPU on the same shapes gets 164-256. **Suite average
+505-551 vs CPU 204 => 2.6-2.7x**; cube 2048^3 655.0 GFLOPS.
+
+**GT 1030 equivalence**: fp16 pure compute 1290.1 GFLOPS = **1.14x** the GT 1030's theoretical 1127;
+fp16 GEMM peaks at 1039.4 (0.92x); fp32 GEMM at 655 (0.58x). **"pure compute meets the target" does
+not mean "GEMM meets the target"** -- the two numbers have to be reported separately.
+
+**Device-resident single-layer step**: a 2048-wide layer measures CPU 202.9 ms vs device 135.1 ms =
+**1.50x** (weights agree to 7.6e-05); a 1024 layer 1.35x; a 512 layer has the CPU ahead at 1.24x. The
+device returns only a 4-byte loss.
+
+**When to use the iGPU**: M=1 belongs to the CPU; **M>=64 belongs to the iGPU (about 2x)**.
+**Concurrency is not the answer**: the iGPU retains 40-54% and the CPU 53-61% (shared L3 thrashed), so
+concurrency gives 1.1-1.3x against 1.51x sequential.
+
+**Applicability**: experimental, script-level, not in the wheel; iGPU training pays only on layers with
+parameters >=16 MB and a large K.
+
+### 3.9 The 4-bit optimizer: 1.031 B/parameter of state, 2.56x at 1M params and 1.74x at >=64M
+
+| Quantity | Measured |
+|---|---|
+| State memory (1M params) | 1.031 B/param (8-bit 2.062, fp32 8.0) |
+| 30.49M model | 232.6 MB -> 29.5 MB (7.9x) |
+| Kernel step (1M params) | 0.658 ms vs 8-bit 1.682 ms = 2.56x |
+| Kernel step (>=64M params) | **1.74x** (5 runs 1.69-1.81) -- the early "2.63x" was a 1M-parameter number and is retracted |
+| Training trajectory (120 AR steps) | within 0.27% of fp32 |
+| State codes | bit-identical to an independent numpy implementation over 50 steps |
+
+**Verdict**: the 4-bit optimizer is a tool, not a toy -- memory is deterministically halved, the
+trajectory stays on the same track, and the step is 74% faster at a large enough parameter count. It
+only holds for fp32 parameters, blocksize=256 and a DLL that contains the 4-bit kernel; without the
+kernel the import fails loudly.
+
+### 3.10 2-bit/3-bit quantisation: the loss cost is known, and the end-to-end verdict splits in two
+
+**Loss (32x32 AR model, 512-sample validation)**: fp32 5.5038; 4-bit +0.004; 3-bit +0.019;
+2-bit nf +0.117 (2.1%). **At 2 bits NF beats uniform by 11%; at 3 bits NF differs by 0.0003 (noise).**
+
+**Two end-to-end verdicts**:
+- ⚠️ **SD1.5 full pipeline with 2-bit weights: does not work** (storage -39.5%, images destroyed)
+- ✓ **Frozen 2-bit base + LoRA: works** (replace only `nn.Linear`; the initial validation loss 5.5538
+  matches the format, LoRA trains and the loss drops)
+
+**Storage**: 2-bit 2.5 bits/weight, 3-bit 3.5 bits/weight (block=64), against 4.5 for the 4-bit path and
+32 for fp32. Script-level components, not in the wheel.
+
+### 3.11 The AVX-512 backend measured: numerics correct, current kernels 0.97-1.02x, peak waits for new kernels
+
+**First real-machine validation** (Ubuntu 22.04 / gcc 11.4 / full-width 512-bit CPU / 2-core container):
+
+| Item | Result |
+|---|---|
+| Build | AVX2 baseline 256 KB, AVX-512 variant 284 KB (same sources, flags only) |
+| Dispatch | `has_avx512f_cpu()=True`, `has_avx512bf16_cpu()=True` |
+| Correctness | quantize8 / dequantize8 / gemm_8bit / gemm_8bit_M64 / gemv_4bit / adamw8bit **6/6 bit-identical** |
+| Hardware ceiling (single thread) | fp32 FMA 113.7 -> **229.3 GFLOPS (2.02x)**; BF16 dot product **308.6 GFLOPS (2.71x AVX2-fp32)** |
+| Real kernels | quantize8 0.99x, dequantize8 0.99x, gemm_8bit 0.97x, gemm_M64 1.02x, gemv_4bit 1.01x, adamw8bit 1.02x |
+
+**Why the ceiling is 2x while the kernels stay at 1.0x**: all of these kernels move bytes
+(dequantise, optimizer state, M=1 GEMV) and none reaches the FMA ceiling; even the deliberately
+compute-heavy `gemm_8bit_M64` only reaches 1.02x, because the current implementation dequantises B block
+by block and then runs a GEMM, so the time goes to LUT/gather and the fp32 scratch buffer.
+**=> the AVX-512 payoff is not in "recompiling" but in "writing new compute-bound kernels"
+(BF16 dot product / VNNI int8).**
+
+**One more trap worth remembering**: forcing the AVX-512 build on the AVX2-only box yields 1861 zmm
+instruction lines and SIGILLs immediately; attributing the zmm lines shows the crash sites are the
+**ordinary** functions (dequantise/rmsnorm/optimizer), not the hand-written kernels -- `-mavx512f` is a
+whole-TU switch, and that is the physical reason the build host itself must support AVX-512.
+
 ## 4. Image-generation training measured (R5-4500U)
 
 | Model | UNet | 256px step | Peak RSS | 500 steps | 512px step |
