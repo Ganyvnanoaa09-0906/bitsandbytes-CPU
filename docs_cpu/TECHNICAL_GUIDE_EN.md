@@ -238,8 +238,9 @@ step, and the device is synchronized once per step.
 
 **Implementation notes** (`IgpuExecutor`, the engine behind `train.py --igpu`):
 - `prepare(tokens=)`: preconditions (DirectML available / all-fp32 / base memory ≤
-  `GPU_SCHED_MEM_MB`, default 7000MB / tokens per step ≤ `GPU_SCHED_MAX_TOKENS`,
-  default 256); on success moves the whole model with `model.to(DML)` and builds CPU
+  `GPU_SCHED_MEM_MB` (adaptive cap, see below) / tokens per step ≤ `GPU_SCHED_MAX_TOKENS`,
+  default 256 / startup GEMM calibration passed); on success moves the whole model with
+  `model.to(DML)` and builds CPU
   mirrors for trainable parameters; returns a reason on failure so the caller can
   fall back to pure CPU;
 - `grad_to_cpu()`: copies trainable gradients to the CPU mirrors (for the bnb 8-bit
@@ -247,6 +248,37 @@ step, and the device is synchronized once per step.
 - `weights_from_cpu()`: copies optimizer-updated weights back to the iGPU; both round
   trips are adapter-sized and negligible;
 - the caller (train.py) runs one `loss.item()` per step — the single queue drain point.
+
+**Machine self-adaptation (Intel UHD 630 etc., R8)**: iGPU compute varies enormously, so fixed
+parameters cannot be reused across machines; the executor adapts by default and needs no per-machine
+hand tuning:
+- **the memory cap scales with total RAM**: 16GB→7000MB, 12GB→5250MB, 8GB→3500MB
+  (`min(7000, RAM×7/16)`; the iGPU shares system memory and the DML runtime adds ~0.5-1GB of
+  overhead, so low-memory machines must be tightened; an explicit `--igpu_mem_mb` /
+  `GPU_SCHED_MEM_MB` overrides it);
+- **startup GEMM calibration** (`calibrate_gpu()`): measures the iGPU/CPU throughput ratio with a
+  2048² pipelined GEMM (two rounds, take the better one; a long warm-up lets the iGPU ramp its
+  clocks — a single round shows ±0.1 jitter); if the ratio is below `GPU_SCHED_CALIB_MIN`
+  (default 1.10, `--igpu_min_gain 0` skips) it falls back automatically and prints the measured
+  value. On this machine (Vega 6) the steady-state calibration is 1.2-1.5x → enabled; UHD 630 is
+  expected to be below the threshold → automatic fallback, i.e. "on weak-iGPU machines `--igpu` is
+  harmless, it just does not take effect". Machine self-check: the last line of
+  `python gpu_scheduler.py` prints the calibration value and the verdict.
+
+**Image-generation (SD) training does not use the iGPU (R8 measurement, direction closed)**: the SD
+UNet's main operators are all behind on DML — the main conv3×3 shape 0.50-0.90×, S=1024
+self-attention 0.14× (7× slower), projection GEMMs 0.38-0.65× (oneDNN's conv/small GEMM on 6-core
+AVX2 is too strong, and the weak iGPU has no compute advantage); moreover torch-directml and
+diffusers 0.40 have a version wall (next item), and a full-chain DML backward also triggers a plugin
+crash. Image-generation training stays on the pure-CPU (fp32) route.
+
+**torch-directml version wall (torch241_compat.py)**: installing torch-directml downgrades torch to
+2.4.1 (its hard dependency), which makes diffusers 0.40 crash on import (three incompatibilities:
+`infer_schema` on string annotations, missing `flex_attention`, `sdpa` without `enable_gqa`). The
+project provides the `torch241_compat.py` runtime compatibility layer (idempotent, skips itself on
+torch≥2.5); any environment with torch-directml installed must import it before `import diffusers`
+when running SD/image-generation scripts. Also note: on DML, "`model.to(DML)` first, then change
+`requires_grad`" **silently loses the gradient graph** — set requires_grad first, then migrate.
 
 **Operator compatibility** (DML autograd matrix, each probe in its own process to avoid
 queue-deadlock cascades): matmul / gelu / `F.softmax` / `F.rms_norm` / SDPA / causal
@@ -260,7 +292,9 @@ queue-deadlock cascades): matmul / gelu / `F.softmax` / `F.rms_norm` / SDPA / ca
 
 **Limits**: quantized bases (QuantLinear etc.) and combinations with `--flash`
 (disk_balancer) are unsupported; small models (H<1024) and long sequences (seq>256)
-are in the negative-gain region — the executor refuses and falls back to pure CPU.
+are in the negative-gain region — the executor refuses and falls back to pure CPU;
+image-generation (SD) training is a proven negative-gain plus environment-incompatible
+direction and does not use the iGPU (see above).
 
 **Device compatibility**: the executor uses the generic DirectML (D3D12) interface
 and was measured on AMD Radeon(TM) Graphics (R5-4500U); Intel UHD 630 (i5-10400 etc.)
@@ -272,6 +306,211 @@ vendor graphics driver, and reports the device name via `iGPU_name()` (shown in
 device name and availability).
 
 ---
+
+### 3.9 4-bit block optimizer (AdamW4bit, new in this fork)
+
+**Status: implemented, verified, released (`0.50.2.dev3`).**
+
+**Entry point: `from bitsandbytes.optim.adamw4bit import AdamW4bit` (or import it
+directly when `bitsandbytes.optim` already exports it).**
+
+#### 3.9.1 What it buys you
+
+| Comparison | Memory | Speed |
+|---|---|---|
+| **vs fp32 AdamW** | **7.8×** less (1.031 vs 8.000 bytes/param) | 0.96× |
+| **vs AdamW8bit** | ★ **2.06×** less (1.031 vs 2.125) | ★ **1.74× faster** (≥64M; 2.63× at 1M, see 3.9.2) |
+
+**★ Mind the baseline.** The commonly quoted 7.8× is **vs fp32**; a bnb user already has
+8-bit, so the actual gain for him is 2.06×. Both are right — they answer different
+questions.
+
+#### 3.9.2 And it wins on both sides, not "trading speed for memory"
+
+**Earlier versions of this doc said "no AVX2 path, about 4× slower", and both of those
+statements were wrong. Measured:**
+
+```
+25 alternating rounds × 10 times · 1M params:
+  8-bit median 1.485 ms · 4-bit median 0.513 ms
+  paired-ratio median 2.627 · standard error 0.253 · 95% CI 2.131 ~ 3.123
+⇒ ★ 4-bit is 2.63× faster (the CI excludes 1)
+```
+
+**⇒ The AVX2 path does exist**: `optimizer_4bit_blockwise_avx2` is at `cpu_ops.cpp:3056`,
+and the dispatcher at `cpu_ops.cpp:3707` selects it for the **two-state family**
+(adam / ademamix) — and `AdamW4bit` uses exactly adam.
+One-state families (sgd / lion) take the scalar path, which is **deliberate design** to
+keep the new code surface small.
+
+**★ But that 2.63× was measured at 1M params** — a 1M working set sits in L3, while 300M
+of optimizer state lives in DRAM. On 2026-10-17 the parameter count was swept (the same
+kernel pair, alternating measurement, five independent runs):
+
+| N | 4-bit vs 8-bit step-time ratio (five runs, median) |
+|---|---|
+| 1M | 2.87× |
+| 4M | 1.72× |
+| 16M | 1.63× |
+| 64M | 1.71× |
+| 256M | 1.74× |
+| 384M | 1.74× |
+
+**⇒ ★ ≥64M is stable at about 1.7× (1.69~1.81); 2.63× is a small, in-cache number.
+The impact on the training step remains negligible (the optimizer is 1~3% of a step).**
+
+#### 3.9.3 Correctness
+
+**The kernel matches the numpy reference code-for-code (`test_optimizer_4bit_cpu.py`).**
+
+**⇒ And correctness carries one precondition that cannot be dropped: state is handled in
+pairs.** Element-wise get/set performs a read-modify-write on the same byte, producing
+store-to-load forwarding stalls; measured **4.6× slower** than the 8-bit version
+(7.385 ms vs 1.591 ms / 1M params).
+⇒ ★ So "read the byte once, split the two codes, compute, then pack and write once" is
+the performance key, not a style point.
+
+#### 3.9.4 At what scale to use it
+
+**⇒ User-facing note: the gain scales linearly with the parameter count.**
+
+```
+30.5M params  ⇒ optimizer state saves 203 MB = 1.3% of memory  ⇒ ★ [gain is tiny]
+300M params   ⇒ saves about 2 GB = about 13%                   ⇒ ★ [this is the battlefield]
+```
+
+**⇒ At the 30.5M scale, the gain from "switch to a larger batch" is small to begin with.
+It is built for large models, not a default that "should be switched on everywhere".**
+
+#### 3.9.5 Usage
+
+```python
+from bitsandbytes.optim.adamw4bit import AdamW4bit
+opt = AdamW4bit(model.parameters(), lr=1e-4)
+```
+
+**⇒ Same signature as `torch.optim.AdamW`. Measured on a 30.5M model, 300 training steps:
+the loss trajectory differs from `AdamW8bit` by 0.53% (worst point) / −0.10% (final
+step).**
+
+---
+
+### 3.10 2-bit / 3-bit quantization (`quant2bit.py` / `quantnbit.py`)
+
+#### 3.10.1 Where they live
+
+| File | Coverage |
+|---|---|
+| `quant2bit.py` | dedicated 2-bit path |
+| `quantnbit.py` | generic N-bit (2/3/4/5-bit), with a self-check round trip |
+| `quant_lora.py` | wired into training (`nf2` / `uni3` / `nf3` and other branches), frozen base + LoRA |
+| `linear2bit.py` · `embed2bit.py` | layer-replacement entry points |
+
+**⇒ 4 indices per byte, bit order: the k-th value within a byte occupies bits `[2k, 2k+1]`.**
+
+#### 3.10.2 ★ And one important negative result (already recorded, restated here)
+
+**The measured conclusion for the "lower base-weight **storage** precision" route is
+negative** — see `TECH_REPORT_EN.md` §3.5. And it does **not conflict** with the 4-bit
+**optimizer**-state conclusion, because the two do not change the same thing:
+
+```
+✗ lowering [weight] precision          ⇒ affects the values and dequant cost of [every forward] ⇒ measured negative
+✓ lowering [optimizer state] precision ⇒ affects only the quantization error of [the update step] ⇒ and it is proven fast
+⇒ ★ [so "4-bit is good" must carry its subject: 4-bit is [the optimizer state], not the weights]
+```
+
+---
+
+### 3.11 ★★ iGPU: from "per-operator negative optimization" to "device-resident + a defined applicability window"
+
+**§3.8 documents the DirectML block-level resident executor (experimental, off by default).
+Since then, measurement of this iGPU (Vega 6 / gfx902, 6 CU, 384 shader) refuted one
+thing and established another; both are written down here.**
+
+#### 3.11.1 ★ Refuted: not power arbitration, it is the shared L3
+
+**The earlier conclusion attributed "the iGPU drops 5× as soon as the CPU is busy" to
+power arbitration inside the 15W package (a switch-like constraint).** That attribution
+was wrong, and it was wrong because the curve shape was misread.
+
+Measured (thread count fixed at 1, only the CPU working set changed):
+
+| CPU load (1 thread) | Working set | iGPU relative to idle |
+|---|---|---|
+| `torch.mm` 256³ | 0.8 MB | **1.96×** |
+| `torch.mm` 1024³ | 12 MB | **3.76×** |
+| `torch.mm` 2048³ | 48 MB | ★ **6.08×** |
+| pure ALU spin (no memory access) | 0 | ★ **1.03×** |
+
+**⇒ ★ Full-power pure compute drops only 3%, while the larger the working set the more it
+drops ⇒ the mechanism is the shared 8 MB L3 being evicted by the CPU working set, not
+power.**
+
+**⇒ And the significance is entirely different: a switch-like power constraint can only be
+worked around by "adding power" (unacceptable on this machine), whereas a continuous
+cache effect is a tunable quantity.**
+
+#### 3.11.2 ★ And established: not division of labour, it is hand-off
+
+**Sweep over M (N=6144, K=2048, the real shape of Qwen3 gate_proj):**
+
+| M | iGPU alone | CPU alone |
+|---|---|---|
+| 1 | 5.3 | ★ **11.7** |
+| 64 | ★ **356.8** | 56.7 |
+| 512 | ★ **409.2** | 159.8 |
+| 2048 | ★ **425.3** | 199.7 |
+
+**⇒ ★ M=1 goes to the CPU (a single token cannot be parallelized), M≥64 goes to the iGPU
+(about 2×). And "both together" is only 7% above the iGPU alone — because the shared L3
+is zero-sum.**
+
+**⇒ ★ So the correct form is hand-off, not division of labour**:
+small M on the CPU, large M on the iGPU, and **do not let both work on the same job at the
+same time**.
+
+#### 3.11.3 ★★★ And device-resident training: technically sound, applicability window well-defined
+
+**Implemented and verified:**
+* OpenCL GEMM as a `torch.autograd.Function`, with forward and backward both on the iGPU
+* **gradient agreement: `dX` 1.3e-06 · `dW` 1.0e-06 (vs torch autograd)**
+* Adam kernel: stepped against torch for 5 steps, error 1.7e-07; **the transposed copy is
+  bit-exact**
+* **end-to-end training is bit-identical to CPU (loss trajectory and weight deltas exactly
+  the same)**
+* with the device resident, per-step host traffic drops from **O(NK)** to **O(BK+BN)**
+
+**→ And its applicability window was measured, not estimated:**
+
+| N × K × B | Params | CPU ms | Device ms | Verdict |
+|---|---|---|---|---|
+| 512×512×1024 | 1.0 MB | 7.24 | 13.28 | ★ **CPU wins 1.84×** |
+| 1024×1024×1024 | 4.2 MB | 40.68 | 37.69 | tie |
+| **2048×2048×1024** | 16.8 MB | 152.56 | **117.42** | ★ **device wins 1.30×** |
+| **2048×2048×4096** | 16.8 MB | 456.01 | **347.71** | ★ **device wins 1.31×** |
+| 4096×1024×4096 | 16.8 MB | 570.55 | 594.87 | tie |
+
+**⇒ ★ And the three readings each carry a meaning:**
+* **the larger the parameter count, the more favourable** (what is saved is O(NK))
+* **batch has almost no effect** (1024 → 4096 gives 1.30 → 1.31)
+* ★ **and 4096×1024 tying ⇒ K must be large too** (the iGPU needs a long reduction dimension)
+
+**⇒ So the applicability window is: params ≥ 16 MB and K large.**
+
+#### 3.11.4 ★ One usage reminder
+
+**Conclusions about this iGPU must be read in three dimensions: shape × kernel × state;
+they cannot be compressed into a single number. This project has mis-measured four times
+on this same line, and two of those were in opposite directions:**
+
+```
+queue time treated as execution time   ⇒ 40× overestimate (46787 GFLOPS, device peak 1150)
+re-sending weights every step as normal ⇒ 5.8× underestimate (64.5 vs 374 GFLOPS)
+```
+
+**⇒ ★ Criterion: any iGPU number above the device's nominal peak should be treated as a
+measurement error first, not as a discovery.**
 
 ## 4. Memory strategy: why "quantized frozen layers" not "lower-precision weight storage"
 

@@ -214,6 +214,104 @@ vendor graphics driver; `iGPU_name()` reports the device name.
 
 ---
 
+### 3.8 ★★ Two revisions to §3.7 (2026-10-17)
+
+**§3.7's conclusion was "per-operator negative → block-level resident is viable". Two more
+rounds of measurement followed, and both changed that conclusion.**
+
+#### 3.8.1 First revision: the mechanism is not power consumption, it is the shared L3
+
+| CPU load (1 thread) | Working set | iGPU vs idle |
+|---|---|---|
+| Pure ALU spin (no memory access) | 0 | ★ **1.03×** |
+| `torch.mm` 256³ | 0.8 MB | 1.96× |
+| `torch.mm` 2048³ | 48 MB | ★ **6.08×** |
+
+**⇒ ★ A full-power, zero-memory-access load only drops the iGPU by 3%, while the
+larger the working set, the more it drops
+⇒ the mechanism is the shared 8 MB L3 being squeezed out by the CPU's working set, not
+power arbitration.**
+
+**⇒ And that distinction has consequences: power arbitration is "on/off" (you can only add
+power to bypass it, and this machine cannot read temperature); cache contention is
+"continuous" (shrink the working set and you buy it back).**
+
+#### 3.8.2 Second revision: not division of labor, but a handoff
+
+| M | iGPU alone | CPU alone |
+|---|---|---|
+| 1 | 5.3 | ★ **11.7** |
+| 64 | ★ **356.8** | 56.7 |
+| 2048 | ★ **425.3** | 199.7 |
+
+**⇒ ★ M=1 goes to the CPU, M≥64 goes to the iGPU (about 2×); and "both together" is only
+7% above the iGPU alone — because the shared L3 is zero-sum.**
+
+#### 3.8.3 ★★★ Device-resident training is complete, and bit-identical with the CPU
+
+```
+✓ OpenCL GEMM as a torch.autograd.Function, forward and backward both on the iGPU
+✓ Gradient equivalence: dX 1.3e-06 · dW 1.0e-06
+✓ Adam kernel: step-by-step cross-check against torch 1.7e-07; transposed copy bit-exact
+✓ End-to-end training bit-identical with CPU (loss and weight deltas exactly the same)
+✓ Per-step host traffic O(NK) → O(BK+BN)
+```
+
+**→ The applicable range has been measured:**
+
+| N × K × B | Params | CPU ms | Device ms | Verdict |
+|---|---|---|---|---|
+| 512×512×1024 | 1.0 MB | 7.24 | 13.28 | ★ **CPU wins 1.84×** |
+| 1024×1024×1024 | 4.2 MB | 40.68 | 37.69 | tie |
+| **2048×2048×1024** | 16.8 MB | 152.56 | **117.42** | ★ **device wins 1.30×** |
+| 4096×1024×4096 | 16.8 MB | 570.55 | 594.87 | tie |
+
+**⇒ ★ Applicable range = parameters ≥ 16 MB and large K. Batch has almost no effect
+(1.30→1.31 at 1024→4096).**
+
+#### 3.8.4 ★ One usage reminder: we got the measurement wrong four times on this line, twice in opposite directions
+
+```
+Enqueue time treated as execution time   ⇒ overestimated 40× (46787 GFLOPS, device peak 1150)
+Per-step weight re-upload as the norm    ⇒ underestimated 5.8× (64.5 vs 374 GFLOPS)
+```
+
+**⇒ ★ Criterion: any iGPU number above the device's nominal peak is a measurement error
+first, not a discovery.
+⇒ And on small layers / small batches the iGPU executor should not be enabled — the
+criterion is the shape, not whether an iGPU exists.**
+
+---
+
+## 3.9 ★ Two components added this round
+
+### 3.9.1 4-bit block optimizer (AdamW4bit)
+
+| Baseline | Memory | Speed |
+|---|---|---|
+| vs fp32 AdamW | **7.8×** less (1.031 vs 8.000 bytes/param) | 0.96× |
+| **vs AdamW8bit** | ★ **2.06×** less | ★ **1.74× faster** (≥64M; 2.63× at 1M) |
+
+**⇒ ★ It wins on both axes, not "trading speed for memory". And the two claims in the
+early docs — "no AVX2 path" and "4× slower" — are both wrong.
+⇒ ★ And its battleground is large models: at 30.5M params it saves only 1.3% of memory,
+at 300M it saves 13%.**
+
+**★ Speed vs scale (2026-10-17 supplementary measurement, five independent runs): 1M 2.87× ·
+4M 1.72× · 16M 1.63× · 64M 1.71× · 256M 1.74× · 384M 1.74× ⇒ in the range where it should
+be used (≥64M) it is about 1.7×, not 2.63×; the latter is the 1M (in-L3) figure.**
+
+### 3.9.2 2-bit / 3-bit quantization
+
+**`quant2bit.py` · `quantnbit.py` (generic N-bit, with a self-check roundtrip) · `quant_lora.py`
+(wired into training) · `linear2bit.py` / `embed2bit.py` (layer replacement).**
+
+**★ One important distinction: lowering *weight* precision has been ruled out (§3.5),
+while lowering *optimizer-state* precision is positive ⇒ the claim "4-bit is good" must
+carry its subject.**
+
+---
+
 ## 4. Image-generation training measured (R5-4500U)
 
 | Model | UNet | 256px step | Peak RSS | 500 steps | 512px step |
@@ -279,6 +377,12 @@ only by toolchain).
 ---
 
 ## 7. Conclusions & Outlook
+
+> **2026-10-17 addendum: for the iGPU conclusion, use §3.8 as the authority.**
+> The mechanism is the shared L3 (not power), the form is hand-off (not division of
+> labour), and device-resident training is now bit-identical with the CPU with an
+> applicability window of **parameters ≥ 16 MB and large K**.
+> **On small layers its conclusion is [negative]** (at 512×512 the CPU is 1.84× faster).
 
 - **Pure-CPU training on AVX2 is usable**: 1.7B LoRA 7 s/step, 8B NF4 38 s/step
   (16 GB), SD 2.1 s/step — none "an hour per step". Key = GDN fusion (35×),

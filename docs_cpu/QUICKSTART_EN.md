@@ -203,6 +203,23 @@ Measured (3-layer Qwen3Next hybrid, top-2): trainable 725,712 → 143,600 (19.8%
 
 ### 4.8 iGPU (DirectML) block-level resident executor (experimental, off by default)
 
+> **⚠️ 2026-10-17 addendum: this component's positioning has changed — read `TECHNICAL_GUIDE_EN.md`
+> §3.11 before choosing it.**
+>
+> Measurements of this iGPU (Vega 6 / gfx902) made afterwards gave three new conclusions:
+>
+> * **The mechanism behind "the iGPU loses 5× whenever the CPU is busy" is a [shared 8 MB L3 being
+>   squeezed out], not power arbitration** (a pure-ALU load at full clocks costs only 3%, while a
+>   48 MB working set costs 6×)
+> * **The right usage is a [hand-off], not a [division of labour]**: M=1 goes to the CPU, M≥64 to the
+>   iGPU, and running both together adds only 7%
+> * ★ **Device-resident training is implemented and [bit-identical] to the CPU**, and its applicable
+>   window is **parameters ≥ 16 MB with large K** ⇒ 1.30× inside that window; on small layers such as
+>   512×512 the CPU still wins 1.84×
+>
+> **⇒ So on small layers / small batches do not enable this executor. The criterion is shape, not
+> "does the machine have an iGPU".**
+
 > Applies only to Windows with `pip install torch_directml`; when no DirectML iGPU is
 > detected or a fallback condition applies, `--igpu` prints the reason and falls back
 > to pure CPU automatically — training is unaffected.
@@ -213,6 +230,9 @@ py -3.11 train.py --igpu
 
 :: Customize the per-step token cap and the fp32 base-weight memory cap (MB)
 py -3.11 train.py --igpu --igpu_max_tokens 128 --igpu_mem_mb 4096
+
+:: Lower the enable threshold (enable only when the calibration ratio >= this value); 0 = skip startup calibration
+py -3.11 train.py --igpu --igpu_min_gain 1.05
 ```
 
 **What it does**: at training start, **all weights are moved to the iGPU once** (frozen
@@ -232,7 +252,8 @@ updated weights.
 | Condition | Default | Override |
 |---|---|---|
 | tokens per step (batch×seq) | ≤ 256 | `--igpu_max_tokens` / env `GPU_SCHED_MAX_TOKENS` |
-| fp32 base-weight memory | ≤ 7000 MB | `--igpu_mem_mb` / env `GPU_SCHED_MEM_MB` |
+| fp32 base-weight memory | adapts to total RAM: 16GB→7000MB, 12GB→5250MB, 8GB→3500MB | `--igpu_mem_mb` / env `GPU_SCHED_MEM_MB` |
+| startup GEMM calibration of the iGPU/CPU throughput ratio | ≥ 1.10 | `--igpu_min_gain` / env `GPU_SCHED_CALIB_MIN` (`=0` skips calibration) |
 | any non-fp32 parameter (quantized base) | unsupported | — |
 | combined with `--flash` (disk_balancer) | incompatible | — (this run ignores `--igpu`) |
 
@@ -268,6 +289,77 @@ print(ex.prepare(tokens=batch_size * seq_len))  # "OK" = enabled, model resides 
 The low-level `big_gemm / big_linear / big_conv2d / patch_igpu` remain available for
 single-operator experiments, but **per-operator scheduling is a net negative for
 training and is not recommended**.
+
+---
+
+### 4.9 ★ 4-bit blockwise optimizer (AdamW4bit, new in this fork)
+
+**Reduce the memory of optimizer states, not weight precision — the latter has been
+empirically disproven (see `TECH_REPORT_EN.md` §3.5).**
+
+#### Why use it
+
+| Baseline | Memory | Speed |
+|---|---|---|
+| vs fp32 AdamW | **7.8×** less (1.031 vs 8.000 bytes/parameter) | 0.96× |
+| **vs AdamW8bit** | ★ **2.06×** less (1.031 vs 2.125) | ★ **1.74× faster** (≥64M; 2.63× is the 1M in-cache number, see below) |
+
+**★ Both baselines must be stated: 7.8× is against fp32, and you are already on 8-bit, so
+the real gain is 2.06×. Both numbers are correct; they answer different questions.**
+
+**★ And it wins on both sides — it is not "trading speed for memory".**
+
+**★ And "how much faster" depends on the parameter count (follow-up measurement
+2026-10-17, five independent runs):**
+
+| Parameter count | 4-bit vs 8-bit step-time ratio |
+|---|---|
+| 1M (kernel benchmark, in L3) | 2.6~3.1× |
+| **≥64M (DRAM, i.e. the range where it should be used)** | ★ **1.74×** (1.69~1.81) |
+
+**⇒ The "2.63×" previously written in this document is a 1M number; at the 300M scale the
+honest figure is about 1.7×. The 2.06× memory saving is unchanged and it is still faster,
+but the magnitude has to be stated per scale.**
+
+#### Usage
+
+```python
+from bitsandbytes.optim.adamw4bit import AdamW4bit
+opt = AdamW4bit(model.parameters(), lr=1e-4)
+```
+
+**⇒ Same signature as `torch.optim.AdamW`.**
+
+#### ★ What scale to use it at — this matters more than all the numbers above
+
+```
+30.5M params  ⇒ optimizer state saves 203 MB = 1.3% of memory  ⇒ ★ [gain is tiny]
+100M params   ⇒ saves ~400 MB                ≈ 2.5% of memory  ⇒ still small
+300M params   ⇒ saves ~2 GB                  = 13% of memory   ⇒ ★ [this is its battlefield]
+```
+
+**⇒ At a scale like 30.5M, the gain from "switch to a larger batch" is tiny to begin with.
+It is made for large models, not a default that should be swapped in everywhere.**
+
+#### Measured (30.5M model · real data · 300 steps)
+
+```
+loss curve   difference vs AdamW8bit: −0.10% (final step) · +0.53% (worst cell)
+step time    0.955× (4-bit is slightly faster)
+state memory 66.3 MB → 33.4 MB ⇒ 2.0×
+```
+
+**⇒ Correctness: the kernel is code-for-code identical to the numpy reference
+(`test_optimizer_4bit_cpu.py`).**
+
+#### Notes
+
+* **An AVX2 path exists** (`optimizer_4bit_blockwise_avx2`, `cpu_ops.cpp:3056`); the
+  dispatcher selects it for the two-state family (adam/ademamix). One-state families
+  (sgd/lion) take the scalar path, which is deliberate.
+* **Do not get/set state element by element**: that creates store-to-load stalls and
+  measured 4.6× slower. The kernel "reads once, splits two codes, writes once" per byte —
+  that is a performance requirement, not a style choice.
 
 ---
 
