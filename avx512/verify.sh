@@ -1,11 +1,13 @@
-﻿#!/usr/bin/env bash
-# Build the fork's CPU backend twice -- an AVX2 baseline (AVX-512 codegen explicitly off) and an
-# AVX-512 variant -- then cross-check them on identical inputs and time the kernels.
+#!/usr/bin/env bash
+# Verify the fork's AVX-512 backend on a machine that can actually execute AVX-512.
 #
-# Runs on any Ubuntu/Debian x86-64 box with g++ and python3; no torch, no numpy, no apt installs.
-# The AVX-512 library is only *exercised* when the CPU really has AVX-512 (the harness checks
-# /proc/cpuinfo first), because a non-AVX-512 CPU dies with SIGILL the moment the compiler-
-# auto-vectorised ordinary functions execute zmm code.
+# Builds the same sources twice -- an AVX2 baseline and an AVX-512 variant -- then
+#   1) cross-checks 5 real kernels between the two builds on identical inputs,
+#   2) times them (median, same machine, same inputs),
+#   3) measures the *hardware* FP32/BF16 ceiling with the same compiler on both flag sets,
+# so the kernel numbers can be read against the peak instead of in a vacuum.
+#
+# No torch, no numpy, no apt installs: g++ and python3 are enough.
 set -uo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -41,28 +43,44 @@ fi
 echo "AVX512-BF16 flag: $BF16_FLAG"
 echo
 
-echo "=== [1/3] build AVX2 baseline (AVX-512 codegen disabled) ==="
+echo "=== [1/4] build AVX2 baseline (AVX-512 codegen disabled) ==="
 time g++ $COMMON $AVX2_FLAGS $SRCS -o "$OUT/libbnb_avx2.so" \
-    -Wl,--no-undefined -Wl,--export-dynamic -Wl,-soname,libbnb_avx2.so
-if [ $? -ne 0 ] || [ ! -f "$OUT/libbnb_avx2.so" ]; then
-    echo "BUILD_AVX2_FAILED"
-    exit 2
-fi
+    -Wl,--no-undefined -Wl,--export-dynamic -Wl,-soname,libbnb_avx2.so || {
+    echo "BUILD_AVX2_FAILED"; exit 2; }
 ls -la "$OUT/libbnb_avx2.so"
 echo
 
-echo "=== [2/3] build AVX-512 variant ==="
+echo "=== [2/4] build AVX-512 variant ==="
+AVX512_SO_OK=no
 if g++ $COMMON $AVX512_FLAGS $SRCS -o "$OUT/libbnb_avx512.so" \
        -Wl,--no-undefined -Wl,--export-dynamic -Wl,-soname,libbnb_avx512.so; then
     ls -la "$OUT/libbnb_avx512.so"
+    AVX512_SO_OK=yes
 else
     echo "BUILD_AVX512_FAILED"
 fi
 echo
 
-echo "=== [3/3] correctness + timing (ctypes, no torch) ==="
+echo "=== [3/4] hardware ceiling: same compiler, AVX2 flags vs AVX-512 flags ==="
+g++ -O2 $AVX2_FLAGS "$HERE/peak_probe.c" -o "$OUT/peak_avx2" && echo "peak_avx2 built"
+if [ "$AVX512_SO_OK" = "yes" ]; then
+    g++ -O2 $AVX512_FLAGS "$HERE/peak_probe.c" -o "$OUT/peak_avx512" && echo "peak_avx512 built"
+else
+    echo "peak_avx512 skipped (AVX-512 build failed)"
+fi
+if [ -x "$OUT/peak_avx2" ]; then echo "--- peak_avx2 ---"; "$OUT/peak_avx2"; fi
+if [ -x "$OUT/peak_avx512" ]; then
+    if grep -q ' avx512f' /proc/cpuinfo; then
+        echo "--- peak_avx512 ---"; "$OUT/peak_avx512"
+    else
+        echo "peak_avx512 built but not run: this CPU cannot execute AVX-512"
+    fi
+fi
+echo
+
+echo "=== [4/4] correctness + timing of the real kernels (ctypes, no torch) ==="
 ARGS="--avx2 $OUT/libbnb_avx2.so"
-[ -f "$OUT/libbnb_avx512.so" ] && ARGS="$ARGS --avx512 $OUT/libbnb_avx512.so"
+[ "$AVX512_SO_OK" = "yes" ] && ARGS="$ARGS --avx512 $OUT/libbnb_avx512.so"
 python3 "$HERE/bench_ctypes.py" $ARGS
 rc=$?
 echo

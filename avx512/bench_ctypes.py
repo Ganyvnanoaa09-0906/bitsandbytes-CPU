@@ -115,6 +115,14 @@ def main() -> int:
     lib5 = load(args.avx512) if (args.avx512 and cpu_avx512) else None
     if args.avx512 and not cpu_avx512:
         print('skip AVX-512 library  : CPU cannot run AVX-512, calling it would SIGILL')
+    if lib5 is not None:
+        caps = []
+        for sym in ('has_avx512f_cpu', 'has_avx512bf16_cpu'):
+            fn = getattr(lib5, sym, None)
+            if fn is not None:
+                fn.restype = C.c_bool
+                caps.append('%s=%s' % (sym, bool(fn())))
+        print('AVX-512 lib says      : %s' % (', '.join(caps) or '(no capability exports)'))
 
     results = []
     checks = []
@@ -189,6 +197,35 @@ def main() -> int:
         checks.append(('gemm_8bit max_abs=%.2e max_rel=%.2e' % (d, r), r < 5e-3))
     else:
         record('gemm_8bit_inference', t2)
+
+    # ------------------------------------- gemm_8bit, compute-bound (M=64, not GEMV-like)
+    M2, N2, K2, bs2 = 64, 1024, 1024, 64
+    A2 = floats(M2 * K2, lambda i: (i % 17) / 17.0 - 0.5)
+    Bf2 = floats(N2 * K2, lambda i: (i % 13) / 13.0 - 0.4)
+    Bq2 = (C.c_ubyte * (N2 * K2))()
+    ab2 = floats(N2 * (K2 // bs2), lambda i: 0.0)
+    for row in range(N2):
+        lib2.cquantize_blockwise_cpu_fp32(
+            CODE, C.cast(C.byref(Bf2, row * K2 * 4), FP),
+            C.cast(C.byref(ab2, row * (K2 // bs2) * 4), FP),
+            C.cast(C.byref(Bq2, row * K2), U8), bs2, K2)
+    out_g2 = floats(M2 * N2, lambda i: 0.0)
+
+    def make_big_gemm(lib):
+        return (lambda: lib.cgemm_8bit_inference_cpu_fp32(
+            A2, Bq2, ab2, out_g2, M2, N2, K2, K2, K2, N2, bs2)), out_g2
+
+    f2, out2 = make_big_gemm(lib2)
+    t2 = timed(f2, 5)
+    ref_g2 = list(out_g2)
+    if lib5:
+        f5, out5 = make_big_gemm(lib5)
+        t5 = timed(f5, 5)
+        record('gemm_8bit_M64_compute', t2, t5)
+        d, r = compare(ref_g2, out5, M2 * N2)
+        checks.append(('gemm_8bit_M64 max_abs=%.2e max_rel=%.2e' % (d, r), r < 5e-3))
+    else:
+        record('gemm_8bit_M64_compute', t2)
 
     # ------------------------------------------------------------------ gemv_4bit
     Mv, Nv, Kv, bsv = (1, 2048, 2048, 64) if not args.quick else (1, 256, 256, 64)
