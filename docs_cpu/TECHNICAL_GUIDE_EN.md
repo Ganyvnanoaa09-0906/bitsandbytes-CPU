@@ -1,7 +1,8 @@
 # Technical Guide: the Modified bitsandbytes CPU Backend
 
 > Audience: engineers (developers comfortable reading C++ / PyTorch kernels).
-> Purpose: explain what this fork **changed relative to bitsandbytes v0.45.1,
+> Purpose: explain what this fork **changed relative to upstream bitsandbytes (0.50.2 release line,
+> main `83364904`, 2026-09-03),
 > why, and how to use it**.
 
 ---
@@ -27,7 +28,7 @@ from "unusable" to "usable" (seconds per step).
 
 ---
 
-## 2. Change Overview (relative to v0.45.1)
+## 2. Change Overview (relative to upstream 0.50.2 / main)
 
 ```
 csrc/
