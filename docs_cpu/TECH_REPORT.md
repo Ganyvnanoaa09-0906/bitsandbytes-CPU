@@ -362,5 +362,3 @@ quantize_blockwise 8bit 往返 / gemm_8bit 前向 / 4bit GEMV(nf4) / AdamW8bit �
   cpp/h 保持 **CRLF** 行尾（LF + GBK 注释会被 cl 吞行）。
 - 自检：`python -m bitsandbytes.gdn_cpu`（PASSED）；`stress_opt.py`（210 组合 0 失败）；
   `selftest_cpu.c`（4/4）。
-��。
-��。
