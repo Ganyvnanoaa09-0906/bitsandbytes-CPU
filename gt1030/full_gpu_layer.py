@@ -298,6 +298,21 @@ def main() -> int:
           % (med_ms, tf, tb, to))
     print('10 layers: %.2f s -> 1030 fraction (floor 0.594 s): %.2fx'
           % (med_ms * 10 / 1000, 0.594 / (med_ms * 10 / 1000)))
+
+    n_steps = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    if n_steps > 0:
+        wall0 = time.perf_counter()
+        cpu0 = time.process_time()
+        for _ in range(n_steps):
+            forward()
+            backward()
+            opt()
+            A.queue.finish()
+        wall = time.perf_counter() - wall0
+        cpu = time.process_time() - cpu0
+        print()
+        print('pure-iGPU loop: %d steps in %.2f s (%.2f ms/step); CPU busy %.1f%% of wall'
+              % (n_steps, wall, wall / n_steps * 1e3, 100.0 * cpu / wall))
     return 0
 
 
