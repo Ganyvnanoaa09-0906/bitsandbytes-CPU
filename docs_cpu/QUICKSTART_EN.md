@@ -95,7 +95,9 @@ bash build_linux.sh --selftest
 
 The script probes for AVX2 (x86_64) or NEON (aarch64) and for OpenMP, degrading
 automatically when a probe fails instead of letting the link stage error out. The
-artefact is `bitsandbytes/libbitsandbytes_cpu.so`.
+artefact is `bitsandbytes/libbitsandbytes_cpu.so`. **The hard x86 baseline is AVX2**: there is
+no usable generic artifact for non-AVX2 machines yet (`--no-avx2` currently does not compile;
+see `TECHNICAL_GUIDE_EN.md` 6).
 
 **Cross-compilation**: `build_linux.sh` honours the `CC` / `CXX` environment
 variables, so a cross toolchain can be supplied. The script does not infer the

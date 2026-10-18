@@ -75,7 +75,7 @@ cd <克隆路径>/bitsandbytes
 bash build_linux.sh --selftest
 ```
 
-脚本会自动探测 AVX2（x86_64）或 NEON（aarch64），并探测 OpenMP 是否可用；探测失败时自动降级，而不是让链接阶段报错。产物为 `bitsandbytes/libbitsandbytes_cpu.so`。
+脚本会自动探测 AVX2（x86_64）或 NEON（aarch64），并探测 OpenMP 是否可用（OpenMP 缺失时关闭）。产物为 `bitsandbytes/libbitsandbytes_cpu.so`。**x86 的硬下限是 AVX2**：无 AVX2 的机器没有可用的通用产物（`--no-avx2` 当前编译不过，原因见 `TECHNICAL_GUIDE.md` §6 第 6 条）。
 
 **交叉编译**：`build_linux.sh` 接受 `CC` / `CXX` 环境变量，可指定交叉工具链；脚本本身不做目标架构推断，若要让 `-march=native` 之类的探测结果正确，需显式传入 `-D__AVX2__` 等宏或改用 `--arch` 参数（见 `bash build_linux.sh --help`）。
 

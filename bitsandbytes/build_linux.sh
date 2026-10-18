@@ -64,10 +64,12 @@ if [ "$ARCH" = "x86_64" ] && [ "$NO_AVX2" = "0" ]; then
     ARCH_FLAGS="-mavx2 -mfma -mf16c -D__AVX2__"
     echo "  [AVX2] 检测到本机 AVX2，启用"
   else
-    # 非 AVX2 CPU：不定义 __AVX2__、用通用 x86-64，运行时走 scalar（能跑，慢）
+    # 非 AVX2 CPU：本该走通用 x86-64，但当前 TU 里的 intrinsics 用 __GNUC__&&x86 /
+    # GDN_X86 守卫而不是 __AVX2__，-march=x86-64 编译会报 target specific option
+    # mismatch ⇒ 这条路径【当前不可用】（要修见 TECHNICAL_GUIDE §6.6）。
     ARCH_FLAGS="-march=x86-64"
-    echo "  [scalar] 未检测到 AVX2，编译为通用 x86-64（实验性：无 AVX2 设备测试，"
-    echo "           理论能跑但不保证性能；若崩请设 BNB_CPU_NO_AVX2=1 或 --no-avx2）"
+    echo "  [scalar] 未检测到 AVX2；注意：通用 x86-64 构建目前不受支持（intrinsics 未隔离，"
+    echo "           编译会失败）。x86 硬下限是 AVX2；非 AVX2 需要单独的 generic 产物。"
   fi
 else
   echo "  [NEON/scalar] 使用架构默认路径（aarch64 自动 NEON；或 --no-avx2）"

@@ -680,12 +680,20 @@ python stress_opt.py             # 210 combos, 0 failures (LLM-side regression)
 4. **8-bit optimizer state must be initialized**: before first use the state codes and
    absmax must be valid (zero state = absmax all 0), else NaN.
 5. **4-bit GEMV ldb**: row stride of the packed B is `K/2`, not K.
-6. **Non-AVX2 CPU (experimental)**: every AVX2 kernel is guarded at runtime by
-   `has_avx2_cpu()` (CPUID) plus the `BNB_CPU_NO_AVX2=1` env var to force it off.
-   Non-AVX2 CPUs take the scalar fallback — **works (slower), performance not
-   guaranteed**. `build_linux.sh` auto-detects (compiles `-march=x86-64` without
-   `__AVX2__` if absent). **Experimental: not tested on a real non-AVX2 device; if it
-   crashes set `BNB_CPU_NO_AVX2=1` or `build_linux.sh --no-avx2`.**
+6. **Non-AVX2 x86 (not supported today; a separate generic artifact is needed)**: the
+   runtime half exists -- every AVX2 kernel is guarded by `has_avx2_cpu()` (CPUID+XGETBV),
+   `cpu_gdn.cpp` has `VO<true>/VO<false>` template twins, and `BNB_CPU_NO_AVX2=1` forces the
+   scalar path (A/B testing; selftest passes 5/5 with it). **The binary-level guarantee does
+   not exist**: shipped artifacts are compiled with `-mavx2 -mfma` (Windows `/arch:AVX2`), so
+   the compiler may emit AVX2/FMA in any function, including the scalar twins and the glue.
+   On a real non-AVX2 x86 CPU they are therefore not guaranteed to run. `build_linux.sh
+   --no-avx2` (generic x86-64) **does not even compile today**: the intrinsics in
+   `cpu_ops.cpp` / `cpu_gdn.cpp` are guarded by `__GNUC__ && x86` / `GDN_X86` rather than
+   `__AVX2__`, so `-march=x86-64` fails with "target specific option mismatch". **=> the x86
+   baseline is AVX2 (the documented contract, report 7.1). Supporting non-AVX2 means adding a
+   third artifact the same way the AVX-512 dual library works** (AVX2 kernels isolated in
+   their own TU or target-attributed functions, three-way CPUID selection in the loader, and
+   a build assertion that the generic artifact has zero ymm/vfmadd instructions).**
 7. **disk_balancer offloading host NTFS via 9P under WSL = serious risk (can disrupt the
    MFT — must exclude)**: on **WSL**, disk_balancer's **Linux branch (`detect_disks`)
    treats the host Windows **NTFS mounts (`/mnt/c`, `/mnt/d`, via the Microsoft **9P
