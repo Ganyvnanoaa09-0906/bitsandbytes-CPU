@@ -519,6 +519,11 @@ AVX-512-only library. Fix and verification in 7.116.
 `LOADED_NATIVE_LIB` pick the generic artifact, otherwise AVX-512/AVX2 per CPU capability. NOTE:
 Windows ships only the AVX2 DLL. Details in 7.117.
 
+**Real-machine validation (AVX-512 container, 2026-10-18)**: one build produced all three
+artifacts (AVX2 256 KB / AVX-512 284 KB / generic 132 KB); instruction audit: zmm **0 / 1196**,
+generic **0 AVX**; doctor and LOADED_NATIVE_LIB agreed on all three choices; package selftest
+0 failures, portable selftest 5/5 PASS.
+
 ## 4. Image-generation training measured (R5-4500U)
 
 | Model | UNet | 256px step | Peak RSS | 500 steps | 512px step |

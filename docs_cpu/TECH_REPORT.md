@@ -467,6 +467,10 @@ AVX-512 构建机上把"AVX2 基线"变成了 AVX-512-only）。修复与验证�
 断言，非 0 直接失败）。便携版 selftest（同源码 + `-DBNB_CPU_PORTABLE=1`）**5/5 PASS**；
 `BNB_CPU_FORCE_GENERIC=1` 时 `doctor`/`LOADED_NATIVE_LIB` 选 generic，否则按 CPU 能力选
 AVX2/AVX-512。⚠️ Windows 目前只有 AVX2 DLL。详见 §7.117。
+
+**真机验证（AVX-512 容器，2026-10-18）**：一次构建三产物（AVX2 256 KB / AVX-512 284 KB /
+generic 132 KB），指令审计 zmm **0 / 1196**、generic **AVX 0**；`doctor` 与
+`LOADED_NATIVE_LIB` 的三级选择全部符合预期；包 selftest 0 failure、便携版 selftest 5/5 PASS。
 构建侧：Linux `build_linux.sh --avx512` 一次出两个 .so（本机实测 293 KB / 330 KB，
 反汇编 zmm 行数 **0 / 1856**——AVX2 产物确实不含 EVEX）；Windows 用 `BNB_BUILD_AVX512=1`
 走 `build_manual.bat`（开发机没有 MSVC，这条产线未在本机验证，列入待办）。
