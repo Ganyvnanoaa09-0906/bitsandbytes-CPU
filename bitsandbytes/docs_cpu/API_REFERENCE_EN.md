@@ -404,6 +404,15 @@ set BNB_BUILD_AVX512=1 && build_manual\build_manual.bat   # Windows
 # override switches: BNB_CPU_DISABLE_AVX512=1 / BNB_CPU_FORCE_AVX512=1
 ```
 
+**`generic artifact: run on CPUs without AVX2`** -- a third library, built with all AVX2/FMA removed at compile time, for pre-Haswell x86; the loader picks it only when the CPU cannot run the AVX2 library
+
+```bash
+bash build_linux.sh --generic       # libbitsandbytes_cpu_generic.so (Linux)
+# build asserts: objdump shows 0 AVX instructions (else the build fails)
+# selection order: AVX-512 -> AVX2 -> generic
+#   BNB_CPU_FORCE_GENERIC=1 forces the generic library (any x86-64 can run it)
+```
+
 ## Fused kernels (call them directly)
 
 **`fused_dequant_linear_8bit(...)`** -- out = A @ dequant8(wq).T with the weight never unpacked to fp32; the arguments are (A, wq, absmax, blocksize)

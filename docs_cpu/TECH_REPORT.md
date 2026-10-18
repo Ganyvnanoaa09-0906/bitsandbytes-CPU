@@ -461,6 +461,12 @@ SIGILL；zmm 归属证明崩溃点在**普通函数**（dequantize/rmsnorm/optim
 —— 与 §7.113"现有内核 memory-bound、命中 AVX-512 路径也不提速"的结论一致。
 ⚠️ **同一次运行抓出一个发布包级 bug**：AVX2 产物里有 1204 条 zmm 指令（`-march=native` 在
 AVX-512 构建机上把"AVX2 基线"变成了 AVX-512-only）。修复与验证见 §7.116。
+
+**第三产物：generic x86-64（无 AVX2）**：Linux `build_linux.sh --generic` 产出 144 KB 的
+`libbitsandbytes_cpu_generic.so`，编译期去掉 AVX2/FMA；反汇编 **AVX 指令 0 条**（构建脚本内置
+断言，非 0 直接失败）。便携版 selftest（同源码 + `-DBNB_CPU_PORTABLE=1`）**5/5 PASS**；
+`BNB_CPU_FORCE_GENERIC=1` 时 `doctor`/`LOADED_NATIVE_LIB` 选 generic，否则按 CPU 能力选
+AVX2/AVX-512。⚠️ Windows 目前只有 AVX2 DLL。详见 §7.117。
 构建侧：Linux `build_linux.sh --avx512` 一次出两个 .so（本机实测 293 KB / 330 KB，
 反汇编 zmm 行数 **0 / 1856**——AVX2 产物确实不含 EVEX）；Windows 用 `BNB_BUILD_AVX512=1`
 走 `build_manual.bat`（开发机没有 MSVC，这条产线未在本机验证，列入待办）。

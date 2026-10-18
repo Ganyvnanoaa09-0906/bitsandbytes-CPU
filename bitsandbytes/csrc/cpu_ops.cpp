@@ -317,12 +317,31 @@ static constexpr float nf4_lut[16] = {
 //   · 全文件只出现它自己的定义一次，无任何调用点（外部 review 指出）
 // ⇒ 保留 has_avx2_cpu 一个即可。
 
+// ---------------------------------------------------------------------------
+// Portability switch for the generic artifact (BNB_CPU_PORTABLE).
+//
+// The regular build compiles this file with -mavx2 -mfma, so the compiler is free to emit
+// AVX2/FMA anywhere -- including in the scalar fallback twins -- which is why the artifact
+// cannot run on a pre-Haswell x86 CPU even though every kernel has a runtime CPUID guard.
+// With BNB_CPU_PORTABLE the AVX2/FMA code is removed at COMPILE time: the guards below
+// become false, has_avx2_cpu() reports false, and only baseline x86-64 (SSE2) code is
+// emitted, so the generic library runs anywhere and simply takes the scalar path.
+// ---------------------------------------------------------------------------
+#if defined(BNB_CPU_PORTABLE)
+#define BNB_AVX2_CODE 0
+#else
+#define BNB_AVX2_CODE 1
+#endif
+
 // Env override for A/B benchmarking: BNB_CPU_NO_AVX2=1 forces the scalar path.
 #if defined(_MSC_VER) && (defined(__x86_64__) || defined(_M_X64) || defined(_M_IX86))
 #include <intrin.h> // __cpuid, __cpuidex, _xgetbv
 #endif
 static inline bool has_avx2_cpu() {
-#if defined(__x86_64__) || defined(_M_X64)
+#if defined(BNB_CPU_PORTABLE)
+    // 通用产物里没有 AVX2/FMA 代码可调，直接走标量路径。
+    return false;
+#elif defined(__x86_64__) || defined(_M_X64)
 #if defined(_MSC_VER)
     // MSVC has no __builtin_cpu_supports; probe CPUID directly. OSXSAVE is
     // checked via _xgetbv because AVX2 instructions fault unless the OS has
@@ -386,7 +405,7 @@ template <typename T> static inline float scalar_absmax(const T* p, long long n,
     return am;
 }
 
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
 #if defined(__GNUC__)
 #pragma GCC push_options
 // f16c is included because every shipping AVX2 CPU (Haswell+, Zen+) also has F16C;
@@ -1346,7 +1365,7 @@ void dequantizeBlockwise4bitCpu(
         }
     }
 #endif
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
     // AVX2 path: 4 packed bytes -> 8 floats per iteration (pshufb byte-plane LUT).
     // CUDA kDequantizeBlockwise takes the scale per element (absmax[elem/blocksize]),
     // so the vector loop broadcasting one scale over 8 elements is only valid when
@@ -1399,7 +1418,7 @@ void dequantizeBlockwise8bitCpu(
 ) {
     if (blocksize <= 0 || n <= 0)
         return;
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
     // AVX2 path: vectorized codebook gather (code[A[i]] * absmax)
     if (has_avx2_cpu() && blocksize % 8 == 0) {
         avx2_dequant_8bit<T>(code, A, absmax, out, blocksize, n);
@@ -1455,7 +1474,10 @@ void dequantizeBlockwise8bitCpu(
 // Prevent GCC/Clang from emitting EVEX-encoded AVX512 instructions in plain scalar code.
 // The global -mavx512vl flag can cause GCC to fold broadcasts into EVEX encoding (e.g. vmulps {1to4})
 // which would SIGILL on non-AVX512 CPUs like Zen3. These functions are scalar C++ and don't need AVX512.
-#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+//
+// BNB_CPU_PORTABLE: a generic x86-64 build must not apply this target at all -- it would force
+// ymm instructions into functions that are supposed to stay baseline, defeating the artifact.
+#if !defined(BNB_CPU_PORTABLE) && defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
 #pragma GCC push_options
 #pragma GCC target("avx2,fma,no-avx512f")
 #endif
@@ -1569,7 +1591,7 @@ void quantize_cpu_impl(float* code, const T* A, float* absmax, unsigned char* ou
 
     const long long num_blocks = (n + blocksize - 1) / blocksize;
 
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
     // AVX2 path: vectorized absmax + LUT gather per block
     if (has_avx2_cpu() && blocksize % 8 == 0) {
         BNB_OMP_PARALLEL_FOR
@@ -1677,7 +1699,7 @@ void quantize_cpu_fp16(float* code, fp16_t* A, float* absmax, unsigned char* out
     quantize_cpu_impl<fp16_t>(code, A, absmax, out, blocksize, n);
 }
 
-#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+#if !defined(BNB_CPU_PORTABLE) && defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
 #pragma GCC pop_options
 #endif
 
@@ -2023,7 +2045,7 @@ void quantize_4bit_cpu_impl(
     if (data_type != FP4 && data_type != NF4)
         return;
 
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
     if (has_avx2_cpu() && total % blocksize == 0 && blocksize % 8 == 0) {
         if (data_type == FP4)
             avx2_quantize_4bit<T, FP4>(A, absmax, out, blocksize, m, n);
@@ -2117,7 +2139,7 @@ void quantize_4bit_cpu_impl(
 //    上实测 20 个错误后停止。它唯一的使用点在 gemv_4bit_inference_cpu_impl 里，
 //    而那个调用点**本来就在同款守卫内**（原 2205 行），所以这一段是单纯漏了守卫，
 //    不是有意跨架构。补上后与文件里其余 AVX2 段（如 2784、3176）写法一致。
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
 #if defined(__GNUC__)
 #pragma GCC push_options
 #pragma GCC target("avx2,fma,f16c")
@@ -2240,7 +2262,7 @@ void gemv_4bit_inference_cpu_impl(
         return;
     if (data_type != FP4 && data_type != NF4)
         return;
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
     // fast path assumes one scale broadcast covers each 8-element decode
     // group, i.e. blocksize is a multiple of 8; other blocks fall back to scalar
     if (has_avx2_cpu() && (K & 1) == 0 && K % blocksize == 0 && (blocksize & 7) == 0) {
@@ -2299,7 +2321,7 @@ static void gemv_fp16w_inference_cpu_impl(
 ) {
     if (M <= 0 || N <= 0 || K <= 0)
         return;
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
     if (has_avx2_cpu() && ldb >= K) {
         avx2_gemv_fp16w_inference<T>(A, W, out, M, N, K, lda, ldb, ldc);
         return;
@@ -2397,7 +2419,7 @@ void int8_vector_quant_cpu_impl(
 ) {
     if (rows <= 0 || cols <= 0)
         return;
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
     if (has_avx2_cpu()) {
         avx2_int8_vector_quant<T>(A, out, rowStats, threshold, rows, cols);
         return;
@@ -2819,7 +2841,7 @@ static void optimizer_8bit_blockwise_scalar(
 
 } // namespace
 
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
 #if defined(__GNUC__)
 #pragma GCC push_options
 #pragma GCC target("avx2,fma,f16c")
@@ -3211,14 +3233,14 @@ void optimizer_update_8bit_blockwise_cpu(
     P.step_size = -lr * P.correction2 / P.correction1;
 
     bool use_avx2 = false;
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
     use_avx2 = has_avx2_cpu();
 #endif
     (void)use_avx2;
 
     switch (dtype) {
     case 0:
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
         if (use_avx2)
             optimizer_8bit_blockwise_avx2<float>(P, g, p, state1, state2, qmap1, qmap2, absmax1, absmax2, n);
         else
@@ -3226,7 +3248,7 @@ void optimizer_update_8bit_blockwise_cpu(
             optimizer_8bit_blockwise_scalar<float>(P, g, p, state1, state2, qmap1, qmap2, absmax1, absmax2, n);
         break;
     case 1:
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
         if (use_avx2)
             optimizer_8bit_blockwise_avx2<bf16_t>(P, g, p, state1, state2, qmap1, qmap2, absmax1, absmax2, n);
         else
@@ -3234,7 +3256,7 @@ void optimizer_update_8bit_blockwise_cpu(
             optimizer_8bit_blockwise_scalar<bf16_t>(P, g, p, state1, state2, qmap1, qmap2, absmax1, absmax2, n);
         break;
     case 2:
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
         if (use_avx2)
             optimizer_8bit_blockwise_avx2<fp16_t>(P, g, p, state1, state2, qmap1, qmap2, absmax1, absmax2, n);
         else
@@ -3265,7 +3287,7 @@ void optimizer_update_8bit_blockwise_cpu(
 //    （avx2_u8_to_f32_8 / avx2_u8_code_8 / avx2_gemm8_block_n /
 //    avx2_gemm8_inference_f32）也没有守卫，ARM64 上会被无条件编译。
 //    它唯一的使用点在 gemm_8bit_inference_cpu_fp32 的守卫块内，所以同样是漏了。
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
 #if defined(__GNUC__)
 #pragma GCC push_options
 #pragma GCC target("avx2,fma,f16c")
@@ -3386,7 +3408,7 @@ void gemm_8bit_inference_cpu_fp32(
 ) {
     if (M <= 0 || N <= 0 || K <= 0 || blocksize <= 0)
         return;
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
     if (has_avx2_cpu() && K % blocksize == 0 && (blocksize & 7) == 0) {
         avx2_gemm8_inference_f32(A, B, absmax, out, M, N, K, lda, ldb, ldc, blocksize);
         return;
@@ -3432,7 +3454,7 @@ long long fused_rmsnorm_fwd_cpu(
     if (M <= 0 || D <= 0) {
         return 0;
     }
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
     const bool use_avx = has_avx2_cpu();
 #else
     const bool use_avx = false;
@@ -3460,7 +3482,7 @@ long long fused_rmsnorm_fwd_cpu(
         float* orow = out + i * D;
         double acc = 0.0;
         long long j = 0;
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
         if (use_avx) {
             // 第一趟：只累加 Σ(x+res)²，不碰 out
             for (; j + 8 <= D; j += 8) {
@@ -3489,7 +3511,7 @@ long long fused_rmsnorm_fwd_cpu(
             xs[i] = r;
         }
         j = 0;
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
         if (use_avx) {
             const __m256 rv = _mm256_set1_ps(r);
             for (; j + 8 <= D; j += 8) {
@@ -3543,7 +3565,7 @@ long long fused_rmsnorm_bwd_cpu(
     if (M <= 0 || D <= 0) {
         return 0;
     }
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
     const bool use_avx = has_avx2_cpu();
 #else
     const bool use_avx = false;
@@ -3584,7 +3606,7 @@ long long fused_rmsnorm_bwd_cpu(
         // s = sum_j dy_j * w_j * x_j
         double s = 0.0;
         long long j = 0;
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
         if (use_avx) {
             __m256 acc = _mm256_setzero_ps();
             for (; j + 8 <= D; j += 8) {
@@ -3609,7 +3631,7 @@ long long fused_rmsnorm_bwd_cpu(
         }
         const float coef = r3 * static_cast<float>(s) * invD;
         j = 0;
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
         if (use_avx) {
             const __m256 rv = _mm256_set1_ps(r);
             const __m256 cv = _mm256_set1_ps(coef);
@@ -3666,7 +3688,7 @@ long long fused_swiglu_fwd_cpu(const float* gate, const float* up, float* out, l
     if (n <= 0) {
         return 0;
     }
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
     const bool use_avx = has_avx2_cpu();
 #else
     const bool use_avx = false;
@@ -3678,7 +3700,7 @@ long long fused_swiglu_fwd_cpu(const float* gate, const float* up, float* out, l
     const bool use_nt = bnb_is_aligned_for_nt(out) &&
                         ((size_t)n * sizeof(float) >= bnb_nt_threshold_bytes());
     long long i = 0;
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
     if (use_avx) {
         for (; i + 8 <= n; i += 8) {
             const __m256 g = _mm256_loadu_ps(gate + i);
@@ -3753,7 +3775,7 @@ long long fused_add_scale_cpu(
     if (n <= 0) {
         return 0;
     }
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
     const bool use_avx = has_avx2_cpu();
 #else
     const bool use_avx = false;
@@ -3769,7 +3791,7 @@ long long fused_add_scale_cpu(
     const bool use_nt = bnb_is_aligned_for_nt(out) &&
                         ((size_t)n * sizeof(float) >= bnb_nt_threshold_bytes());
     long long i = 0;
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
     if (use_avx) {
         for (; i + 8 <= n; i += 8) {
             const long long j = i % D;
@@ -3830,7 +3852,7 @@ long long fused_swiglu_strided_fwd_cpu(
     if (M <= 0 || D <= 0) {
         return 0;
     }
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
     const bool use_avx = has_avx2_cpu();
 #else
     const bool use_avx = false;
@@ -3844,7 +3866,7 @@ long long fused_swiglu_strided_fwd_cpu(
         const float* u = up + i * us0;
         float* o = out + i * os0;
         long long j = 0;
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
         if (use_avx && g_cont && u_cont && o_cont) {
             for (; j + 8 <= D; j += 8) {
                 const __m256 gv = _mm256_loadu_ps(g + j);
@@ -3896,7 +3918,7 @@ long long fused_swiglu_strided_bwd_cpu(
         float* dg = dgate + i * dg0;
         float* du = dup + i * du0;
         long long j = 0;
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
         if (has_avx2_cpu() && all_cont) {
             const __m256 one = _mm256_set1_ps(1.0f);
             for (; j + 8 <= D; j += 8) {
@@ -3957,7 +3979,7 @@ long long fused_add_scale_inplace_cpu(
     if (n <= 0) {
         return 0;
     }
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
     const bool use_avx = has_avx2_cpu();
 #else
     const bool use_avx = false;
@@ -3975,7 +3997,7 @@ long long fused_add_scale_inplace_cpu(
         float* xr = x + i * D;
         const float* yr = y + i * D;
         long long j = 0;
-#if defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__)))
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
         if (use_avx) {
             for (; j + 8 <= D; j += 8) {
                 const __m256 s = _mm256_loadu_ps(scale + j);

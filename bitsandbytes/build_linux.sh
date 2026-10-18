@@ -27,12 +27,14 @@ COMPILER="g++"
 NO_AVX2=0
 RUN_SELFTEST=0
 BUILD_AVX512=0
+BUILD_GENERIC=0
 for arg in "$@"; do
   case "$arg" in
     --clang) COMPILER="clang++" ;;
     --no-avx2) NO_AVX2=1 ;;
     --selftest) RUN_SELFTEST=1 ;;
     --avx512) BUILD_AVX512=1 ;;
+    --generic) BUILD_GENERIC=1 ;;
   esac
 done
 
@@ -153,6 +155,35 @@ if [ "$RUN_SELFTEST" = "1" ]; then
     -o build_linux/selftest_cpu
   echo "  --- 运行结果 ---"
   ./build_linux/selftest_cpu
+fi
+
+# 可选的通用 x86-64 变体：编译期去掉全部 AVX2/FMA（BNB_CPU_PORTABLE），只保留 SSE2 基线，
+# 可在 2013 年之前的 x86（Haswell 之前）上运行；载入端按 CPUID 选择，见 _cpu_caps.py。
+if [ "$BUILD_GENERIC" = "1" ]; then
+  if [ "$ARCH" != "x86_64" ]; then
+    echo "  [GENERIC] 跳过：架构 $ARCH 不是 x86_64"
+  else
+    echo "[2c/4] 编译通用 x86-64 版（libbitsandbytes_cpu_generic.so，无 AVX2/FMA）..."
+    OUTGEN="bitsandbytes/libbitsandbytes_cpu_generic.so"
+    rm -f "$OUTGEN"
+    "$COMPILER" -O2 -std=c++17 -fno-math-errno -fopenmp -march=x86-64 -DBNB_CPU_PORTABLE=1 \
+      -fPIC -shared -DNOMINMAX -DNDEBUG \
+      -DBUILD_CUDA=0 -DBUILD_HIP=0 -DBUILD_XPU=0 \
+      -I csrc \
+      csrc/cpu_ops.cpp csrc/cpu_gdn.cpp csrc/pythonInterface.cpp \
+      -o "$OUTGEN" \
+      -Wl,--no-undefined -Wl,--export-dynamic -Wl,-soname,libbitsandbytes_cpu_generic.so
+    echo "  -> $OUTGEN ($(du -h "$OUTGEN" | cut -f1))"
+    if command -v objdump >/dev/null 2>&1; then
+      AVX_INSNS=$(objdump -d "$OUTGEN" 2>/dev/null | grep -cE '%[yz]mm|vfmadd|vzeroupper|vmovaps|vmulps|vaddps' || true)
+      echo "  可移植性检查：AVX 指令 $AVX_INSNS 条（generic 产物必须为 0）"
+      if [ "$AVX_INSNS" -ne 0 ]; then
+        echo "ERROR: generic 产物包含 AVX 指令，它不能在非 AVX2 机器上运行。"
+        echo "       检查是否有 AVX2 代码没被 BNB_CPU_PORTABLE 排除。"
+        exit 4
+      fi
+    fi
+  fi
 fi
 
 echo "============================================================"

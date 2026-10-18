@@ -589,6 +589,12 @@ AVX2 机器，载入端必须按 CPU 能力选择。
 产物上用 `-march=native`** —— 在 AVX-512 构建机上它会悄悄把"AVX2 基线"变成 AVX-512-only
 （2026-10-18 实测：1204 条 zmm）。
 
+**通用 x86-64 产物（给没有 AVX2 的机器）**：第三条产物 `libbitsandbytes_cpu_generic.so`（`bash build_linux.sh --generic`）在**编译期**去掉全部
+AVX2/FMA（`-DBNB_CPU_PORTABLE`），只保留 SSE2 基线；构建后断言 **AVX 指令 = 0 条**（非 0
+直接失败）。载入端三级选择：**AVX-512 库 → AVX2 库 → generic 库**；`BNB_CPU_FORCE_GENERIC=1`
+可强制 generic（它在任何 x86-64 上都能跑，便于验证）。⚠️ Windows 目前只提供 AVX2 DLL，
+没有 generic DLL。
+
 ```
 bitsandbytes-cpu doctor
   cpu supports AVX-512  yes|no

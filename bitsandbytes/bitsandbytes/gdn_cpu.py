@@ -83,11 +83,14 @@ def _candidate_paths() -> list[Path]:
     # if the artifact exists. Failure here can never be fatal -- the AVX2 library is a
     # complete fallback.
     try:
-        from ._cpu_caps import avx512_supported
+        from ._cpu_caps import avx2_supported, avx512_supported
 
         if avx512_supported():
             dll_names.insert(0, "libbitsandbytes_cpu_avx512.dll")
             so_names.insert(0, "libbitsandbytes_cpu_avx512.so")
+        elif not avx2_supported():
+            dll_names.insert(0, "libbitsandbytes_cpu_generic.dll")
+            so_names.insert(0, "libbitsandbytes_cpu_generic.so")
     except Exception:  # pragma: no cover - the choice is an optimisation, not a requirement
         pass
     if os.name == "nt":

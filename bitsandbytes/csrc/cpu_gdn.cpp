@@ -209,7 +209,7 @@ inline bool gdn_has_avx2() {
 // ---------------------------------------------------------------------------
 template <bool AVX> struct VO;
 
-#if defined(GDN_X86)
+#if defined(GDN_X86) && !defined(BNB_CPU_PORTABLE)
 template <> struct VO<true> {
     static inline float hsum8(__m256 v) {
         float t[8];
@@ -695,7 +695,7 @@ extern "C" int gdn_fwd_cpu(const void* q, const void* k, const void* v, const fl
         C = 64;
     if (C > T)
         C = T;
-#if defined(GDN_X86)
+#if defined(GDN_X86) && !defined(BNB_CPU_PORTABLE)
     if (gdn_has_avx2())
         return gdn_fwd_dispatch<true>(q, k, v, beta, g, s_init, o, s_final, ckpts, B, H, T, K, V,
                                       dtype, C, layout);
@@ -718,7 +718,7 @@ extern "C" int gdn_bwd_cpu(const void* q, const void* k, const void* v, const fl
         C = 64;
     if (C > T)
         C = T;
-#if defined(GDN_X86)
+#if defined(GDN_X86) && !defined(BNB_CPU_PORTABLE)
     if (gdn_has_avx2())
         return gdn_bwd_dispatch<true>(q, k, v, beta, g, do_, ds_final, ckpts, dq, dk, dv, dbeta, dg,
                                       ds_init, B, H, T, K, V, dtype, C, layout);

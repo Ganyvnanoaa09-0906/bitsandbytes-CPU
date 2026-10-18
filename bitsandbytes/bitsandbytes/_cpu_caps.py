@@ -46,6 +46,18 @@ def _torch_capability() -> str | None:
         return None
 
 
+def _proc_cpuinfo_supports_avx2() -> bool:
+    try:
+        with open("/proc/cpuinfo", "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if line.startswith("flags"):
+                    flags = set(line.split(":", 1)[1].split())
+                    return {"avx2", "fma", "f16c"} <= flags
+    except OSError:
+        return False
+    return False
+
+
 def _proc_cpuinfo_supports_avx512() -> bool:
     try:
         with open("/proc/cpuinfo", "r", encoding="utf-8", errors="replace") as handle:
@@ -73,3 +85,17 @@ def avx512_supported() -> bool:
     if capability is not None:
         return capability == "AVX512"
     return _proc_cpuinfo_supports_avx512()
+
+
+def avx2_supported() -> bool:
+    """True when the CPU can execute the regular (AVX2+FMA) artifact.
+
+    BNB_CPU_FORCE_GENERIC=1 forces the portable artifact (it runs on any x86-64, so this is
+    safe and makes the three-way selection testable on an AVX2 machine).
+    """
+    if _env_flag("BNB_CPU_FORCE_GENERIC"):
+        return False
+    capability = _torch_capability()
+    if capability is not None:
+        return capability in ("AVX2", "AVX512")
+    return _proc_cpuinfo_supports_avx2()

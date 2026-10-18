@@ -667,6 +667,13 @@ counts zmm lines after the build and fails the build when the count is not 0. **
 `-march=native` for the AVX2 artifact**: on an AVX-512 build host it silently turns the "AVX2
 baseline" into an AVX-512-only library (measured 2026-10-18: 1204 zmm lines).
 
+**Generic x86-64 artifact (for machines without AVX2)**: the third artifact
+`libbitsandbytes_cpu_generic.so` (`bash build_linux.sh --generic`) removes all AVX2/FMA code at
+**compile time** (`-DBNB_CPU_PORTABLE`), keeping baseline SSE2 only; the build asserts **0 AVX
+instructions** (and fails otherwise). The loader selects **AVX-512 -> AVX2 -> generic**;
+`BNB_CPU_FORCE_GENERIC=1` forces the generic artifact (it runs on any x86-64, which makes the
+choice testable). NOTE: Windows currently ships only the AVX2 DLL, no generic DLL.
+
 ```
 bitsandbytes-cpu doctor
   cpu supports AVX-512  yes|no

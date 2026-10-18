@@ -611,6 +611,16 @@ guessing wrong SIGILLs**. `cextension.LOADED_NATIVE_LIB` records the chosen path
 hardware that really supports AVX-512). Build side: on Linux `build_linux.sh --avx512` emits both
 .so files; on Windows `BNB_BUILD_AVX512=1` makes `build_manual.bat` emit the second DLL.
 
+**The third artifact: generic (no AVX2)**. Runtime guards cannot substitute for "the binary
+contains no AVX2 instructions": the regular build compiles the whole TU with `-mavx2 -mfma`, so the
+compiler may emit AVX2/FMA anywhere, including in the scalar twins and the glue. `--generic` uses
+`-march=x86-64 -DBNB_CPU_PORTABLE=1`: (1) the 31 `__AVX2__ || x86` guard regions become
+`BNB_AVX2_CODE && ...` and are preprocessed out; (2) `has_avx2_cpu()` returns false; (3)
+`cpu_gdn.cpp`'s `VO<true>` and `<true>` dispatch instantiations are not compiled, leaving the
+scalar twins. The build asserts `objdump` shows 0 AVX instructions (measured here: 144 KB, **0
+instructions**, portable selftest **5/5 PASS**). Selection is three-way: AVX-512 -> AVX2 -> generic
+(`BNB_CPU_FORCE_GENERIC=1` forces generic).
+
 **The build-flag portability contract (an incident found on real hardware, 2026-10-18)**: the AVX2
 artifact must be built with **explicit** `-mavx2 -mfma -mf16c`, **never `-march=native`**. On an
 AVX-512 build host, native means AVX-512, so the "AVX2 baseline" came out with **1204 zmm
@@ -680,20 +690,16 @@ python stress_opt.py             # 210 combos, 0 failures (LLM-side regression)
 4. **8-bit optimizer state must be initialized**: before first use the state codes and
    absmax must be valid (zero state = absmax all 0), else NaN.
 5. **4-bit GEMV ldb**: row stride of the packed B is `K/2`, not K.
-6. **Non-AVX2 x86 (not supported today; a separate generic artifact is needed)**: the
-   runtime half exists -- every AVX2 kernel is guarded by `has_avx2_cpu()` (CPUID+XGETBV),
-   `cpu_gdn.cpp` has `VO<true>/VO<false>` template twins, and `BNB_CPU_NO_AVX2=1` forces the
-   scalar path (A/B testing; selftest passes 5/5 with it). **The binary-level guarantee does
-   not exist**: shipped artifacts are compiled with `-mavx2 -mfma` (Windows `/arch:AVX2`), so
-   the compiler may emit AVX2/FMA in any function, including the scalar twins and the glue.
-   On a real non-AVX2 x86 CPU they are therefore not guaranteed to run. `build_linux.sh
-   --no-avx2` (generic x86-64) **does not even compile today**: the intrinsics in
-   `cpu_ops.cpp` / `cpu_gdn.cpp` are guarded by `__GNUC__ && x86` / `GDN_X86` rather than
-   `__AVX2__`, so `-march=x86-64` fails with "target specific option mismatch". **=> the x86
-   baseline is AVX2 (the documented contract, report 7.1). Supporting non-AVX2 means adding a
-   third artifact the same way the AVX-512 dual library works** (AVX2 kernels isolated in
-   their own TU or target-attributed functions, three-way CPUID selection in the loader, and
-   a build assertion that the generic artifact has zero ymm/vfmadd instructions).**
+6. **Non-AVX2 x86 (supported now: the generic artifact)**: `build_linux.sh --generic` emits
+   `libbitsandbytes_cpu_generic.so` with all AVX2/FMA removed at compile time (the build asserts
+   0 AVX instructions) and the loader is three-way: AVX-512 -> AVX2 -> generic; the portable
+   selftest passes 5/5 and `BNB_CPU_FORCE_GENERIC=1` forces it. Dynamic validation on a real
+   pre-AVX2 CPU is done with qemu-user (`-cpu Nehalem`, built into the e2e script, optional).
+   NOTE: Windows ships only the AVX2 DLL for now. (History: the runtime half always existed --
+   every AVX2 kernel is guarded by `has_avx2_cpu()` (CPUID+XGETBV), `cpu_gdn.cpp` has
+   `VO<true>/VO<false>` twins, and `BNB_CPU_NO_AVX2=1` forces the scalar path (selftest 5/5).
+   The binary-level guarantee did not exist because the regular build compiles the whole TU with
+   `-mavx2 -mfma`; the generic artifact is what fixes that.)
 7. **disk_balancer offloading host NTFS via 9P under WSL = serious risk (can disrupt the
    MFT — must exclude)**: on **WSL**, disk_balancer's **Linux branch (`detect_disks`)
    treats the host Windows **NTFS mounts (`/mnt/c`, `/mnt/d`, via the Microsoft **9P

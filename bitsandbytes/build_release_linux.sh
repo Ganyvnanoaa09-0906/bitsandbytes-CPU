@@ -71,6 +71,10 @@ cp bitsandbytes/libbitsandbytes_cpu.so "$STAGE/bitsandbytes/"   # 编译出的 .
 if [ -f bitsandbytes/libbitsandbytes_cpu_avx512.so ]; then
   cp bitsandbytes/libbitsandbytes_cpu_avx512.so "$STAGE/bitsandbytes/"
 fi
+# 可选：通用 x86-64 变体（build_linux.sh --generic 产出）；只在没有 AVX2 的机器上被加载
+if [ -f bitsandbytes/libbitsandbytes_cpu_generic.so ]; then
+  cp bitsandbytes/libbitsandbytes_cpu_generic.so "$STAGE/bitsandbytes/"
+fi
 
 # 示例
 cp examples/cpu/* "$STAGE/examples/cpu/" 2>/dev/null || true

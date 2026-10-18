@@ -512,6 +512,13 @@ WARNING: **the same run exposed a release-package bug**: the AVX2 artifact conta
 instructions, because `-march=native` on an AVX-512 build host turns the "AVX2 baseline" into an
 AVX-512-only library. Fix and verification in 7.116.
 
+**Third artifact: generic x86-64 (no AVX2)**: `build_linux.sh --generic` produces a 144 KB
+`libbitsandbytes_cpu_generic.so` with all AVX2/FMA removed at compile time; disassembly shows
+**0 AVX instructions** (asserted by the build, which fails otherwise). The portable selftest
+(same sources + `-DBNB_CPU_PORTABLE=1`) passes **5/5**; with `BNB_CPU_FORCE_GENERIC=1` doctor and
+`LOADED_NATIVE_LIB` pick the generic artifact, otherwise AVX-512/AVX2 per CPU capability. NOTE:
+Windows ships only the AVX2 DLL. Details in 7.117.
+
 ## 4. Image-generation training measured (R5-4500U)
 
 | Model | UNet | 256px step | Peak RSS | 500 steps | 512px step |

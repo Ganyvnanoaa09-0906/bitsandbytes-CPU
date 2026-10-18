@@ -8,7 +8,7 @@ from typing import Optional
 
 import torch
 
-from bitsandbytes._cpu_caps import avx512_supported
+from bitsandbytes._cpu_caps import avx2_supported, avx512_supported
 from bitsandbytes.consts import DYNAMIC_LIBRARY_SUFFIX, PACKAGE_DIR
 from bitsandbytes.cuda_specs import (
     CUDASpecs,
@@ -377,6 +377,14 @@ def get_native_library() -> BNBNativeLibrary:
         avx512_binary_path = PACKAGE_DIR / f"libbitsandbytes_cpu_avx512{DYNAMIC_LIBRARY_SUFFIX}"
         if avx512_binary_path.exists():
             binary_path = avx512_binary_path
+
+    # Generic x86-64 artifact: only when the CPU cannot run the AVX2 library AND the generic
+    # one is present. It contains no AVX2/FMA code (build_linux.sh --generic asserts that), so
+    # loading it is safe on any x86-64 CPU.
+    if not avx2_supported():
+        generic_binary_path = PACKAGE_DIR / f"libbitsandbytes_cpu_generic{DYNAMIC_LIBRARY_SUFFIX}"
+        if generic_binary_path.exists():
+            binary_path = generic_binary_path
 
     global LOADED_NATIVE_LIB
     LOADED_NATIVE_LIB = binary_path

@@ -422,6 +422,14 @@ SECTIONS = [
              "set BNB_BUILD_AVX512=1 && build_manual\\build_manual.bat   # Windows",
              "# override switches: BNB_CPU_DISABLE_AVX512=1 / BNB_CPU_FORCE_AVX512=1",
          ], SH),
+        ("generic artifact: run on CPUs without AVX2",
+         "a third library, built with all AVX2/FMA removed at compile time, for pre-Haswell x86;"
+         " the loader picks it only when the CPU cannot run the AVX2 library", [
+             "bash build_linux.sh --generic       # libbitsandbytes_cpu_generic.so (Linux)",
+             "# build asserts: objdump shows 0 AVX instructions (else the build fails)",
+             "# selection order: AVX-512 -> AVX2 -> generic",
+             "#   BNB_CPU_FORCE_GENERIC=1 forces the generic library (any x86-64 can run it)",
+         ], SH),
     ]),
     ("kernels", "Fused kernels (call them directly)", [
         ("fused_dequant_linear_8bit(...)",
@@ -989,15 +997,23 @@ def cmd_doctor(args) -> int:
     try:
         caps = _load_from_package("_cpu_caps")
         avx512_ok = bool(caps.avx512_supported())
+        avx2_ok = bool(caps.avx2_supported())
     except Exception:  # pragma: no cover - doctor must still work if the helper is absent
-        avx512_ok = False
+        avx512_ok = avx2_ok = False
     avx512 = os.path.join(pkg, f"libbitsandbytes_cpu_avx512{suffix}")
+    generic = os.path.join(pkg, f"libbitsandbytes_cpu_generic{suffix}")
     has_avx512 = os.path.isfile(avx512)
+    has_generic = os.path.isfile(generic)
     print(f"  cpu supports AVX-512  {'yes' if avx512_ok else 'no'}")
+    print(f"  cpu supports AVX2     {'yes' if avx2_ok else 'no'}")
     print(f"  AVX-512 library       {os.path.basename(avx512)} "
           f"{'(present)' if has_avx512 else '(absent)'}")
+    print(f"  generic library       {os.path.basename(generic)} "
+          f"{'(present)' if has_generic else '(absent)'}")
     if avx512_ok and has_avx512:
         target = avx512
+    elif not avx2_ok and has_generic:
+        target = generic
     print(f"  this process will load  {os.path.basename(target)}")
     if not os.path.isfile(target):
         print("    MISSING -- install from a wheel for this platform, or from the sdist")
