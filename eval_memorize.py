@@ -62,14 +62,25 @@ def main() -> int:
     print('cfg: T=%d grid=%d use_bos=%s vocab=%d' % (T, side, getattr(cfg, 'use_bos', None), cfg.vocab_size))
     print('rows: %d from %d' % (n, args.start))
 
-    # A. shifted CE
+    # A. CE, convention depends on use_bos: use_bos=True already shifted by BOS, so logits[:, i]
+    # predicts tokens[:, i]; use_bos=False predicts tokens[:, i+1] and needs a shift here.
     lg = gen_logits(model, true)
-    ce = float(F.cross_entropy(lg[:, :-1].reshape(-1, cfg.vocab_size), true[:, 1:].reshape(-1)))
-    print('[A] shifted CE on these rows: %.4f nats  (random %.3f)' % (ce, torch.log(torch.tensor(float(cfg.vocab_size)))))
+    use_bos = bool(getattr(cfg, 'use_bos', False))
+    if use_bos:
+        ce = float(F.cross_entropy(lg.reshape(-1, cfg.vocab_size), true.reshape(-1)))
+        label = 'unshifted (use_bos=True)'
+    else:
+        ce = float(F.cross_entropy(lg[:, :-1].reshape(-1, cfg.vocab_size), true[:, 1:].reshape(-1)))
+        label = 'shifted (use_bos=False)'
+    print('[A] CE on these rows [%s]: %.4f nats  (random %.3f)'
+          % (label, ce, torch.log(torch.tensor(float(cfg.vocab_size)))))
 
-    # B. greedy reconstruction
-    tf = true.clone()
-    tf[:, 1:] = lg[:, :-1].argmax(-1)
+    # B. greedy reconstruction (same convention as A)
+    if use_bos:
+        tf = lg.argmax(-1)
+    else:
+        tf = true.clone()
+        tf[:, 1:] = lg[:, :-1].argmax(-1)
     agree = float((tf == true).float().mean())
     print('[B] greedy reconstruction positional agreement: %.2f%%' % (agree * 100))
     os.makedirs(os.path.dirname(args.out_prefix) or '.', exist_ok=True)
