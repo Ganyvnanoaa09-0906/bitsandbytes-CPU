@@ -535,6 +535,13 @@ fp32 GEMM 655（0.58×）——纯运算峰值不等于 GEMM 峰值。
 机器上用）。构建侧：Linux `build_linux.sh --avx512` 一次出两个 .so；Windows 用
 `BNB_BUILD_AVX512=1` 走 `build_manual.bat`。
 
+**构建 flags 的可移植性契约（真机抓到的一次事故，2026-10-18）**：AVX2 产物必须用**显式**
+`-mavx2 -mfma -mf16c` 生成，**不能用 `-march=native`**。在 AVX-512 构建机上 `-march=native`
+的含义是 AVX-512，于是"AVX2 基线"产物里出现 **1204 条 zmm 指令** —— 这份 .so 发给 AVX2 机器
+会 SIGILL，而它正是默认分发给 AVX2 用户的那份。修复：`build_linux.sh` 代码生成固定显式 flags，
+并在构建后**断言 zmm 行数 = 0**（非 0 直接 exit 3）；`avx512/dual_lib_e2e.sh` 也做同样的断言。
+本机（AVX2 构建机）重编验证：0 / 1856 条。
+
 ## 4. 内存策略：为什么「量化冻结层」而不是「降权重存储精度」
 
 | 方案 | 权重内存 | 5 步耗时（1.7B+i5） | 结论 |

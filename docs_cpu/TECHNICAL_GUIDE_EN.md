@@ -611,6 +611,14 @@ guessing wrong SIGILLs**. `cextension.LOADED_NATIVE_LIB` records the chosen path
 hardware that really supports AVX-512). Build side: on Linux `build_linux.sh --avx512` emits both
 .so files; on Windows `BNB_BUILD_AVX512=1` makes `build_manual.bat` emit the second DLL.
 
+**The build-flag portability contract (an incident found on real hardware, 2026-10-18)**: the AVX2
+artifact must be built with **explicit** `-mavx2 -mfma -mf16c`, **never `-march=native`**. On an
+AVX-512 build host, native means AVX-512, so the "AVX2 baseline" came out with **1204 zmm
+instruction lines** -- that .so SIGILLs on AVX2 machines, and it is exactly the artifact shipped to
+AVX2 users by default. Fix: `build_linux.sh` now pins explicit flags for code generation and
+**asserts zmm == 0 after the build** (exit 3 otherwise); `avx512/dual_lib_e2e.sh` asserts the same.
+Re-verified on this AVX2 build host: 0 / 1856 lines.
+
 ## 4. Memory strategy: why "quantized frozen layers" not "lower-precision weight storage"
 
 | Scheme | Weight memory | 5-step time (1.7B + i5) | Verdict |

@@ -584,6 +584,11 @@ AVX2 机器，载入端必须按 CPU 能力选择。
 | `BNB_CPU_DISABLE_AVX512=1` | 强制用 AVX2 库（对比两个后端时用） |
 | `BNB_CPU_FORCE_AVX512=1` | 强制选 AVX-512 库（只应在支持 AVX-512 的机器上用） |
 
+**产物契约（必须记住）**：AVX2 产物里**不许出现 zmm/EVEX 指令**（否则它在 AVX2 机器上一调用
+就 SIGILL）。`build_linux.sh` 现在构建后会数一遍 zmm 行数，非 0 直接构建失败；**不要在 AVX2
+产物上用 `-march=native`** —— 在 AVX-512 构建机上它会悄悄把"AVX2 基线"变成 AVX-512-only
+（2026-10-18 实测：1204 条 zmm）。
+
 ```
 bitsandbytes-cpu doctor
   cpu supports AVX-512  yes|no

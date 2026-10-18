@@ -659,6 +659,12 @@ prints the decision.
 | `BNB_CPU_DISABLE_AVX512=1` | force the AVX2 library (useful when comparing both backends) |
 | `BNB_CPU_FORCE_AVX512=1` | force the AVX-512 library (only on hardware that supports it) |
 
+**Artifact contract (important)**: the AVX2 artifact must contain **no zmm/EVEX instructions**
+(otherwise it SIGILLs on an AVX2-only CPU as soon as a kernel is called). `build_linux.sh` now
+counts zmm lines after the build and fails the build when the count is not 0. **Do not use
+`-march=native` for the AVX2 artifact**: on an AVX-512 build host it silently turns the "AVX2
+baseline" into an AVX-512-only library (measured 2026-10-18: 1204 zmm lines).
+
 ```
 bitsandbytes-cpu doctor
   cpu supports AVX-512  yes|no

@@ -55,7 +55,13 @@ if [ "$ARCH" = "x86_64" ] && [ "$NO_AVX2" = "0" ]; then
   # 自动检测本机是否支持 AVX2（避免硬编码 -D__AVX2__ 在无 AVX2 机器上）
   if grep -q ' avx2' /proc/cpuinfo 2>/dev/null || \
      (command -v lscpu >/dev/null && lscpu 2>/dev/null | grep -q 'avx2'); then
-    ARCH_FLAGS="-march=native -D__AVX2__"
+    # ★ 这里必须是【显式 ISA】而不是 -march=native：
+    #   构建机若本身支持 AVX-512（如 EPYC 9Y24 容器），-march=native 会让这份
+    #   "AVX2 基线"产物里出现 zmm/EVEX 指令，它在 AVX2 机器上一调用就 SIGILL。
+    #   实测（2026-10-18，AVX-512 容器）：-march=native 版 AVX2 产物有 1204 条 zmm。
+    #   所以代码生成只用显式 -mavx2 -mfma -mf16c；下面的 /proc/cpuinfo 检测只用来
+    #   决定"要不要开 AVX2"，不参与指令集选择。
+    ARCH_FLAGS="-mavx2 -mfma -mf16c -D__AVX2__"
     echo "  [AVX2] 检测到本机 AVX2，启用"
   else
     # 非 AVX2 CPU：不定义 __AVX2__、用通用 x86-64，运行时走 scalar（能跑，慢）
@@ -83,6 +89,18 @@ $COMPILER -O2 -std=c++17 -fno-math-errno -fopenmp $ARCH_FLAGS \
   -Wl,--no-undefined -Wl,--export-dynamic -Wl,-soname,libbitsandbytes_cpu.so
 
 echo "  -> $OUT ($(du -h "$OUT" | cut -f1))"
+
+# 可移植性断言：AVX2 产物里不允许出现 EVEX(zmm) 指令 —— 一旦出现，这份 .so 在
+# AVX2 机器上会 SIGILL，而它正是要发给 AVX2 用户的那份。
+if command -v objdump >/dev/null 2>&1; then
+  ZMM_LINES=$(objdump -d "$OUT" 2>/dev/null | grep -c zmm || true)
+  echo "  可移植性检查：zmm 指令 $ZMM_LINES 条（AVX2 产物必须为 0）"
+  if [ "$ZMM_LINES" -ne 0 ]; then
+    echo "ERROR: AVX2 产物包含 zmm 指令，它不能在 AVX2 机器上运行。"
+    echo "       检查编译 flags：代码生成必须是显式 -mavx2 -mfma -mf16c，不能用 -march=native。"
+    exit 3
+  fi
+fi
 
 # 可选的 AVX-512 变体：同一份源码、另加 AVX-512 flags。它【不能】发给 AVX2 机器
 # （整 TU 的 -mavx512f 会把普通内核自动向量化成 zmm，AVX2 上一调用就 SIGILL），

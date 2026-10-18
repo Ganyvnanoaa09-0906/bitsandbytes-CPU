@@ -501,6 +501,17 @@ AVX-512 DLL into the package and setting `BNB_CPU_FORCE_AVX512=1` makes `cextens
 both pick it and `doctor` agrees on all three fields; removing it restores AVX2. **The end-to-end
 regression on real AVX-512 hardware is still pending** (this machine has none).
 
+**Real-machine e2e (AVX-512 container, 2026-10-18)**: both artifacts built, `doctor` reported
+`cpu supports AVX-512 yes` / `AVX-512 library present` / `will load ...avx512.so`;
+`LOADED_NATIVE_LIB` was the AVX-512 artifact, `has_avx512f_cpu` / `has_avx512bf16_cpu` both
+present; `BNB_CPU_DISABLE_AVX512=1` went back to the AVX2 artifact; the package selftest passed
+with **0 failures** (4-bit layer / 8-bit optimizer / GDN). Loader-level timing: auto **4.296 ms**
+vs forced AVX2 **4.294 ms** (**1.00x**) -- consistent with 7.113: the kernels are memory-bound,
+so hitting the AVX-512 path does not speed them up.
+WARNING: **the same run exposed a release-package bug**: the AVX2 artifact contained 1204 zmm
+instructions, because `-march=native` on an AVX-512 build host turns the "AVX2 baseline" into an
+AVX-512-only library. Fix and verification in 7.116.
+
 ## 4. Image-generation training measured (R5-4500U)
 
 | Model | UNet | 256px step | Peak RSS | 500 steps | 512px step |

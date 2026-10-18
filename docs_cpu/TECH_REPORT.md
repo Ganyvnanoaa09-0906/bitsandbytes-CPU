@@ -452,6 +452,15 @@ SIGILL；zmm 归属证明崩溃点在**普通函数**（dequantize/rmsnorm/optim
 **双库落地（本轮）**：AVX-512 版本作为独立产物 `libbitsandbytes_cpu_avx512.*` 与 AVX2 版本
 一起分发，加载前由 `_cpu_caps.py` 判断 CPU 能力（torch `get_cpu_capability()` 优先，Linux
 回退 `/proc/cpuinfo`），`cextension` 与 `gdn_cpu` 共用同一判定，`doctor` 打印判定。
+
+**真机 e2e（AVX-512 容器，2026-10-18）**：`build_linux.sh --avx512` 双产物构建成功，`doctor`
+判定 `cpu supports AVX-512 yes / AVX-512 library present / will load ...avx512.so`；
+`LOADED_NATIVE_LIB` 实测为 AVX-512 产物，`has_avx512f_cpu` / `has_avx512bf16_cpu` 均 present；
+`BNB_CPU_DISABLE_AVX512=1` 强制回 AVX2 产物；包自带 selftest **0 failure**（4-bit 层 /
+8-bit 优化器 / GDN）。加载器级计时：auto **4.296 ms** vs forced AVX2 **4.294 ms**（**1.00×**）
+—— 与 §7.113"现有内核 memory-bound、命中 AVX-512 路径也不提速"的结论一致。
+⚠️ **同一次运行抓出一个发布包级 bug**：AVX2 产物里有 1204 条 zmm 指令（`-march=native` 在
+AVX-512 构建机上把"AVX2 基线"变成了 AVX-512-only）。修复与验证见 §7.116。
 构建侧：Linux `build_linux.sh --avx512` 一次出两个 .so（本机实测 293 KB / 330 KB，
 反汇编 zmm 行数 **0 / 1856**——AVX2 产物确实不含 EVEX）；Windows 用 `BNB_BUILD_AVX512=1`
 走 `build_manual.bat`（开发机没有 MSVC，这条产线未在本机验证，列入待办）。

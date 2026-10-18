@@ -34,11 +34,20 @@ echo "git head   : $(git -C "$ROOT" log -1 --oneline 2>/dev/null || echo 'not a 
 
 say "[1/7] build both libraries from one source tree"
 ( cd "$PKG" && bash build_linux.sh --avx512 ) || { echo "BUILD_FAILED"; exit 2; }
+ZMM_AVX2=$(objdump -d "$PKG/bitsandbytes/libbitsandbytes_cpu.so" 2>/dev/null | grep -c zmm || true)
+ZMM_AVX512=$(objdump -d "$PKG/bitsandbytes/libbitsandbytes_cpu_avx512.so" 2>/dev/null | grep -c zmm || true)
 for f in bitsandbytes/libbitsandbytes_cpu.so bitsandbytes/libbitsandbytes_cpu_avx512.so; do
     if [ ! -f "$PKG/$f" ]; then echo "MISSING $f"; exit 2; fi
     ls -la "$PKG/$f"
-    echo "    zmm instruction lines: $(objdump -d "$PKG/$f" 2>/dev/null | grep -c zmm || true)"
 done
+echo "zmm lines: AVX2 artifact = $ZMM_AVX2 (must be 0) | AVX-512 artifact = $ZMM_AVX512 (must be > 0)"
+if [ "$ZMM_AVX2" -ne 0 ]; then
+    echo "PORTABLE_ARTIFACT_FAILED: the AVX2 artifact contains zmm/EVEX instructions"
+    echo "  it would SIGILL on an AVX2-only CPU; check build_linux.sh flags (-march=native?)"
+fi
+if [ "$ZMM_AVX512" -le 0 ]; then
+    echo "AVX512_ARTIFACT_WITHOUT_EVEX: the AVX-512 artifact contains no zmm code -- flags not applied?"
+fi
 
 say "[2/7] torch"
 if python3 -c 'import torch' >/dev/null 2>&1; then
