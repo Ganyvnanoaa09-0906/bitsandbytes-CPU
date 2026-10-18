@@ -299,3 +299,34 @@ fp32 最低位。**这也说明 ARM64 的 NEON 内核与 x86 的 AVX2 内核算�
 - `D:\work\bitsandbytes-CPU\i5build\setup_termux_test.sh` —— 设备侧一键验收（经 HTTP/ADB 隧道）
 - `D:\work\termux_adb_test.ps1` —— ADB 自动化验证台
 - 报告 `CPU_FORGE_TECHNICAL_REPORT.md` 相关章节
+
+---
+
+## 八、跨平台回归（2026-10-18）：aarch64 交叉编译 + qemu 自检
+
+这一轮不改 Termux 脚本，只做**回归验证**：在 x86 开发机上用 zig 自带的 clang 交叉编译当前源码，
+再用 `qemu-aarch64` 跑静态 ARM64 自检。
+
+**发现的真实 bug（ARM64 编译阻断）**：`csrc/cpu_ops.cpp` 的 fused RMSNorm NT-store 路径里
+`_mm_sfence()`（x86 专属 intrinsic）**没有架构守卫**——NT-store 循环有守卫，但循环之后的那句
+fence 落在守卫外面。aarch64 编译直接失败：
+
+```
+error: use of undeclared identifier '_mm_sfence'
+```
+
+**修复**：给 fence 套上与 NT-store 循环相同的 `BNB_AVX2_CODE && x86` 守卫。
+
+**修复后验证**：
+
+| 检查 | 结果 |
+|---|---|
+| 三个 TU 的 aarch64 交叉编译（cpu_ops / cpu_gdn / pythonInterface） | 全部通过 |
+| 静态 musl ARM64 自检（`qemu-aarch64`，无 root） | **5/5 PASS** |
+| x86 同源码重建 + 自检（回归） | **5/5 PASS** |
+
+复现脚本：`arm64_selftest.sh`（下载 qemu-user .deb 到 /tmp 解包，无需 root）。
+
+**边界**：这是 **aarch64 架构级**验证（glibc/musl + qemu），**不是** Android/bionic 真机验证；
+真机（nova 5i Pro）此前的测试结论仍成立。Termux 的 `build_termux.sh` 不受影响，但**下一次
+Termux 构建会包含这次 fence 修复**。

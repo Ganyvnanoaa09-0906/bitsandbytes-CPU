@@ -88,6 +88,8 @@ cd ~/bitsandbytes && bash build_termux.sh --selftest
 
 产物为 `bitsandbytes/libbitsandbytes_cpu.so`。Termux 的 clang 对 `-mcpu=native` 支持不稳定，脚本会先试编译再决定是否启用；OpenMP 需要单独 `pkg install libomp`，没有时自动降级为单线程。
 
+**2026-10-18 回归**：aarch64 交叉编译 + 静态 ARM64 自检在 `qemu-aarch64` 下 **5/5 PASS**；同轮发现并修复一处 ARM64 编译阻断（fused RMSNorm 的 `_mm_sfence()` 未加架构守卫）。x86 的 AVX-512 / generic 产物与 Termux 无关，ARM64 始终使用常规 `.so`。
+
 > ## ⚠️ 风险声明：不建议在手机上训练
 >
 > Termux 支持**已经实现并在真机（HUAWEI nova 5i Pro）上通过测试**，但**不推荐在 Termux 上训练或微调模型**。

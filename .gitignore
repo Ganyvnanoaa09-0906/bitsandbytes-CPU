@@ -85,3 +85,4 @@ dist_check/
 # 提交信息用的临时文件，不该进仓库
 _cmsg*.txt
 _tmp.txt
+build_arm64/

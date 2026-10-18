@@ -117,6 +117,11 @@ The artefact is `bitsandbytes/libbitsandbytes_cpu.so`. Termux's clang handles
 OpenMP needs a separate `pkg install libomp`; without it the build degrades to
 single-threaded automatically.
 
+**2026-10-18 regression**: aarch64 cross-compilation of all three TUs plus a static ARM64
+selftest under `qemu-aarch64` (**5/5 PASS**); the same pass found and fixed an ARM64 compile
+blocker (an unguarded `_mm_sfence()` in the fused RMSNorm NT path). The x86-only AVX-512 /
+generic artefacts are irrelevant to Termux: ARM64 always loads the single regular `.so`.
+
 > ## WARNING: training on a phone is not advised
 >
 > Termux support **is implemented and has passed testing on a real device (HUAWEI

@@ -3540,9 +3540,11 @@ long long fused_rmsnorm_fwd_cpu(
             orow[j] = y;
         }
     }
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
     if (use_nt) {
-        _mm_sfence();   // NT 是弱序；每线程一次即可（行间不需要）
+        _mm_sfence();   // NT 是弱序；每线程一次即可（行间不需要）—— x86-only intrinsic
     }
+#endif
     }   // omp parallel
     return M;
 }
