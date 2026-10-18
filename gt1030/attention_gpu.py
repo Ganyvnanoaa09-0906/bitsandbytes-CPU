@@ -93,34 +93,62 @@ __kernel void split_kv(__global const half* qkv, __global half* k, __global half
     v[i] = qkv[base + D * nkv + kw * D + d];
 }
 __kernel void softmax_causal(__global const half* s, __global half* p, int T, float scale) {
-    int bh = get_global_id(1), row = get_global_id(0);
-    if (row >= T) return;
+    int bh = get_group_id(1), row = get_group_id(0);
+    int lid = get_local_id(0), lsz = get_local_size(0);
+    int n = row + 1;
+    __local float vals[256];
+    __local float red[256];
     __global const half* line = s + (bh * T + row) * T;
     __global half* out = p + (bh * T + row) * T;
-    for (int k = 0; k < T; ++k) out[k] = (half)0;
     float mx = -1e30f;
-    for (int k = 0; k <= row; ++k) { float v = (float)line[k] * scale; mx = fmax(mx, v); }
+    for (int k = lid; k < n; k += lsz) mx = fmax(mx, (float)line[k] * scale);
+    red[lid] = mx;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int off = lsz / 2; off > 0; off >>= 1) {
+        if (lid < off) red[lid] = fmax(red[lid], red[lid + off]);
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    float m = red[0];
+    barrier(CLK_LOCAL_MEM_FENCE);   // everyone has read red[0] before it is overwritten below
     float sum = 0.f;
-    for (int k = 0; k <= row; ++k) {
-        float e = exp((float)line[k] * scale - mx);
-        out[k] = (half)e;
+    for (int k = lid; k < n; k += lsz) {
+        float e = exp((float)line[k] * scale - m);
+        vals[k] = e;
         sum += e;
     }
-    float inv = 1.f / sum;
-    for (int k = 0; k <= row; ++k) out[k] = (half)((float)out[k] * inv);
+    red[lid] = sum;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int off = lsz / 2; off > 0; off >>= 1) {
+        if (lid < off) red[lid] += red[lid + off];
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    float inv = 1.f / red[0];
+    for (int k = lid; k < T; k += lsz)
+        out[k] = (half)((k < n) ? (vals[k] * inv) : 0.f);
 }
 __kernel void softmax_bwd_causal(__global const half* p, __global const half* dp,
                                  __global half* ds, int T, float scale) {
-    int bh = get_global_id(1), row = get_global_id(0);
-    if (row >= T) return;
+    int bh = get_group_id(1), row = get_group_id(0);
+    int lid = get_local_id(0), lsz = get_local_size(0);
+    int n = row + 1;
+    __local float red[256];
     __global const half* pl = p + (bh * T + row) * T;
     __global const half* dl = dp + (bh * T + row) * T;
     __global half* ol = ds + (bh * T + row) * T;
-    for (int k = 0; k < T; ++k) ol[k] = (half)0;
     float s = 0.f;
-    for (int k = 0; k <= row; ++k) s += (float)pl[k] * (float)dl[k];
-    for (int k = 0; k <= row; ++k)
-        ol[k] = (half)(((float)pl[k] * ((float)dl[k] - s)) * scale);
+    for (int k = lid; k < n; k += lsz) s += (float)pl[k] * (float)dl[k];
+    red[lid] = s;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int off = lsz / 2; off > 0; off >>= 1) {
+        if (lid < off) red[lid] += red[lid + off];
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    float tot = red[0];
+    for (int k = lid; k < T; k += lsz) {
+        float v = 0.f;
+        if (k < n) v = ((float)pl[k] * ((float)dl[k] - tot)) * scale;
+        ol[k] = (half)v;
+    }
 }
 __kernel void merge_o(__global const half* o, __global half* otok, int T, int D, int nh, int B) {
     int i = get_global_id(0);
@@ -227,7 +255,7 @@ def main() -> int:
         # S = Q K^T  (batched 64 x [T,T,K=D])
         hgemm_batched(dev['Q'], dev['K'], dev['S'], T, T, D, NO, YES,
                       D, D, T, T * D, T * D, T * T)
-        K['softmax_causal'](queue, (T, BH), None, dev['S'], dev['P'],
+        K['softmax_causal'](queue, (T * 256, BH), (256, 1), dev['S'], dev['P'],
                             np.int32(T), np.float32(scale))
         # O = P V
         hgemm_batched(dev['P'], dev['V'], dev['O'], T, D, T, NO, NO,
@@ -245,7 +273,7 @@ def main() -> int:
         # dP = dO V^T
         hgemm_batched(dev['dO'], dev['V'], dev['dP'], T, T, D, NO, YES,
                       D, D, T, T * D, T * D, T * T)
-        K['softmax_bwd_causal'](queue, (T, BH), None, dev['P'], dev['dP'], dev['dS'],
+        K['softmax_bwd_causal'](queue, (T * 256, BH), (256, 1), dev['P'], dev['dP'], dev['dS'],
                                 np.int32(T), np.float32(scale))
         # dV = P^T dO
         hgemm_batched(dev['P'], dev['dO'], dev['dV'], T, D, T, YES, NO,
@@ -303,6 +331,32 @@ def main() -> int:
     print()
     print('attention phase per layer: fwd %.2f ms | bwd %.2f ms | total %.2f ms'
           % (tf, tb, tf + tb))
+
+    # ---- stage-by-stage attribution of the forward pass ----
+    def t1(fn, n=6):
+        ts = []
+        for _ in range(n):
+            t0 = time.perf_counter(); fn(); queue.finish(); ts.append(time.perf_counter() - t0)
+        return statistics.median(ts[2:]) * 1e3
+
+    stage = {}
+    stage['qkv gemm'] = t1(lambda: hgemm(dev['x'], dev['wqkv'], dev['qkv'], M, WROW, DH))
+    stage['split_q'] = t1(lambda: K['split_q'](queue, (BH * T * D,), (256,), dev['qkv'], dev['Q'],
+                                               np.int32(T), np.int32(D), np.int32(NH), np.int32(NKV)))
+    stage['split_kv'] = t1(lambda: K['split_kv'](queue, (BH * T * D,), (256,), dev['qkv'], dev['K'],
+                                                 dev['V'], np.int32(T), np.int32(D), np.int32(NH),
+                                                 np.int32(NKV), np.int32(B)))
+    stage['S batched'] = t1(lambda: hgemm_batched(dev['Q'], dev['K'], dev['S'], T, T, D, NO, YES,
+                                                  D, D, T, T * D, T * D, T * T))
+    stage['softmax S->P'] = t1(lambda: K['softmax_causal'](queue, (T * 256, BH), (256, 1), dev['S'], dev['P'],
+                                                           np.int32(T), np.float32(scale)))
+    stage['O batched'] = t1(lambda: hgemm_batched(dev['P'], dev['V'], dev['O'], T, D, T, NO, NO,
+                                                  T, D, D, T * T, T * D, T * D))
+    stage['merge_o'] = t1(lambda: K['merge_o'](queue, (BH * T * D,), (256,), dev['O'], dev['o_tok'],
+                                               np.int32(T), np.int32(D), np.int32(NH), np.int32(B)))
+    stage['out gemm'] = t1(lambda: hgemm(dev['o_tok'], dev['wo'], dev['out'], M, DH, DH))
+    print('forward stages (ms): ' + ' | '.join('%s %.2f' % (k, v) for k, v in stage.items()))
+    print('sum of stages %.2f ms (measured fwd %.2f ms)' % (sum(stage.values()), tf))
     print('full AR layer estimate: + MLP+norm block (54.7 ms) = %.1f ms -> 10 layers %.2f s'
           % (54.7 + tf + tb, (54.7 + tf + tb) * 10 / 1000))
     print('1030 fraction (floor 0.594 s): %.2fx'
