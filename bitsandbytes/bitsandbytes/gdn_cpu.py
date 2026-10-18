@@ -79,6 +79,17 @@ def _candidate_paths() -> list[Path]:
         "libgdn_cpu.so",
         "libbitsandbytes_cpu.so",
     ]
+    # Same AVX-512 preference as cextension: only when this CPU can execute it, and only
+    # if the artifact exists. Failure here can never be fatal -- the AVX2 library is a
+    # complete fallback.
+    try:
+        from ._cpu_caps import avx512_supported
+
+        if avx512_supported():
+            dll_names.insert(0, "libbitsandbytes_cpu_avx512.dll")
+            so_names.insert(0, "libbitsandbytes_cpu_avx512.so")
+    except Exception:  # pragma: no cover - the choice is an optimisation, not a requirement
+        pass
     if os.name == "nt":
         order = [here / n for n in dll_names] + [pkg / "libbitsandbytes_cpu.dll"]
     else:

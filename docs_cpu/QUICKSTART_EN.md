@@ -618,11 +618,14 @@ implementation of the format and its measurements, not part of the training path
 ### 4.14 AVX-512 builds (experimental)
 
 Beyond AVX2 the CPU backend has a second set of hand-written AVX-512 kernels (the 16-lane 4-bit
-dequantise path and the bf16 GEMV tinygemm path), off by default. Build them with the opt-in switch
-(the build host must be able to *run* an AVX-512 probe):
+dequantise path and the bf16 GEMV tinygemm path). Two build routes:
 
 ```bat
-:: CMake build (Linux/GCC); BNB_ENABLE_AVX512 defaults to OFF
+:: dual-library route (recommended; builds on any x86_64 host: AVX2 + AVX-512 artifacts)
+bash build_linux.sh --avx512                 :: Linux: libbitsandbytes_cpu{,_avx512}.so
+set BNB_BUILD_AVX512=1 && build_manual\build_manual.bat   :: Windows: two .dlls (VS2017+)
+
+:: CMake route: requires the build host itself to be AVX-512 capable (the probe really runs)
 cmake -DBNB_ENABLE_AVX512=ON ..
 ```
 
@@ -637,9 +640,27 @@ cmake -DBNB_ENABLE_AVX512=ON ..
 
 ⚠️ **Warning**: `-mavx512f` is a **translation-unit-wide** switch, so ordinary kernels
 (dequantise, optimizer, rmsnorm) get auto-vectorised to zmm and **SIGILL on an AVX2-only CPU** the
-moment they are called. An AVX-512 binary therefore cannot be shipped to AVX2 machines; it has to be
-loaded through a CPUID check (the dual-library selector is not wired into the installer yet -- it is
-on the todo list).
+moment they are called. An AVX-512 binary therefore cannot be shipped to AVX2 machines; the loader
+decides by CPU capability.
+
+**Dual library and automatic selection (implemented)**: before loading, `bitsandbytes/_cpu_caps.py`
+asks torch (`get_cpu_capability()`; on Windows without torch the answer is "not supported") and
+falls back to `/proc/cpuinfo` on Linux. The AVX-512 artifact is used only when the CPU supports it;
+a missing file, an unknown CPU, or an environment override keeps the AVX2 library.
+`cextension.LOADED_NATIVE_LIB` records the choice, `gdn_cpu` uses the same query, and `doctor`
+prints the decision.
+
+| Environment variable | Effect |
+|---|---|
+| `BNB_CPU_DISABLE_AVX512=1` | force the AVX2 library (useful when comparing both backends) |
+| `BNB_CPU_FORCE_AVX512=1` | force the AVX-512 library (only on hardware that supports it) |
+
+```
+bitsandbytes-cpu doctor
+  cpu supports AVX-512  yes|no
+  AVX-512 library       libbitsandbytes_cpu_avx512.dll (present|absent)
+  this process will load  libbitsandbytes_cpu_avx512.dll|libbitsandbytes_cpu.dll
+```
 
 ## 5. Disk load balancer (disk_balancer, SSD protection)
 

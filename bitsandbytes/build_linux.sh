@@ -26,11 +26,13 @@ cd "$(dirname "$0")"
 COMPILER="g++"
 NO_AVX2=0
 RUN_SELFTEST=0
+BUILD_AVX512=0
 for arg in "$@"; do
   case "$arg" in
     --clang) COMPILER="clang++" ;;
     --no-avx2) NO_AVX2=1 ;;
     --selftest) RUN_SELFTEST=1 ;;
+    --avx512) BUILD_AVX512=1 ;;
   esac
 done
 
@@ -81,6 +83,32 @@ $COMPILER -O2 -std=c++17 -fno-math-errno -fopenmp $ARCH_FLAGS \
   -Wl,--no-undefined -Wl,--export-dynamic -Wl,-soname,libbitsandbytes_cpu.so
 
 echo "  -> $OUT ($(du -h "$OUT" | cut -f1))"
+
+# 可选的 AVX-512 变体：同一份源码、另加 AVX-512 flags。它【不能】发给 AVX2 机器
+# （整 TU 的 -mavx512f 会把普通内核自动向量化成 zmm，AVX2 上一调用就 SIGILL），
+# 载入端按 CPUID 选择，见 bitsandbytes/_cpu_caps.py。
+if [ "$BUILD_AVX512" = "1" ]; then
+  if [ "$ARCH" != "x86_64" ]; then
+    echo "  [AVX512] 跳过：架构 $ARCH 不是 x86_64"
+  else
+    echo "[2b/4] 编译 AVX-512 版（libbitsandbytes_cpu_avx512.so）..."
+    OUT512="bitsandbytes/libbitsandbytes_cpu_avx512.so"
+    rm -f "$OUT512"
+    AVX512_FLAGS="-mavx2 -mfma -mf16c -mavx512f -mavx512bw -mavx512dq -mavx512vl"
+    if echo 'int main(){return 0;}' | "$COMPILER" -mavx512bf16 -x c++ - -o /dev/null 2>/dev/null; then
+      AVX512_FLAGS="$AVX512_FLAGS -mavx512bf16"
+    fi
+    "$COMPILER" -O2 -std=c++17 -fno-math-errno -fopenmp $AVX512_FLAGS \
+      -fPIC -shared -DNOMINMAX -DNDEBUG \
+      -DBUILD_CUDA=0 -DBUILD_HIP=0 -DBUILD_XPU=0 \
+      -I csrc \
+      csrc/cpu_ops.cpp csrc/cpu_gdn.cpp csrc/pythonInterface.cpp \
+      -o "$OUT512" \
+      -Wl,--no-undefined -Wl,--export-dynamic -Wl,-soname,libbitsandbytes_cpu_avx512.so
+    echo "  -> $OUT512 ($(du -h "$OUT512" | cut -f1))"
+    echo "  注意：这个 .so 只能在支持 AVX-512 的机器上加载；选择逻辑在 bitsandbytes/_cpu_caps.py"
+  fi
+fi
 
 echo "[3/4] 导出符号抽查 ..."
 if command -v nm >/dev/null 2>&1; then

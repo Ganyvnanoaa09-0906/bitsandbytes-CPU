@@ -104,6 +104,26 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM ---- optional AVX-512 variant -------------------------------------------------
+REM  The AVX-512 library is a separate artifact because it must only be loaded on
+REM  CPUs that support AVX-512 (whole-TU -mavx512f codegen SIGILLs elsewhere); the
+REM  loader in bitsandbytes/_cpu_caps.py picks it automatically when it exists.
+REM  Off by default: set BNB_BUILD_AVX512=1. Needs VS2017+ for /arch:AVX512.
+REM  Not exercised on this dev machine (no MSVC installed there); same shape as the
+REM  AVX2 command above.
+if /i "%BNB_BUILD_AVX512%"=="1" (
+    echo [1b/2] compiling AVX-512 variant ...
+    cl /nologo /O2 /Ob2 /arch:AVX512 /fp:fast /openmp:experimental /GL /Qpar %FAVOR% ^
+       /std:c++17 /EHsc /utf-8 ^
+       /DNOMINMAX /DNDEBUG /DWIN32 /D_WINDOWS /I csrc /LD ^
+       csrc\cpu_ops.cpp csrc\cpu_gdn.cpp csrc\pythonInterface.cpp ^
+       /Fe:bitsandbytes\libbitsandbytes_cpu_avx512.dll /link /LTCG /DEF:build_manual\export_avx512.def
+    if errorlevel 1 (
+        echo [ERROR] AVX-512 build failed
+        exit /b 1
+    )
+)
+
 echo [2/2] checking artifact ...
 if exist "bitsandbytes\bitsandbytes\libbitsandbytes_cpu.dll" (
     echo [OK] bitsandbytes\bitsandbytes\libbitsandbytes_cpu.dll

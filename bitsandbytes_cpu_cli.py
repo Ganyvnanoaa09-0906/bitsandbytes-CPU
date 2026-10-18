@@ -403,8 +403,24 @@ SECTIONS = [
         ("the trap",
          "-mavx512f is a whole-translation-unit switch: ordinary kernels get auto-vectorised to "
          "zmm and SIGILL on an AVX2-only CPU", [
-             "# so an AVX-512 binary cannot be shipped to AVX2 machines; it has to be",
-             "# selected through a CPUID check at load time (installer wiring is a todo)",
+             "# so an AVX-512 binary cannot be shipped to AVX2 machines; it is selected",
+             "# through a CPUID check at load time (bitsandbytes/_cpu_caps.py)",
+         ], SH),
+        ("how it is selected",
+         "the AVX-512 library ships next to the AVX2 one and is loaded only when the CPU can run "
+         "it; a missing file or an unknown CPU keeps the AVX2 library", [
+             "# capability: torch get_cpu_capability() first, /proc/cpuinfo fallback on Linux",
+             "# inspect the decision:",
+             "bitsandbytes-cpu doctor",
+             "#   cpu supports AVX-512  yes|no",
+             "#   AVX-512 library       libbitsandbytes_cpu_avx512.dll (present|absent)",
+             "#   this process will load  libbitsandbytes_cpu_avx512.dll|libbitsandbytes_cpu.dll",
+         ], SH),
+        ("build both artifacts",
+         "one source tree, two libraries; the AVX-512 one only runs on AVX-512 hardware", [
+             "bash build_linux.sh --avx512        # Linux: libbitsandbytes_cpu{,_avx512}.so",
+             "set BNB_BUILD_AVX512=1 && build_manual\\build_manual.bat   # Windows",
+             "# override switches: BNB_CPU_DISABLE_AVX512=1 / BNB_CPU_FORCE_AVX512=1",
          ], SH),
     ]),
     ("kernels", "Fused kernels (call them directly)", [
@@ -967,7 +983,22 @@ def cmd_doctor(args) -> int:
         print("    none")
     suffix = ".dll" if os.name == "nt" else ".dylib" if sys.platform == "darwin" else ".so"
     target = os.path.join(pkg, f"libbitsandbytes_cpu{suffix}")
-    print(f"  this platform wants  {os.path.basename(target)}")
+    # The loader prefers the AVX-512 artifact when the CPU supports it (see
+    # bitsandbytes/_cpu_caps.py); doctor has to report the same decision, not just "the
+    # file for this platform exists".
+    try:
+        caps = _load_from_package("_cpu_caps")
+        avx512_ok = bool(caps.avx512_supported())
+    except Exception:  # pragma: no cover - doctor must still work if the helper is absent
+        avx512_ok = False
+    avx512 = os.path.join(pkg, f"libbitsandbytes_cpu_avx512{suffix}")
+    has_avx512 = os.path.isfile(avx512)
+    print(f"  cpu supports AVX-512  {'yes' if avx512_ok else 'no'}")
+    print(f"  AVX-512 library       {os.path.basename(avx512)} "
+          f"{'(present)' if has_avx512 else '(absent)'}")
+    if avx512_ok and has_avx512:
+        target = avx512
+    print(f"  this process will load  {os.path.basename(target)}")
     if not os.path.isfile(target):
         print("    MISSING -- install from a wheel for this platform, or from the sdist")
         print("    which compiles it (Linux needs g++ and libomp).")

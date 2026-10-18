@@ -450,6 +450,18 @@ instruction lines and SIGILLs immediately; attributing the zmm lines shows the c
 **ordinary** functions (dequantise/rmsnorm/optimizer), not the hand-written kernels -- `-mavx512f` is a
 whole-TU switch, and that is the physical reason the build host itself must support AVX-512.
 
+**Dual library landed (this round)**: the AVX-512 backend is a separate
+`libbitsandbytes_cpu_avx512.*` artifact shipped next to the AVX2 one. Before loading,
+`_cpu_caps.py` queries the CPU (torch `get_cpu_capability()` first, `/proc/cpuinfo` fallback on
+Linux); `cextension` and `gdn_cpu` share the query and `doctor` prints it. Build side: on Linux
+`build_linux.sh --avx512` emits both .so files (measured here: 293 KB / 330 KB, zmm line counts
+**0 / 1856** -- the AVX2 artifact really contains no EVEX); on Windows `BNB_BUILD_AVX512=1` makes
+`build_manual.bat` emit the second DLL (untested on this machine: no MSVC here; on the todo list).
+Selection verified on this AVX2 box: a normal import loads the AVX2 library; dropping a dummy
+AVX-512 DLL into the package and setting `BNB_CPU_FORCE_AVX512=1` makes `cextension` and `gdn_cpu`
+both pick it and `doctor` agrees on all three fields; removing it restores AVX2. **The end-to-end
+regression on real AVX-512 hardware is still pending** (this machine has none).
+
 ## 4. Image-generation training measured (R5-4500U)
 
 | Model | UNet | 256px step | Peak RSS | 500 steps | 512px step |

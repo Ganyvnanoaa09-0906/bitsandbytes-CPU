@@ -547,10 +547,14 @@ w3 = dequantize_n(packed3, absmax3, meta3)
 ### 4.14 AVX-512 构建（实验性）
 
 CPU 后端在 AVX2 之外还有一套手写 AVX-512 内核（4-bit 反量化的 16-lane 路径、bf16 GEMV 的
-tinygemm 路径），默认关闭。构建方式（要求构建机自己能执行 AVX-512 探针）：
+tinygemm 路径）。两条构建路线：
 
 ```bat
-:: CMake 构建（Linux/GCC），BNB_ENABLE_AVX512 默认 OFF
+:: 双库路线（推荐；在任意 x86_64 机器上都能编，产出 AVX2 + AVX-512 两个产物）
+bash build_linux.sh --avx512                 :: Linux: libbitsandbytes_cpu{,_avx512}.so
+set BNB_BUILD_AVX512=1 && build_manual\build_manual.bat   :: Windows: 两个 .dll（需 VS2017+）
+
+:: CMake 路线：要求构建机自己就是 AVX-512 机器（探针真要跑），BNB_ENABLE_AVX512 默认 OFF
 cmake -DBNB_ENABLE_AVX512=ON ..
 ```
 
@@ -565,7 +569,24 @@ cmake -DBNB_ENABLE_AVX512=ON ..
 
 ⚠️ **注意**：`-mavx512f` 是**整编译单元**级开关，会让普通内核（dequantize、优化器、rmsnorm）
 被编译器自动向量化成 zmm → 在 AVX2 机器上**一调用就 SIGILL**。所以 AVX-512 二进制不能发给
-AVX2 机器，必须按 CPUID 选择加载（本 fork 尚未把"双库+选路"接入安装包，属于待办）。
+AVX2 机器，载入端必须按 CPU 能力选择。
+
+**双库与自动选路（已实现）**：`bitsandbytes/_cpu_caps.py` 在加载前判断能力——优先问 torch
+的 `get_cpu_capability()`（Windows 上无 torch 时返回"不支持"），Linux 上回退 `/proc/cpuinfo`；
+只有支持时才加载 AVX-512 那个，文件缺失/能力未知/被环境变量关闭时一律回退 AVX2。
+`cextension.LOADED_NATIVE_LIB` 记录实际选择，`gdn_cpu` 用同一判定，`doctor` 直接打印判定结果。
+
+| 环境变量 | 作用 |
+|---|---|
+| `BNB_CPU_DISABLE_AVX512=1` | 强制用 AVX2 库（对比两个后端时用） |
+| `BNB_CPU_FORCE_AVX512=1` | 强制选 AVX-512 库（只应在支持 AVX-512 的机器上用） |
+
+```
+bitsandbytes-cpu doctor
+  cpu supports AVX-512  yes|no
+  AVX-512 library       libbitsandbytes_cpu_avx512.dll (present|absent)
+  this process will load  libbitsandbytes_cpu_avx512.dll|libbitsandbytes_cpu.dll
+```
 
 ## 5. 硬盘均衡负载（disk_balancer，SSD 保护）
 

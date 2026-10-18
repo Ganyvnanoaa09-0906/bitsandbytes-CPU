@@ -597,6 +597,16 @@ update, 4-bit GEMV), so the measured kernel speedup is only 0.97-1.02x. **Captur
 new compute-bound AVX-512 kernels (BF16 / VNNI / GEMM), not recompiling the existing ones with AVX-512
 flags.**
 
+**The dual library and its selection (implemented this round)**: the AVX-512 backend is built as a
+separate `libbitsandbytes_cpu_avx512.*` artifact and shipped next to the AVX2 one. Before loading,
+`bitsandbytes/_cpu_caps.py` asks torch (`get_cpu_capability()`), falling back to `/proc/cpuinfo` on
+Linux; on Windows without torch the answer is "not supported" -- **refusing to load is always safe,
+guessing wrong SIGILLs**. `cextension.LOADED_NATIVE_LIB` records the chosen path,
+`gdn_cpu._candidate_paths()` uses the same query, and `bitsandbytes-cpu doctor` prints the decision.
+`BNB_CPU_DISABLE_AVX512` / `BNB_CPU_FORCE_AVX512` are the override switches (the latter only on
+hardware that really supports AVX-512). Build side: on Linux `build_linux.sh --avx512` emits both
+.so files; on Windows `BNB_BUILD_AVX512=1` makes `build_manual.bat` emit the second DLL.
+
 ## 4. Memory strategy: why "quantized frozen layers" not "lower-precision weight storage"
 
 | Scheme | Weight memory | 5-step time (1.7B + i5) | Verdict |

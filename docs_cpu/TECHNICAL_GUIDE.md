@@ -523,6 +523,15 @@ fp32 GEMM 655（0.58×）——纯运算峰值不等于 GEMM 峰值。
 **要拿到峰值收益，必须新写 compute-bound 的 AVX-512 内核（BF16 / VNNI / GEMM），而不是把现有
 内核用 AVX-512 编译一遍。**
 
+**双库与选路的实现（本轮）**：AVX-512 版本单独编成 `libbitsandbytes_cpu_avx512.*`，和 AVX2
+版本一起分发。加载前由 `bitsandbytes/_cpu_caps.py` 判断能力：优先 torch 的
+`get_cpu_capability()`，Linux 上回退 `/proc/cpuinfo`；Windows 上无 torch 时返回"不支持"
+（**拒绝加载永远安全，猜错会 SIGILL**）。`cextension.LOADED_NATIVE_LIB` 记录实际加载的路径，
+`gdn_cpu._candidate_paths()` 用同一判定，`bitsandbytes-cpu doctor` 打印这三个判定。
+`BNB_CPU_DISABLE_AVX512` / `BNB_CPU_FORCE_AVX512` 是强制开关（后者只应在支持 AVX-512 的
+机器上用）。构建侧：Linux `build_linux.sh --avx512` 一次出两个 .so；Windows 用
+`BNB_BUILD_AVX512=1` 走 `build_manual.bat`。
+
 ## 4. 内存策略：为什么「量化冻结层」而不是「降权重存储精度」
 
 | 方案 | 权重内存 | 5 步耗时（1.7B+i5） | 结论 |

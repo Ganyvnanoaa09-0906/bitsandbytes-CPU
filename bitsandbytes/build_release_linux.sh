@@ -67,6 +67,10 @@ mkdir -p "$STAGE/bitsandbytes" "$STAGE/examples/cpu" "$STAGE/docs_cpu" "$STAGE/t
 cp -r bitsandbytes/* "$STAGE/bitsandbytes/" 2>/dev/null || true
 rm -f "$STAGE/bitsandbytes/libbitsandbytes_cpu.dll" "$STAGE/bitsandbytes/vcomp140.dll"
 cp bitsandbytes/libbitsandbytes_cpu.so "$STAGE/bitsandbytes/"   # 编译出的 .so
+# 可选：AVX-512 变体（build_linux.sh --avx512 产出）；只在支持 AVX-512 的机器上被加载
+if [ -f bitsandbytes/libbitsandbytes_cpu_avx512.so ]; then
+  cp bitsandbytes/libbitsandbytes_cpu_avx512.so "$STAGE/bitsandbytes/"
+fi
 
 # 示例
 cp examples/cpu/* "$STAGE/examples/cpu/" 2>/dev/null || true

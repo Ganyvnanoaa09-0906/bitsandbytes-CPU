@@ -8,6 +8,7 @@ from typing import Optional
 
 import torch
 
+from bitsandbytes._cpu_caps import avx512_supported
 from bitsandbytes.consts import DYNAMIC_LIBRARY_SUFFIX, PACKAGE_DIR
 from bitsandbytes.cuda_specs import (
     CUDASpecs,
@@ -17,6 +18,10 @@ from bitsandbytes.cuda_specs import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Which native library get_native_library() actually chose. Recorded so tests (and
+# `doctor`) can assert the AVX2/AVX-512 decision without executing kernel code.
+LOADED_NATIVE_LIB: Optional[Path] = None
 
 
 def get_cuda_bnb_library_path(cuda_specs: CUDASpecs) -> Path:
@@ -362,6 +367,19 @@ def get_native_library() -> BNBNativeLibrary:
 
     if torch._C._has_xpu:
         binary_path = get_xpu_bnb_library_path()
+
+    # The AVX-512 backend ships as a second library. It must only be loaded when the CPU
+    # and OS really support AVX-512: compiling the whole translation unit with -mavx512f
+    # lets the compiler auto-vectorise ordinary kernels with zmm instructions, so the
+    # library SIGILLs on AVX2-only machines. A missing file (older wheel, platform that
+    # never built it) or an unknown CPU keeps the AVX2 library.
+    if avx512_supported():
+        avx512_binary_path = PACKAGE_DIR / f"libbitsandbytes_cpu_avx512{DYNAMIC_LIBRARY_SUFFIX}"
+        if avx512_binary_path.exists():
+            binary_path = avx512_binary_path
+
+    global LOADED_NATIVE_LIB
+    LOADED_NATIVE_LIB = binary_path
 
     logger.debug(f"Loading bitsandbytes native library from: {binary_path}")
 

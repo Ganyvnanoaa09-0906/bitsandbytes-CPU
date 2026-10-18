@@ -413,6 +413,16 @@ CPU 53~61%（共享 L3 被挤），并发 1.1~1.3× < 顺序 1.51×。
 SIGILL；zmm 归属证明崩溃点在**普通函数**（dequantize/rmsnorm/optimizer）而不是手写内核——
 `-mavx512f` 是整 TU 开关，这是"构建机必须自己支持 AVX-512"的物理原因。
 
+**双库落地（本轮）**：AVX-512 版本作为独立产物 `libbitsandbytes_cpu_avx512.*` 与 AVX2 版本
+一起分发，加载前由 `_cpu_caps.py` 判断 CPU 能力（torch `get_cpu_capability()` 优先，Linux
+回退 `/proc/cpuinfo`），`cextension` 与 `gdn_cpu` 共用同一判定，`doctor` 打印判定。
+构建侧：Linux `build_linux.sh --avx512` 一次出两个 .so（本机实测 293 KB / 330 KB，
+反汇编 zmm 行数 **0 / 1856**——AVX2 产物确实不含 EVEX）；Windows 用 `BNB_BUILD_AVX512=1`
+走 `build_manual.bat`（开发机没有 MSVC，这条产线未在本机验证，列入待办）。
+本机（AVX2）选择逻辑实测：正常导入选 AVX2 库；把一个同内容的假 AVX-512 DLL 放进包目录、
+并设 `BNB_CPU_FORCE_AVX512=1` 后，`cextension` 与 `gdn_cpu` 都选到 AVX-512 产物、`doctor`
+三个字段一致；清掉后恢复 AVX2。**真机 AVX-512 的端到端回归仍待做**（本机无 AVX-512）。
+
 ## 4. 生图训练实测（R5-4500U）
 
 | 模型 | UNet | 256px 单步 | 峰值 RSS | 500步 | 512px 单步 |

@@ -382,8 +382,27 @@ cmake -DBNB_ENABLE_AVX512=ON ..
 **`the trap`** -- -mavx512f is a whole-translation-unit switch: ordinary kernels get auto-vectorised to zmm and SIGILL on an AVX2-only CPU
 
 ```bash
-# so an AVX-512 binary cannot be shipped to AVX2 machines; it has to be
-# selected through a CPUID check at load time (installer wiring is a todo)
+# so an AVX-512 binary cannot be shipped to AVX2 machines; it is selected
+# through a CPUID check at load time (bitsandbytes/_cpu_caps.py)
+```
+
+**`how it is selected`** -- the AVX-512 library ships next to the AVX2 one and is loaded only when the CPU can run it; a missing file or an unknown CPU keeps the AVX2 library
+
+```bash
+# capability: torch get_cpu_capability() first, /proc/cpuinfo fallback on Linux
+# inspect the decision:
+bitsandbytes-cpu doctor
+#   cpu supports AVX-512  yes|no
+#   AVX-512 library       libbitsandbytes_cpu_avx512.dll (present|absent)
+#   this process will load  libbitsandbytes_cpu_avx512.dll|libbitsandbytes_cpu.dll
+```
+
+**`build both artifacts`** -- one source tree, two libraries; the AVX-512 one only runs on AVX-512 hardware
+
+```bash
+bash build_linux.sh --avx512        # Linux: libbitsandbytes_cpu{,_avx512}.so
+set BNB_BUILD_AVX512=1 && build_manual\build_manual.bat   # Windows
+# override switches: BNB_CPU_DISABLE_AVX512=1 / BNB_CPU_FORCE_AVX512=1
 ```
 
 ## Fused kernels (call them directly)

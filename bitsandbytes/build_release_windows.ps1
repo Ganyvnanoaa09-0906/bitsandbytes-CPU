@@ -92,6 +92,15 @@ $stagePkg = Join-Path $stage "bitsandbytes"
 New-Item -ItemType Directory -Force -Path $stagePkg | Out-Null
 Copy-Item -Path "bitsandbytes\*" -Destination $stagePkg -Recurse -Force -Exclude "__pycache__","*.pyc","*.obj","*.exp","*.lib","libbitsandbytes_cpu.dll"
 Copy-Item -Path "$tmpBuild\libbitsandbytes_cpu.dll" -Destination (Join-Path $stagePkg "libbitsandbytes_cpu.dll") -Force
+# Optional AVX-512 variant: built by build_manual.bat with BNB_BUILD_AVX512=1. It is only
+# loaded on AVX-512 CPUs (see bitsandbytes/_cpu_caps.py); absent is a normal, complete build.
+$avx512 = "bitsandbytes\libbitsandbytes_cpu_avx512.dll"
+if (Test-Path $avx512) {
+    Copy-Item -Path $avx512 -Destination (Join-Path $stagePkg "libbitsandbytes_cpu_avx512.dll") -Force
+    Write-Host "[..] packaged libbitsandbytes_cpu_avx512.dll" -ForegroundColor Cyan
+} else {
+    Write-Host "[..] no AVX-512 DLL (build_manual.bat with BNB_BUILD_AVX512=1 to add one)" -ForegroundColor DarkGray
+}
 
 # OpenMP runtime vcomp140.dll (ship it so target needs no VS). Fall back to system if absent.
 $vcompSrc = "$env:WINDIR\System32\vcomp140.dll"
