@@ -504,6 +504,10 @@ vendor graphics driver, and reports the device name via `iGPU_name()` (shown in
 `description()`). Machine self-check entry: `py -3.11 gpu_scheduler.py` (prints the
 device name and availability).
 
+**The other route**: cross-platform OpenCL/CLBlast (3.9) does not use DirectML and exists to
+measure what the iGPU can really do; the comparison of gains, limits and applicability windows
+is in `TECH_REPORT_EN.md` 3.8 -- the two answer different questions.
+
 ---
 
 ### 3.9 iGPU backend (OpenCL/CLBlast): call convention, fp16, and the resident step

@@ -249,6 +249,9 @@ opt = bnb.optim.AdamW8bit(filter(lambda p: p.requires_grad, model.parameters()),
 
 > 仅适用于 Windows + `pip install torch_directml` 的环境；未检测到 DirectML 核显、
 > 或回退条件不满足时，`--igpu` 会打印原因并自动回退纯 CPU，不影响正常训练。
+>
+> **另有一条跨平台核显路线（OpenCL/CLBlast）见 §4.11**：它不依赖 DirectML，用于测量与验证；
+> 两条路的收益和限制不同，**结论不要混用**（对照表见 `TECH_REPORT.md` §3.8）。
 
 ```bat
 :: 启用核显块级常驻执行器（实验性，默认关闭）

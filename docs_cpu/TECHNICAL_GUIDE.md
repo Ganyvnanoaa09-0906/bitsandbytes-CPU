@@ -445,6 +445,9 @@ CPU 更弱，预期收益低于 AMD 机型。`prepare()` 会在检测到软件�
 上报设备名（`description()` 输出）。换机自查入口：`py -3.11 gpu_scheduler.py`
 （打印设备名与可用性）。
 
+**另一条路**：跨平台的 OpenCL/CLBlast（§3.9）不依赖 DirectML，用于测量核显的真实能力；
+两条路的收益/限制/适用区间见 `TECH_REPORT.md` §3.8 的对照表 —— 它们回答的是不同的问题。
+
 ---
 
 ### 3.9 核显后端（OpenCL/CLBlast）：调用约定、fp16 与设备常驻步

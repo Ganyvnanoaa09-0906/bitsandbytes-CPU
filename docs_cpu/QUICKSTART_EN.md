@@ -294,6 +294,10 @@ Measured (3-layer Qwen3Next hybrid, top-2): trainable 725,712 → 143,600 (19.8%
 > Applies only to Windows with `pip install torch_directml`; when no DirectML iGPU is
 > detected or a fallback condition applies, `--igpu` prints the reason and falls back
 > to pure CPU automatically — training is unaffected.
+>
+> **There is a second, cross-platform iGPU route (OpenCL/CLBlast) in 4.11**: it does not use
+> DirectML and is meant for measurement/verification; the gains and limits differ, so **do not mix
+> the conclusions** (comparison table in `TECH_REPORT_EN.md` 3.8).
 
 ```bat
 :: Enable the block-level iGPU resident executor (experimental, off by default).

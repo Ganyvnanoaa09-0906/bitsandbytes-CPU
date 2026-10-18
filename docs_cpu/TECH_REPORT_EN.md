@@ -397,6 +397,45 @@ concurrency gives 1.1-1.3x against 1.51x sequential.
 **Applicability**: experimental, script-level, not in the wheel; iGPU training pays only on layers with
 parameters >=16 MB and a large K.
 
+**The two iGPU routes must be read separately:**
+
+| | DirectML executor (3.7) | OpenCL/CLBlast (this section) |
+|---|---|---|
+| Platform | Windows only (`torch_directml`, pinned to torch 2.4.1) | cross-platform (`pyopencl` + CLBlast) |
+| Purpose | run the **whole step** on the iGPU (block-resident training) | measurement/verification (GEMM, resident single-layer step); not wired into training |
+| Measured gain | training +30-35% (GEMM-heavy, seq<=256); SD generation +1.26x | real-shape suite 2.6-2.7x CPU; fp16 pure compute 1290 GFLOPS |
+| Limit | seq>=512 becomes -30% (DML attention); video attention ops unsupported | not in the wheel; M=1 is not worth it |
+
+**The M decision (same machine, ms)**:
+
+| M | iGPU | CPU |
+|---|---|---|
+| 1 | 5.3 | **11.7** (CPU wins) |
+| 64 | **356.8** | 56.7 |
+| 2048 | **425.3** | 199.7 |
+
+=> **M=1 goes to the CPU, M>=64 goes to the iGPU (about 2x)**; running both is only 7% above the
+iGPU alone, because the shared L3 is a zero-sum split.
+
+**Device-resident training (OpenCL variant, bit-identical to the CPU)**: gradients dX 1.3e-06 /
+dW 1.0e-06, Adam 1.7e-07, the transposed copy exact bit-for-bit, end-to-end loss and weight deltas
+**identical** to the CPU, and host traffic drops from O(NK) to O(BK+BN). Applicability:
+
+| N x K x B | params | CPU ms | device ms | verdict |
+|---|---|---|---|---|
+| 512x512x1024 | 1.0 MB | 7.24 | 13.28 | CPU wins 1.84x |
+| 1024x1024x1024 | 4.2 MB | 40.68 | 37.69 | flat |
+| **2048x2048x1024** | 16.8 MB | 152.56 | **117.42** | device wins 1.30x |
+| 4096x1024x4096 | 16.8 MB | 570.55 | 594.87 | flat |
+
+=> **the applicability window is "parameters >= 16 MB and a large K"; batch barely matters**
+(1.30 -> 1.31 when 1024 -> 4096).
+
+WARNING: **the two numbers do not contradict each other**: the table above belongs to the
+"OpenCL GEMM as a torch.autograd.Function" variant (1.30x); the later device-resident step
+(loss/backward/Adam all on the device, the host sees a 4-byte loss) reaches **1.50x** on the same
+2048-wide layer (earlier in this section). **Two versions of one thing -- cite them with the version.**
+
 ### 3.9 The 4-bit optimizer: 1.031 B/parameter of state, 2.56x at 1M params and 1.74x at >=64M
 
 | Quantity | Measured |
