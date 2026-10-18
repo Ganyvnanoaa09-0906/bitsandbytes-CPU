@@ -214,6 +214,28 @@ def hgemm_batched(a_dev, b_dev, c_dev, m, n, k, ta, tb, lda, ldb, ldc, a_stride,
         raise RuntimeError('HgemmBatched rc=%d m%d n%d k%d' % (rc, m, n, k))
 
 
+def hgemm_ta(a_dev, b_dev, c_dev, m, n, k, lda, ldb, ldc):
+    """C(m,n) = A^T @ B, row-major (A stored (k,m), B stored (k,n))."""
+    rc = bl.CLBlastHgemm(ROW, YES, NO, m, n, k, ONE,
+                         ctypes.c_void_p(int(a_dev.int_ptr)), 0, lda,
+                         ctypes.c_void_p(int(b_dev.int_ptr)), 0, ldb, ZERO,
+                         ctypes.c_void_p(int(c_dev.int_ptr)), 0, ldc,
+                         ctypes.byref(QP), None)
+    if rc != 0:
+        raise RuntimeError('Hgemm transA rc=%d %dx%dx%d' % (rc, m, n, k))
+
+
+def hgemm_tb(a_dev, b_dev, c_dev, m, n, k, lda, ldb, ldc):
+    """C(m,n) = A @ B^T, row-major (A stored (m,k), B stored (n,k))."""
+    rc = bl.CLBlastHgemm(ROW, NO, YES, m, n, k, ONE,
+                         ctypes.c_void_p(int(a_dev.int_ptr)), 0, lda,
+                         ctypes.c_void_p(int(b_dev.int_ptr)), 0, ldb, ZERO,
+                         ctypes.c_void_p(int(c_dev.int_ptr)), 0, ldc,
+                         ctypes.byref(QP), None)
+    if rc != 0:
+        raise RuntimeError('Hgemm transB rc=%d %dx%dx%d' % (rc, m, n, k))
+
+
 def main() -> int:
     rng = np.random.default_rng(0)
     prog = cl.Program(ctx, KERNELS).build(options=['-cl-mad-enable', '-cl-fast-relaxed-math'])
@@ -243,6 +265,7 @@ def main() -> int:
         'dO': buf(BH * T * D * 2), 'dQ': buf(BH * T * D * 2), 'dK': buf(BH * T * D * 2),
         'dV': buf(BH * T * D * 2),
         'dqkv': buf(M * WROW * 2), 'dwqkv': buf(DH * WROW * 2), 'dwo': buf(DH * DH * 2),
+        'dO_tok': buf(M * DH * 2),
         'dx': buf(M * DH * 2),
     }
 
@@ -265,30 +288,25 @@ def main() -> int:
         hgemm(dev['o_tok'], dev['wo'], dev['out'], M, DH, DH)
 
     def bwd():
-        hgemm(dev['o_tok'], dev['dout'], dev['dwo'], DH, DH, M)            # dWo = O_tok^T dOut
-        hgemm(dev['dout'], dev['wo'], dev['dO'], M, DH, DH)                # dO_tok = dOut Wo^T? (see note)
-        # NOTE: dO_tok = dOut @ Wo^T; Wo stored (in,out), so we need Wo^T -> use transpose kernel later.
-        K['split_dout'](queue, (BH * T * D,), (256,), dev['dO'], dev['dO'],
+        hgemm_ta(dev['o_tok'], dev['dout'], dev['dwo'], DH, DH, M, DH, DH, DH)     # dWo = O^T dOut
+        hgemm_tb(dev['dout'], dev['wo'], dev['dO_tok'], M, DH, DH, DH, DH, DH)     # dO_tok = dOut Wo^T
+        K['split_dout'](queue, (BH * T * D,), (256,), dev['dO_tok'], dev['dO'],
                         np.int32(T), np.int32(D), np.int32(NH), np.int32(B))
-        # dP = dO V^T
         hgemm_batched(dev['dO'], dev['V'], dev['dP'], T, T, D, NO, YES,
-                      D, D, T, T * D, T * D, T * T)
+                      D, D, T, T * D, T * D, T * T)                                # dP = dO V^T
         K['softmax_bwd_causal'](queue, (T * 256, BH), (256, 1), dev['P'], dev['dP'], dev['dS'],
                                 np.int32(T), np.float32(scale))
-        # dV = P^T dO
         hgemm_batched(dev['P'], dev['dO'], dev['dV'], T, D, T, YES, NO,
-                      T, D, D, T * T, T * D, T * D)
-        # dQ = dS K
+                      T, D, D, T * T, T * D, T * D)                                # dV = P^T dO
         hgemm_batched(dev['dS'], dev['K'], dev['dQ'], T, D, T, NO, NO,
-                      T, D, D, T * T, T * D, T * D)
-        # dK = dS^T Q
+                      T, D, D, T * T, T * D, T * D)                                # dQ = dS K
         hgemm_batched(dev['dS'], dev['Q'], dev['dK'], T, D, T, YES, NO,
-                      T, D, D, T * T, T * D, T * D)
+                      T, D, D, T * T, T * D, T * D)                                # dK = dS^T Q
         K['merge_dqkv'](queue, (M * WROW,), (256,), dev['dQ'], dev['dK'], dev['dV'],
                         dev['dqkv'], np.int32(T), np.int32(D), np.int32(NH), np.int32(NKV),
                         np.int32(B))
-        # dWqkv = h^T dqkv : needs h transposed -> approximate with x (h ~= x here) for timing only
-        hgemm(dev['dqkv'], dev['wqkv'], dev['dx'], M, DH, WROW)            # dh = dqkv @ Wqkv^T? (timing)
+        hgemm_ta(dev['x'], dev['dqkv'], dev['dwqkv'], DH, WROW, M, DH, WROW, WROW)  # dWqkv = x^T dqkv
+        hgemm_tb(dev['dqkv'], dev['wqkv'], dev['dx'], M, DH, WROW, WROW, WROW, DH)  # dx = dqkv Wqkv^T
 
     # correctness: S/P/O vs torch (single head subset, fp32)
     fwd()
@@ -319,6 +337,45 @@ def main() -> int:
     err = float(np.abs(o_tok.astype(np.float32) - ref_o.numpy()).max())
     print('attention O check: max abs err %.3e (relative %.3e)'
           % (err, err / (float(np.abs(ref_o.numpy()).max()) + 1e-9)))
+
+    # ---- backward correctness vs torch autograd on the same fp16 inputs ----
+    bwd()
+    queue.finish()
+    dwo = np.empty((DH, DH), dtype=np.float16)
+    dwqkv = np.empty((DH, WROW), dtype=np.float16)
+    dx = np.empty((M, DH), dtype=np.float16)
+    cl.enqueue_copy(queue, dwo, dev['dwo'])
+    cl.enqueue_copy(queue, dwqkv, dev['dwqkv'])
+    cl.enqueue_copy(queue, dx, dev['dx'])
+    queue.finish()
+
+    xt_g = torch.from_numpy(x.astype(np.float32)).requires_grad_(True)
+    wq_g = torch.from_numpy(wqkv.astype(np.float32)).requires_grad_(True)
+    wo_g = torch.from_numpy(wo.astype(np.float32)).requires_grad_(True)
+    qkv_g = xt_g @ wq_g
+    o_tok_g = torch.zeros(M, DH)
+    for b in range(B):
+        for h in range(NH):
+            rows = slice(b * T, (b + 1) * T)
+            q = qkv_g[rows, h * D:(h + 1) * D]
+            kw = h // REP
+            k = qkv_g[rows, DH + kw * D:DH + (kw + 1) * D]
+            v = qkv_g[rows, DH + NKV * D + kw * D:DH + NKV * D + (kw + 1) * D]
+            s = (q @ k.T) * scale
+            mask = torch.tril(torch.ones(T, T, dtype=torch.bool))
+            s = s.masked_fill(~mask, float('-inf'))
+            p = torch.softmax(s, -1)
+            o = p @ v
+            o_tok_g[rows, h * D:(h + 1) * D] = o
+    out_g = o_tok_g @ wo_g
+    loss = (out_g * torch.from_numpy(dout.astype(np.float32))).sum()
+    loss.backward()
+    for name, ours, ref in (('dWo', dwo.astype(np.float32), wo_g.grad.numpy()),
+                            ('dWqkv', dwqkv.astype(np.float32), wq_g.grad.numpy()),
+                            ('dx', dx.astype(np.float32), xt_g.grad.numpy())):
+        e = float(np.abs(ours - ref).max())
+        rel = e / (float(np.abs(ref).max()) + 1e-9)
+        print('%-6s max abs err %.3e (relative %.3e)' % (name, e, rel))
 
     def phase(fn, n=6):
         ts = []
