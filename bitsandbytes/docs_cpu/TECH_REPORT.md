@@ -471,6 +471,12 @@ AVX2/AVX-512。⚠️ Windows 目前只有 AVX2 DLL。详见 §7.117。
 **真机验证（AVX-512 容器，2026-10-18）**：一次构建三产物（AVX2 256 KB / AVX-512 284 KB /
 generic 132 KB），指令审计 zmm **0 / 1196**、generic **AVX 0**；`doctor` 与
 `LOADED_NATIVE_LIB` 的三级选择全部符合预期；包 selftest 0 failure、便携版 selftest 5/5 PASS。
+
+**非 AVX2 的动态验证（2026-10-18）**：无 root 装 qemu-user（下载 .deb + `dpkg-deb -x`），
+`qemu-x86_64 -cpu Nehalem`（模拟无 AVX/AVX2 的 CPU）跑便携 selftest → **5/5 PASS**；
+Windows 侧用 zig 自带 clang 交叉编译 portable DLL（三 TU **0 条 AVX**），本机 ctypes 加载并
+跑量化往返内核（**0.39%** 误差）→ OK。MSVC 官方 DLL 入口在 `build_manual.bat` 的
+`BNB_BUILD_GENERIC=1`（本机无 VS，未在本机编译）。
 构建侧：Linux `build_linux.sh --avx512` 一次出两个 .so（本机实测 293 KB / 330 KB，
 反汇编 zmm 行数 **0 / 1856**——AVX2 产物确实不含 EVEX）；Windows 用 `BNB_BUILD_AVX512=1`
 走 `build_manual.bat`（开发机没有 MSVC，这条产线未在本机验证，列入待办）。

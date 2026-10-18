@@ -630,6 +630,7 @@ dequantise path and the bf16 GEMV tinygemm path). Two build routes:
 :: dual-library route (recommended; builds on any x86_64 host: AVX2 + AVX-512 artifacts)
 bash build_linux.sh --avx512                 :: Linux: libbitsandbytes_cpu{,_avx512}.so
 set BNB_BUILD_AVX512=1 && build_manual\build_manual.bat   :: Windows: two .dlls (VS2017+)
+set BNB_BUILD_GENERIC=1 && build_manual\build_manual.bat :: Windows: generic DLL (no AVX2, VS2017+)
 
 :: CMake route: requires the build host itself to be AVX-512 capable (the probe really runs)
 cmake -DBNB_ENABLE_AVX512=ON ..

@@ -51,7 +51,11 @@
 // g++ defines _GNU_SOURCE, and with it glibc 2.38+ redirects those families to
 // __isoc23_* symbols that carry a GLIBC_2.38 requirement. See os_fallback below.
 
-#if defined(_MSC_VER)
+#if defined(_WIN32)
+// _WIN32 rather than _MSC_VER: the os_fallback() Windows branch below uses
+// GetLogicalProcessorInformationEx and the SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX
+// types, so the headers must be present for every Windows compiler, not only MSVC
+// (a MinGW/clang cross-build otherwise fails on undeclared RelationCache/CacheData).
 #include <intrin.h>
 #include <windows.h>
 #elif defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))

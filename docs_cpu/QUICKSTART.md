@@ -556,6 +556,7 @@ tinygemm 路径）。两条构建路线：
 :: 双库路线（推荐；在任意 x86_64 机器上都能编，产出 AVX2 + AVX-512 两个产物）
 bash build_linux.sh --avx512                 :: Linux: libbitsandbytes_cpu{,_avx512}.so
 set BNB_BUILD_AVX512=1 && build_manual\build_manual.bat   :: Windows: 两个 .dll（需 VS2017+）
+set BNB_BUILD_GENERIC=1 && build_manual\build_manual.bat :: Windows: generic DLL（无 AVX2，需 VS2017+）
 
 :: CMake 路线：要求构建机自己就是 AVX-512 机器（探针真要跑），BNB_ENABLE_AVX512 默认 OFF
 cmake -DBNB_ENABLE_AVX512=ON ..

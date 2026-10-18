@@ -101,6 +101,14 @@ if (Test-Path $avx512) {
 } else {
     Write-Host "[..] no AVX-512 DLL (build_manual.bat with BNB_BUILD_AVX512=1 to add one)" -ForegroundColor DarkGray
 }
+# Optional generic x86-64 variant (no AVX2/FMA), for CPUs the AVX2 DLL cannot run on.
+$generic = "bitsandbytes\libbitsandbytes_cpu_generic.dll"
+if (Test-Path $generic) {
+    Copy-Item -Path $generic -Destination (Join-Path $stagePkg "libbitsandbytes_cpu_generic.dll") -Force
+    Write-Host "[..] packaged libbitsandbytes_cpu_generic.dll" -ForegroundColor Cyan
+} else {
+    Write-Host "[..] no generic DLL (build_manual.bat with BNB_BUILD_GENERIC=1 to add one)" -ForegroundColor DarkGray
+}
 
 # OpenMP runtime vcomp140.dll (ship it so target needs no VS). Fall back to system if absent.
 $vcompSrc = "$env:WINDIR\System32\vcomp140.dll"

@@ -124,6 +124,24 @@ if /i "%BNB_BUILD_AVX512%"=="1" (
     )
 )
 
+REM ---- optional generic x86-64 variant (no AVX2/FMA) ---------------------------
+REM  For machines that cannot run the AVX2 DLL. Compiled WITHOUT /arch:AVX2 and with
+REM  /DBNB_CPU_PORTABLE=1, which removes all AVX2/FMA code at compile time; the loader
+REM  in bitsandbytes/_cpu_caps.py selects it only when the CPU lacks AVX2. Needs VS2017+.
+REM  Off by default: set BNB_BUILD_GENERIC=1.
+if /i "%BNB_BUILD_GENERIC%"=="1" (
+    echo [1c/2] compiling generic x86-64 variant (no AVX2/FMA) ...
+    cl /nologo /O2 /Ob2 /fp:fast /openmp:experimental %FAVOR% ^
+       /std:c++17 /EHsc /utf-8 ^
+       /DBNB_CPU_PORTABLE=1 /DNOMINMAX /DNDEBUG /DWIN32 /D_WINDOWS /I csrc /LD ^
+       csrc\cpu_ops.cpp csrc\cpu_gdn.cpp csrc\pythonInterface.cpp ^
+       /Fe:bitsandbytes\libbitsandbytes_cpu_generic.dll /link /DEF:build_manual\export_generic.def
+    if errorlevel 1 (
+        echo [ERROR] generic x86-64 build failed
+        exit /b 1
+    )
+)
+
 echo [2/2] checking artifact ...
 if exist "bitsandbytes\bitsandbytes\libbitsandbytes_cpu.dll" (
     echo [OK] bitsandbytes\bitsandbytes\libbitsandbytes_cpu.dll

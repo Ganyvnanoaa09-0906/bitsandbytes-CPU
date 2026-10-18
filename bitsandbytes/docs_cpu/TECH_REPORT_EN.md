@@ -519,10 +519,13 @@ AVX-512-only library. Fix and verification in 7.116.
 `LOADED_NATIVE_LIB` pick the generic artifact, otherwise AVX-512/AVX2 per CPU capability. NOTE:
 Windows ships only the AVX2 DLL. Details in 7.117.
 
-**Real-machine validation (AVX-512 container, 2026-10-18)**: one build produced all three
-artifacts (AVX2 256 KB / AVX-512 284 KB / generic 132 KB); instruction audit: zmm **0 / 1196**,
-generic **0 AVX**; doctor and LOADED_NATIVE_LIB agreed on all three choices; package selftest
-0 failures, portable selftest 5/5 PASS.
+
+**Dynamic validation on non-AVX2 (2026-10-18)**: qemu-user installed without root (download the
+.deb, `dpkg-deb -x`), then `qemu-x86_64 -cpu Nehalem` (an emulated CPU without AVX/AVX2) ran the
+portable selftest **5/5 PASS**; on Windows, a portable DLL cross-built with zig's clang (three TUs,
+**0 AVX instructions**) loads through ctypes and round-trips a quantize kernel at **0.39%** error.
+The MSVC entry point for the official DLL is `BNB_BUILD_GENERIC=1` in `build_manual.bat` (this
+machine has no VS, so that build is not verified here).
 
 ## 4. Image-generation training measured (R5-4500U)
 
