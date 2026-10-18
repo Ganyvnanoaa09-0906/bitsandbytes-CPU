@@ -57,29 +57,37 @@ QP = ctypes.c_void_p(int(queue.int_ptr))
 
 STATS = {'h2d': 0.0, 'gemm': 0.0, 'd2h': 0.0, 'calls': 0}
 
+# Buffer pools keyed by (role, nbytes). The naive version created a cl.Buffer and called
+# queue.finish three times per GEMM -- measured at 9-11 ms per call where the kernel alone is
+# 3-6 ms. Here buffers are reused, copies are enqueued back-to-back on one queue, and the only
+# synchronisation is the blocking device->host read of the result.
+_POOL: dict[tuple[str, int], cl.Buffer] = {}
 
-def _up(np_fp16):
+
+def _buf(role: str, nbytes: int) -> cl.Buffer:
+    key = (role, nbytes)
+    b = _POOL.get(key)
+    if b is None:
+        b = cl.Buffer(ctx, mf.READ_WRITE, nbytes)
+        _POOL[key] = b
+    return b
+
+
+def _up(role: str, np_fp16, nbytes: int) -> cl.Buffer:
     t0 = time.perf_counter()
-    buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=np_fp16)
-    queue.finish()
+    dev = _buf(role, nbytes)
+    cl.enqueue_copy(queue, dev, np_fp16)
     STATS['h2d'] += time.perf_counter() - t0
-    return buf
-
-
-def _down(buf, shape, dtype):
-    t0 = time.perf_counter()
-    out = np.empty(shape, dtype=dtype)
-    cl.enqueue_copy(queue, out, buf)
-    queue.finish()
-    STATS['d2h'] += time.perf_counter() - t0
-    return out
+    return dev
 
 
 def gemm_nn(a16, b16, m, n, k):
-    """C_row(m,n) = A_row(m,k) @ B_row(k,n), both fp16 host arrays -> fp16 host array."""
-    ab = _up(a16)
-    bb = _up(b16)
-    cb = cl.Buffer(ctx, mf.READ_WRITE, m * n * 2)
+    """C_row(m,n) = A_row(m,k) @ B_row(k,n), fp16 host arrays -> fp16 host array."""
+    a16 = np.ascontiguousarray(a16)
+    b16 = np.ascontiguousarray(b16)
+    ab = _up('a', a16, m * k * 2)
+    bb = _up('b', b16, k * n * 2)
+    cb = _buf('c', m * n * 2)
     t0 = time.perf_counter()
     rc = bl.CLBlastHgemm(
         LAYOUT_COL, TRANSPOSE_NO, TRANSPOSE_NO, n, m, k, ONE,
@@ -87,12 +95,14 @@ def gemm_nn(a16, b16, m, n, k):
         ctypes.c_void_p(int(ab.int_ptr)), 0, k, ZERO,
         ctypes.c_void_p(int(cb.int_ptr)), 0, n,
         ctypes.byref(QP), None)
-    queue.finish()
+    out = np.empty((m, n), dtype=np.float16)
+    # blocking read: waits for the whole queue up to here, no explicit finish needed
+    cl.enqueue_copy(queue, out, cb, is_blocking=True)
     STATS['gemm'] += time.perf_counter() - t0
     STATS['calls'] += 1
     if rc != 0:
         raise RuntimeError('Hgemm rc=%d shape %dx%dx%d' % (rc, m, n, k))
-    return _down(cb, (m, n), np.float16)
+    return out
 
 
 class IgpuLinear(nn.Module):
