@@ -15,6 +15,9 @@ param(
     [string]$TargetBranch = 'main',
     [string]$Tag = '',            # default: v<version>-cpu, version read from the package
     [string]$Token = '',          # default: GITHUB_TOKEN, else git's stored credential
+    [string]$Version = '',        # default: read from bitsandbytes/__init__.py
+    [string]$Dist = '',           # default: <pkg>/dist
+    [string]$NotesFile = '',      # default: built-in generic notes
     [switch]$Replace,             # re-upload an asset that is already attached
     [switch]$DryRun
 )
@@ -23,16 +26,21 @@ $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $pkg = Split-Path -Parent $PSScriptRoot           # ...\bitsandbytes (the project root)
-$dist = Join-Path $pkg 'dist'
+$defaultDist = Join-Path $pkg 'dist'
 
 # --- version ---------------------------------------------------------------------
-$init = Join-Path $pkg 'bitsandbytes\__init__.py'
-$version = ([regex]::Match((Get-Content $init -Raw), '__version__\s*=\s*"([^"]+)"')).Groups[1].Value
-if (-not $version) { throw "could not read __version__ from $init" }
+if (-not $Version) {
+    $init = Join-Path $pkg 'bitsandbytes\__init__.py'
+    $Version = ([regex]::Match((Get-Content $init -Raw), '__version__\s*=\s*"([^"]+)"')).Groups[1].Value
+}
+if (-not $Version) { throw "could not determine version (pass -Version)" }
+$version = $Version
 if (-not $Tag) { $Tag = "v$version-cpu" }
 
-$assets = @(Get-ChildItem $dist -File -ErrorAction SilentlyContinue |
+$assetDir = if ($Dist) { $Dist } else { $defaultDist }
+$assets = @(Get-ChildItem $assetDir -File -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -match '\.(whl|tar\.gz)$' })
+if ($assets.Count -eq 0) { throw "no artifacts in $assetDir" }
 if ($assets.Count -eq 0) { throw "no artifacts in $dist; run: python setup.py sdist bdist_wheel" }
 
 Write-Host "repo    : $Repo"
@@ -78,8 +86,11 @@ $api = "https://api.github.com/repos/$Repo"
 
 # --- release notes ----------------------------------------------------------------
 # Defined before the create call, which sends them.
-$notes = @"
-CPU fork $version -- Windows wheel (no compiler needed) and the source distribution.
+if ($NotesFile) {
+    $notes = Get-Content $NotesFile -Raw
+} else {
+    $notes = @"
+CPU fork $version.
 
 ``````bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
@@ -88,21 +99,10 @@ bitsandbytes-cpu help          # how to call every feature this fork adds
 bitsandbytes-cpu detect        # CPU, cores, SIMD, RAM, recommended thread count
 ``````
 
-What changed in this release:
-
-* ``bitsandbytes-cpu help``: a reference for what the fork adds, 15 sections readable
-  one at a time (``help 8bitopt``), every Python example executed before release and
-  every printed signature checked against ``inspect.signature``.
-* that command works with **no torch installed**, which is the state of the machine
-  whose user needs to read it.
-* the Linux build compiles (``csrc/cpu_cache.h`` was missing ``<cstdio>``/``<cstdlib>``,
-  which MSVC includes transitively and GCC does not), and its glibc floor is 2.32.
-* ``setup.py`` refuses to build a wheel whose native library is absent, instead of
-  producing one that installs silently and dies at import.
-* ``torch`` is not a dependency: installing this used to pull 31 distributions and
-  about 2.5 GB of ``nvidia-*`` wheels onto a machine with no NVIDIA device.
-* ``tools/verify_linux_cli.sh`` is the regression script for the Linux path.
+See the repository README for the full platform/wheel matrix, features, examples and
+changelog: https://github.com/$Repo/blob/main/bitsandbytes/README.md
 "@
+}
 
 # --- create, or continue with a release that already exists -----------------------
 # An existing release with missing assets is the case worth handling: refusing to run
@@ -122,7 +122,7 @@ if ($existing) {
     $body = @{
         tag_name         = $Tag
         target_commitish = $TargetBranch
-        name             = "CPU fork $Tag (Windows wheel + sdist)"
+        name             = "CPU fork $Tag"
         body             = $notes
         draft            = $false
         prerelease       = $true
