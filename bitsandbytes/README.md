@@ -18,6 +18,13 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install bitsandbytes-cpu-fork
 ```
 
+**Linux wheels.** This release ships two Linux x86_64 wheels: a native one
+(`manylinux_2_39`) with the OpenMP-parallel kernels, and a portable one
+(`manylinux_2_17`, single-threaded) for older distributions. pip picks the best one
+for the host automatically. If neither matches your glibc, install from the sdist
+(it compiles `csrc` with the local toolchain via `build_linux.sh`).
+
+
 ### Windows
 
 A wheel is published with the CPU library already built in, so no compiler and no
@@ -298,7 +305,7 @@ code and the Transformers / PEFT / Diffusers integrations keep working as-is:
 
 ```python
 import bitsandbytes as bnb          # the fork, not upstream
-print(bnb.__version__)              # 0.50.2.dev1
+print(bnb.__version__)              # 0.50.2.dev4
 ```
 
 Building from source instead (any platform) is described in

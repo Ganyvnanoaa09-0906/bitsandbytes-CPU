@@ -54,6 +54,7 @@
 // state tensor are fp32. Internal math is always fp32 (FMA).
 // ---------------------------------------------------------------------------
 #include "cpu_ops.h"
+#include "cpu_features.h"
 
 #include <cmath>
 #include <cstring>
@@ -191,7 +192,7 @@ inline bool gdn_has_avx2() {
         const uint64_t xcr0 = _xgetbv(_XCR_XFEATURE_ENABLED_MASK);
         return (xcr0 & 0x6) == 0x6;
 #else
-        return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+        return bnb_cpu::avx2_f16c_fma();
 #endif
     }();
     return ok;

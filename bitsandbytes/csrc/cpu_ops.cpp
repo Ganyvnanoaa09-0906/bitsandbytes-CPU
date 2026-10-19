@@ -1,4 +1,5 @@
 #include "cpu_ops.h"
+#include "cpu_features.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -366,7 +367,7 @@ static inline bool has_avx2_cpu() {
     }();
     return use_avx2;
 #else
-    static const bool use_avx2 = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("f16c") &&
+    static const bool use_avx2 = bnb_cpu::avx2_f16c_fma() &&
                                  (std::getenv("BNB_CPU_NO_AVX2") == nullptr);
     return use_avx2;
 #endif

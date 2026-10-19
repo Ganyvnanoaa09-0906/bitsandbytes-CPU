@@ -150,8 +150,26 @@ def _wheel_platform():
     return "linux_aarch64" if machine in ("aarch64", "arm64") else "linux_x86_64"
 
 
+def _package_data():
+    """Ship only the native artefacts of the platform being built.
+
+    The source tree carries builds for several platforms (a Windows DLL plus Linux .so
+    files for AVX2 / AVX-512 / portable). A glob that grabs all of them would put a
+    Windows DLL inside the Linux wheel and vice versa -- dead weight that also makes an
+    "installed but cannot import" failure easier to misdiagnose. The sdist keeps only
+    the build platform's artefacts; on the other platforms setup.py compiles them from
+    csrc via build_linux.sh (see _ensure_native_library).
+    """
+    system = _platform.system()
+    if system == "Windows":
+        return ["libbitsandbytes*.dll", "vcomp140.dll", "py.typed"]
+    if system == "Darwin":
+        return ["libbitsandbytes*.dylib", "py.typed"]
+    return ["libbitsandbytes*.so", "py.typed"]
+
+
 setup(
-    version="0.50.2.dev1",
     distclass=PureDistribution,
+    package_data={"bitsandbytes": _package_data()},
     cmdclass={"bdist_wheel": PlatformWheel},
 )

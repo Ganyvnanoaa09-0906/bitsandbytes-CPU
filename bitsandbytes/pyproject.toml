@@ -111,14 +111,14 @@ version = {attr = "bitsandbytes.__version__"}
 # The reference tables and the CLI entry point are a top-level module rather than part of
 # the package, so that they can be imported without torch; see the module docstring.
 [tool.setuptools]
+# Without this, setuptools auto-includes every git-tracked file under the package
+# (including the Linux .so builds in a Windows checkout), which would put both
+# platforms into every wheel. The native set is declared in setup.py.
+include-package-data = false
 py-modules = ["bitsandbytes_cpu_cli"]
 
 [tool.setuptools.packages.find]
 include = ["bitsandbytes*"]
 
-[tool.setuptools.package-data]
-# The prebuilt CPU DLL and its OpenMP runtime ship inside the wheel, so an
-# installing user needs no compiler and no Visual C++ Redistributable:
-#   libbitsandbytes_cpu.dll  imports VCOMP140.DLL (checked with dumpbin /dependents)
-#   vcomp140.dll             provides it
-"bitsandbytes" = ["libbitsandbytes*.dll", "libbitsandbytes*.so", "vcomp140.dll", "py.typed"]
+# Native artefacts are declared in setup.py (_package_data): the correct set is
+# platform-dependent (a Windows wheel must not carry the Linux .so files or vice versa).

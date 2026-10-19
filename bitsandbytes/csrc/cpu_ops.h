@@ -2,6 +2,7 @@
 #define BITSANDBYTES_CPU_OPS_H
 
 #include "common.h"
+#include "cpu_features.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -448,13 +449,13 @@ static inline bool has_avx512bf16() {
 #endif
 #else
 static inline bool has_avx512f() {
-    static const bool supported_avx512f = __builtin_cpu_supports("avx512f");
+    static const bool supported_avx512f = bnb_cpu::avx512f();
     return supported_avx512f;
 }
 
 #if defined(__AVX512BF16__)
 static inline bool has_avx512bf16() {
-    static const bool supported_avx512bf16 = __builtin_cpu_supports("avx512bf16");
+    static const bool supported_avx512bf16 = bnb_cpu::avx512bf16();
     return supported_avx512bf16;
 }
 #endif
