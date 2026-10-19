@@ -75,7 +75,10 @@ __pdoc__ = {
     "optim.optimizer.MockArgs": False,
 }
 
-__version__ = "0.50.2.dev7"
+__version__ = "0.50.2.dev8"
 
 # 挂载 gdn_cpu（GDN 融合内核 / patch_transformers 入口），让 bnb.gdn_cpu 可直接访问
 from . import gdn_cpu  # noqa: E402,F401
+
+# 挂载 q3bit（实验性 2/3-bit 量化 / 冻结 3-bit base + LoRA），让 bnb.q3bit 可直接访问
+from . import q3bit  # noqa: E402,F401

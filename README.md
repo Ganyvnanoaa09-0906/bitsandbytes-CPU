@@ -10,7 +10,7 @@ The fast path is pure CPU (fp32 + oneDNN + fused bnb kernels); the experimental 
 pay off in narrow workloads (see the technical report for the measured pros and cons).
 
 **PyPI: [`bitsandbytes-cpu-fork`](https://pypi.org/project/bitsandbytes-cpu-fork/) · current
-release `0.50.2.dev7`.**
+release `0.50.2.dev8`.**
 
 ## Install
 
@@ -76,6 +76,15 @@ info = apply_efst(model, EFSTConfig(top_k=2, lora=True,
                                     calibration_forward_fn=lambda b: model(**b)))
 ```
 
+Experimental 3-bit API (frozen 3-bit base + LoRA, native kernels with torch fallback):
+
+```python
+from bitsandbytes import q3bit
+ql = q3bit.QuantLinear3bit.from_linear(layer, lora_r=8)   # only lora_A/lora_B train
+packed, absmax = q3bit.quantize_3bit(weight, block=64)    # ~11% of fp32 memory
+out = q3bit.gemm_3bit(x, packed, absmax)                  # no fp32 weight materialised
+```
+
 The package README covers the full API, platform matrix, limitations and changelog:
 [`bitsandbytes/README.md`](bitsandbytes/README.md).
 
@@ -115,6 +124,7 @@ bash arm64_selftest.sh
 | `0.50.2.dev5` | WSL/Linux disk balancer; concurrency planner / memory estimator / `tune_threads`; optional-kernels warning fix; EPYC validation |
 | `0.50.2.dev6` | manylinux_2_17 wheel is now **OpenMP** (devtoolset-8 + bundled libgomp, 3–4× optimizer speedup on old glibc); csrc 2/3-bit dequant + fused GEMM kernels + 9-item C self-test; EFST fused tensor-expert routing fix; GCC 8 `<cpuid.h>` portability fix |
 | `0.50.2.dev7` | documentation release: READMEs rewritten for the CPU fork (install/wheels/platform matrix, features, measured performance, limitations, tests, full changelog) |
+| `0.50.2.dev8` | restored `AdamW4bit` (1.031 B of state/param, scalar kernel + torch fallback) + new `bitsandbytes.q3bit` API (blockwise 3-bit quant/dequant/fused GEMM, `QuantLinear3bit` frozen 3-bit base + LoRA, `convert_linears_3bit`) |
 
 ## Known limitations
 

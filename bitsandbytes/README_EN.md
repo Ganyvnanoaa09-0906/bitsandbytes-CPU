@@ -1,7 +1,7 @@
 # bitsandbytes CPU fork — English summary
 
 This is the CPU fork of bitsandbytes, published on PyPI as **`bitsandbytes-cpu-fork`**
-(import name unchanged: `import bitsandbytes as bnb`). Current release: **`0.50.2.dev7`**.
+(import name unchanged: `import bitsandbytes as bnb`). Current release: **`0.50.2.dev8`**.
 The full README is [`README.md`](README.md); this file is a short English mirror.
 
 PyPI: https://pypi.org/project/bitsandbytes-cpu-fork/
@@ -76,6 +76,9 @@ dev4 Linux wheels + AVX-512 BF16 loader safety / data-safety fixes ·
 dev5 WSL/Linux disk balancer + concurrency planner + `tune_threads` ·
 dev6 OpenMP `manylinux_2_17` wheel (devtoolset-8 + bundled libgomp) + csrc 2/3-bit kernels +
 9-item C self-test + EFST fused tensor-expert fix + GCC 8 `<cpuid.h>` portability fix ·
-dev7 documentation release (READMEs rewritten for the CPU fork).
+dev7 documentation release (READMEs rewritten for the CPU fork) ·
+dev8 restored `AdamW4bit` (1.031 B/param, scalar kernel + torch fallback) and added the
+`bitsandbytes.q3bit` API (3-bit quant/dequant/fused GEMM, `QuantLinear3bit` frozen base +
+LoRA, `convert_linears_3bit`).
 
 MIT, same as upstream bitsandbytes (based on upstream 0.50.2). See `NOTICE.md`.

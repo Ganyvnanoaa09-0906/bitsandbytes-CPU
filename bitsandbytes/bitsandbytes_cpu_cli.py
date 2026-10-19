@@ -86,6 +86,9 @@ SECTIONS = [
          "fused Gated DeltaNet for Qwen3-Next / Qwen3.5 linear attention", [], PY),
         ("disk_balancer",
          "spills cold parameters to another disk when RAM runs out", [], PY),
+        ("bitsandbytes.q3bit",
+         "frozen 3-bit weights + LoRA (~11% of fp32 memory); native kernels with a "
+         "pure-torch fallback", [], PY),
         ("bitsandbytes-cpu",
          "this command; pip also installs it as bnb-cpu", [], PY),
     ]),
@@ -273,6 +276,8 @@ SECTIONS = [
         ("what you get",
          "1.031 bytes of state per parameter, against 2.062 for the 8-bit optimizer "
          "and 8.0 for torch AdamW, all measured at 1M parameters", [
+             "import torch, torch.nn as nn",
+             "from bitsandbytes.optim import AdamW4bit",
              "p = nn.Parameter(torch.randn(4096))",
              "opt = AdamW4bit([p], lr=1e-3)",
              "p.grad = torch.randn_like(p)",
@@ -294,19 +299,20 @@ SECTIONS = [
         ("does it train as well as fp32",
          "it tracks fp32 rather than matching it: quantised state cannot reproduce an "
          "fp32 trajectory, and that is not the criterion", [
-             "# measured over 120 steps on the real 30.49M image-AR model:",
-             "#   the two loss curves stay within 0.27% of each other",
-             "# on a 200-step MLP run the 4-bit run ended at 0.0198 against fp32's",
-             "#   0.0240 -- neither worse nor identical, simply a different path",
-             "# the kernel's state codes are identical to an independent numpy",
-             "# implementation over 50 steps, so the maths agrees exactly",
+             "# dev2 measured two loss curves within 0.27% over 120 steps on the real",
+             "#   30.49M image-AR model",
+             "# our 20-step 1024-param check: parameter relL2 1.2e-3 vs torch AdamW",
+             "# the restored scalar kernel matches the pure-torch fallback to 1.2e-7",
+             "#   over 10 steps (test_adamw4bit.py), so the maths agrees exactly",
          ], PY),
-        ("the step is faster, unlike 8-bit",
-         "0.658 ms against 1.682 ms for the 8-bit kernel at 1M parameters (2.56x), "
-         "because it moves half the bytes", [
-             "# both are AVX2 kernels in the same library, so the comparison isolates",
-             "# state width rather than implementation language",
-             "# the scalar fallback is 7.99 ms -- the AVX2 path is 12x faster than it",
+        ("the step is slower, so use it for memory not speed",
+         "scalar 4-bit kernel: 28.6 ms vs 3.3 ms (8-bit AVX2) and 8.2 ms (fp32 torch) "
+         "per step at 1M params, measured on the R5-4500U with 6 threads", [
+             "# the dev2 AVX2 4-bit path produced wrong codes and stayed disabled;",
+             "#   what runs today is the verified scalar path",
+             "# the optimizer is a few percent of a real training step at 30M params,",
+             "#   so the wall-clock cost is small while the state saving is 7.8x",
+             "# the pure-torch fallback (Windows wheel) is slower still",
          ], PY),
         ("traps",
          "the failure modes seen while building this, each one silent at first", [
@@ -314,9 +320,9 @@ SECTIONS = [
              "#    AdamW4bit requires fp32 params (the kernel's dtype 0).",
              "# 2. blocksize is compiled in at 256; passing another value raises.",
              "# 3. if the shared library does not export",
-             "#    coptimizer_update_4bit_blockwise_cpu, import fails loudly rather",
-             "#    than falling back -- three earlier versions of the search silently",
-             "#    picked a DLL without the kernel and only failed at the first step.",
+             "#    coptimizer_update_4bit_blockwise_cpu (the Windows wheel does not),",
+             "#    this class transparently uses a pure-torch implementation with the",
+             "#    same numbers and the same 1.031 B/param state, just slower.",
              "# 4. quantised state is not a drop-in for exact reproducibility runs:",
              "#    same seed, same data, different trajectory from fp32.",
          ], PY),
@@ -517,6 +523,50 @@ SECTIONS = [
              "    with db.DiskLoadBalancer(cfg) as bal:",
              "        ...",
          ], PY),
+    ]),
+    ("q3bit", "3-bit frozen base + LoRA (experimental)", [
+        ("quantize_3bit(w, block=64)",
+         "returns (packed uint8, absmax): blockwise symmetric 3-bit codes, 3 bytes per 8 "
+         "weights; the layout is the one the C kernels use", [
+             "import torch",
+             "from bitsandbytes import q3bit",
+             "w = torch.randn(256, 256)",
+             "packed, absmax = q3bit.quantize_3bit(w, block=64)",
+             "back = q3bit.dequantize_3bit(packed, absmax, w.shape)",
+             "rel = ((w - back).norm() / w.norm()).item()",
+             "assert rel < 0.30, rel",
+         ], PY),
+        ("dequantize_3bit(packed, absmax, shape, block=64)",
+         "uses the native AVX2 kernel when the loaded library exports it, else the torch "
+         "unpack; the two agree to float rounding", [], PY),
+        ("gemm_3bit(A, packed, absmax, block=64)",
+         "A @ dequant(B).T without writing the fp32 weight on the native path; K % block "
+         "must be 0", [
+             "import torch",
+             "from bitsandbytes import q3bit",
+             "w = torch.randn(128, 128)",
+             "packed, absmax = q3bit.quantize_3bit(w)",
+             "A = torch.randn(4, 128)",
+             "out = q3bit.gemm_3bit(A, packed, absmax)",
+             "ref = A @ q3bit.dequantize_3bit(packed, absmax, w.shape).t()",
+             "assert (out - ref).abs().max().item() < 1e-5",
+         ], PY),
+        ("QuantLinear3bit.from_linear(linear, lora_r=8)",
+         "frozen 3-bit base + trainable LoRA; only lora_A/lora_B require grad", [
+             "import torch, torch.nn as nn",
+             "from bitsandbytes import q3bit",
+             "lin = nn.Linear(128, 96)",
+             "ql = q3bit.QuantLinear3bit.from_linear(lin, lora_r=4)",
+             "y = ql(torch.randn(2, 128))",
+             "assert y.shape == (2, 96)",
+             "assert [n for n, p in ql.named_parameters() if p.requires_grad] == "
+             "['lora_A', 'lora_B']",
+         ], PY),
+        ("convert_linears_3bit(model, lora_r=8)",
+         "replaces every nn.Linear in place and returns the count; lm_head stays fp32", []),
+        ("experimental / portability",
+         "the Windows wheel predates the 2/3-bit C kernels, so it runs the pure-torch "
+         "fallback; the Linux wheels use the native kernels", []),
     ]),
     ("layers", "Reference: bitsandbytes.nn", [
         ("Linear4bit(input_features, output_features, bias=True, compute_dtype=None,\n"

@@ -3270,6 +3270,216 @@ void optimizer_update_8bit_blockwise_cpu(
 }
 
 // =====================================================================
+static inline unsigned char opt4_get(const unsigned char* s, long long i) {
+    const unsigned char byte = s[i >> 1];
+    return (i & 1) ? (unsigned char)(byte & 0x0F) : (unsigned char)(byte >> 4);
+}
+
+static inline void opt4_set(unsigned char* s, long long i, unsigned char code) {
+    unsigned char& byte = s[i >> 1];
+    if (i & 1)
+        byte = (unsigned char)((byte & 0xF0) | (code & 0x0F));          // 奇数 -> 低半字节
+    else
+        byte = (unsigned char)((byte & 0x0F) | ((code & 0x0F) << 4));   // 偶数 -> 高半字节
+}
+
+// 16 级对称线性量化：code 0 ↔ -1，code 15 ↔ +1，中间步长 2/15
+// 决策：用线性而不是 8-bit 的 create_dynamic_map()。只有 16 个码时非线性收益很小，
+//   却要背上 :2458 附近记录的那个坑（硬编码表与量化器对不上 ⇒ 相对误差 ~100% ✗）。
+//   线性可以逐项验证 ✓
+// ⚠️ 取整【必须】用 std::lrintf。我试过"魔法数取整"（加 1.5*2^23 再减掉）来避开
+//   库调用，结果【破坏了正确性】✗：50 步后状态码与参考完全不一致，参数出现 NaN。
+//   原因：/fp:precise 下 (x+1)*7.5 + magic 可能被收缩成 FMA（中间不舍入），
+//   于是 r - magic 会偏离一个 magic-ulp（=1.0）✗；且越界/NaN 输入没有守卫，
+//   而 8-bit 那条路是用 CMP_NLT_UQ 兜住 NaN 的，我漏了 ✓。
+//   而且它【没换来速度】：配对比较 0.250 → 0.232，在噪声内 ✓ ⇒ 已回退。
+//   教训：用"看起来更快"的实现替换一个已验证的实现之前，先重跑正确性测试 ✓✓
+//   —— 这次正是那个测试把它拦下来的 ✓
+static constexpr float kOpt4InvLevels = 15.0f / 2.0f;
+// 注：16 级对称【无法精确表示 0】（中间两码是 ∓1/15）⇒ 全零块写 code 8，
+//     偏差 absmax/15，而那时 absmax 就是 0 ⇒ 偏差为 0 ✓
+
+static inline unsigned char opt4_quant(float x) {
+    if (!std::isfinite(x))      // 越界/NaN 兜底；8-bit 用 CMP_NLT_UQ 做同一件事
+        return 8;               // 最靠近 0 的码
+    int c = (int)std::lrintf((x + 1.0f) * kOpt4InvLevels);
+    if (c < 0) c = 0;
+    if (c > 15) c = 15;
+    return (unsigned char)c;
+}
+
+template <typename T>
+static void optimizer_4bit_blockwise_scalar(
+    const OptParams& P, const void* g, void* p, unsigned char* state1, unsigned char* state2,
+    const float* qmap1, const float* qmap2, float* absmax1, float* absmax2, long long n
+) {
+    const bool one_state = state2 == nullptr;
+    const bool ademamix = P.optimizer_id == bnb_cpu_opt_ademamix;
+    const unsigned char zc1 = 8;   // +1/15，见上面的取舍说明
+    const unsigned char zc2 = 8;
+    const long long blocks = (n + kOptBlockSize - 1) / kOptBlockSize;
+    const long long half = (n + 1) >> 1;   // ademamix 第三个状态的字节数
+
+    BNB_OMP_PARALLEL_FOR
+    for (long long b = 0; b < blocks; ++b) {
+        // 必须声明在循环体内：放函数作用域会被所有 OpenMP 线程共享，
+        // 并发块互相践踏各自的暂存状态（数据竞态）。同 :2760 那条教训。
+        float s1buf[kOptBlockSize], s2buf[kOptBlockSize], s3buf[kOptBlockSize];
+        const long long begin = b * kOptBlockSize;
+        const long long end = std::min(n, begin + kOptBlockSize);
+        const int cnt = (int)(end - begin);
+        const float am1 = absmax1[b];
+        const float am2 = one_state ? 0.0f : absmax2[b];
+        const float am3 = ademamix ? absmax1[blocks + b] : 0.0f;
+
+        float n1 = 0.0f, n2 = 0.0f, n3 = 0.0f;   // 新状态的块内 max|x|（NaN 记 0）
+        // 【成对处理】—— 性能关键。
+        // 逐元素 get/set 会对同一个字节做"读-改-写"，相邻两个元素之间产生
+        // store-to-load forwarding 停顿，而且彻底阻断向量化：实测比 8-bit 版
+        // 慢 4.6 倍（7.385 ms vs 1.591 ms，1M 参数）。改成一次读字节、拆两个码、
+        // 算完再打包写一次之后，每个字节只碰一次。
+        // 前提：块起点与块大小都是偶数（kOptBlockSize = 256 ✓，begin = b*256 ✓）
+        // ⇒ 每个块内 i 的奇偶是固定的，且 j 为偶数时 i 必为偶数 ✓
+        int j = 0;
+        for (; j + 1 < cnt; j += 2) {
+            const long long i = begin + j;
+            const unsigned char b1 = state1[i >> 1];          // 一次读
+            const unsigned char c1a = (unsigned char)(b1 >> 4);        // 偶数 -> 高
+            const unsigned char c1b = (unsigned char)(b1 & 0x0F);      // 奇数 -> 低
+            const unsigned char b2 = one_state ? 0 : state2[i >> 1];
+            const unsigned char c2a = (unsigned char)(b2 >> 4);
+            const unsigned char c2b = (unsigned char)(b2 & 0x0F);
+            const unsigned char b3 = ademamix ? state1[half + (i >> 1)] : 0;
+            const unsigned char c3a = (unsigned char)(b3 >> 4);
+            const unsigned char c3b = (unsigned char)(b3 & 0x0F);
+
+            const float g0 = opt_load<T>(g, i);
+            const float g1 = opt_load<T>(g, i + 1);
+            const float p0 = opt_load<T>(p, i);
+            const float p1 = opt_load<T>(p, i + 1);
+
+            OptElemResult ra = opt_update_element<T>(P, qmap1, qmap2, am1, am2, am3,
+                                                     c1a, c2a, c3a, g0, p0, one_state);
+            OptElemResult rb = opt_update_element<T>(P, qmap1, qmap2, am1, am2, am3,
+                                                     c1b, c2b, c3b, g1, p1, one_state);
+            if (ra.update_p) {
+                const float gw = one_state ? ra.s3 : g0;
+                opt_store<T>(p, i, opt_update_p(P, P.optimizer_id, p0, ra.s1, ra.s2,
+                                                ra.s3, gw, one_state));
+            }
+            if (rb.update_p) {
+                const float gw = one_state ? rb.s3 : g1;
+                opt_store<T>(p, i + 1, opt_update_p(P, P.optimizer_id, p1, rb.s1, rb.s2,
+                                                    rb.s3, gw, one_state));
+            }
+            s1buf[j] = ra.s1; s1buf[j + 1] = rb.s1;
+            s2buf[j] = ra.s2; s2buf[j + 1] = rb.s2;
+            s3buf[j] = ra.s3; s3buf[j + 1] = rb.s3;
+            n1 = std::fmax(n1, std::fmax(std::isnan(ra.s1) ? 0.0f : std::fabs(ra.s1),
+                                         std::isnan(rb.s1) ? 0.0f : std::fabs(rb.s1)));
+            n2 = std::fmax(n2, std::fmax(std::isnan(ra.s2) ? 0.0f : std::fabs(ra.s2),
+                                         std::isnan(rb.s2) ? 0.0f : std::fabs(rb.s2)));
+            n3 = std::fmax(n3, std::fmax(std::isnan(ra.s3) ? 0.0f : std::fabs(ra.s3),
+                                         std::isnan(rb.s3) ? 0.0f : std::fabs(rb.s3)));
+        }
+        for (; j < cnt; ++j) {   // 奇数长度块的尾巴（kOptBlockSize 是偶数，正常走不到）
+            const long long i = begin + j;
+            const float g_raw = opt_load<T>(g, i);
+            const float p_val = opt_load<T>(p, i);
+            const unsigned char c1 = opt4_get(state1, i);
+            const unsigned char c2 = one_state ? 0 : opt4_get(state2, i);
+            const unsigned char c3 = ademamix ? opt4_get(state1 + half, i) : 0;
+            OptElemResult r = opt_update_element<T>(P, qmap1, qmap2, am1, am2, am3,
+                                                    c1, c2, c3, g_raw, p_val, one_state);
+            if (r.update_p) {
+                const float g_wd = one_state ? r.s3 : g_raw;
+                opt_store<T>(p, i, opt_update_p(P, P.optimizer_id, p_val, r.s1, r.s2,
+                                                r.s3, g_wd, one_state));
+            }
+            s1buf[j] = r.s1; s2buf[j] = r.s2; s3buf[j] = r.s3;
+            n1 = std::fmax(n1, std::isnan(r.s1) ? 0.0f : std::fabs(r.s1));
+            n2 = std::fmax(n2, std::isnan(r.s2) ? 0.0f : std::fabs(r.s2));
+            n3 = std::fmax(n3, std::isnan(r.s3) ? 0.0f : std::fabs(r.s3));
+        }
+
+        absmax1[b] = n1;
+        if (!one_state) absmax2[b] = n2;
+        if (ademamix) absmax1[blocks + b] = n3;
+
+        const float inv1 = n1 > 0.0f ? 1.0f / n1 : 0.0f;
+        const float inv2 = n2 > 0.0f ? 1.0f / n2 : 0.0f;
+        const float inv3 = n3 > 0.0f ? 1.0f / n3 : 0.0f;
+        // 同样是成对写回：两个码打包进一个字节，只写一次 ✓
+        int j2 = 0;
+        for (; j2 + 1 < cnt; j2 += 2) {
+            const long long i = begin + j2;
+            const unsigned char a1 = n1 > 0.0f ? opt4_quant(s1buf[j2] * inv1) : zc1;
+            const unsigned char a2 = n1 > 0.0f ? opt4_quant(s1buf[j2 + 1] * inv1) : zc1;
+            state1[i >> 1] = (unsigned char)((a1 << 4) | (a2 & 0x0F));
+            if (!one_state) {
+                const unsigned char b1 = n2 > 0.0f ? opt4_quant(s2buf[j2] * inv2) : zc2;
+                const unsigned char b2 = n2 > 0.0f ? opt4_quant(s2buf[j2 + 1] * inv2) : zc2;
+                state2[i >> 1] = (unsigned char)((b1 << 4) | (b2 & 0x0F));
+            }
+            if (ademamix) {
+                const unsigned char c1 = n3 > 0.0f ? opt4_quant(s3buf[j2] * inv3) : zc1;
+                const unsigned char c2 = n3 > 0.0f ? opt4_quant(s3buf[j2 + 1] * inv3) : zc1;
+                state1[half + (i >> 1)] = (unsigned char)((c1 << 4) | (c2 & 0x0F));
+            }
+        }
+        for (; j2 < cnt; ++j2) {
+            const long long i = begin + j2;
+            opt4_set(state1, i, n1 > 0.0f ? opt4_quant(s1buf[j2] * inv1) : zc1);
+            if (!one_state)
+                opt4_set(state2, i, n2 > 0.0f ? opt4_quant(s2buf[j2] * inv2) : zc2);
+            if (ademamix)
+                opt4_set(state1 + half, i, n3 > 0.0f ? opt4_quant(s3buf[j2] * inv3) : zc1);
+        }
+    }
+}
+
+void optimizer_update_4bit_blockwise_cpu(
+    int optimizer_id, void* g, void* p, unsigned char* state1, unsigned char* state2, float beta1,
+    float beta2, float beta3, float alpha, float eps, int step, float lr, const float* qmap1,
+    const float* qmap2, float* absmax1, float* absmax2, float weight_decay, float gnorm_scale,
+    bool skip_zeros, long long n, int dtype
+) {
+    if (n <= 0 || g == nullptr || p == nullptr || state1 == nullptr || qmap1 == nullptr ||
+        absmax1 == nullptr)
+        return;
+
+    OptParams P;
+    P.optimizer_id = optimizer_id;
+    P.beta1 = beta1;
+    P.beta2 = beta2;
+    P.beta3 = beta3;
+    P.alpha = alpha;
+    P.eps = eps;
+    P.lr = lr;
+    P.weight_decay = weight_decay;
+    P.gnorm_scale = gnorm_scale;
+    P.step = step;
+    P.skip_zeros = skip_zeros;
+    P.correction1 = 1.0f - (float)std::pow((double)beta1, (double)step);
+    P.correction2 = std::sqrt(1.0f - (float)std::pow((double)beta2, (double)step));
+    P.step_size = -lr * P.correction2 / P.correction1;
+
+    // Scalar path only: the dev2 AVX2 packing was known to be wrong and was disabled there.
+    switch (dtype) {
+    case 0:
+        optimizer_4bit_blockwise_scalar<float>(P, g, p, state1, state2, qmap1, qmap2, absmax1, absmax2, n);
+        break;
+    case 1:
+        optimizer_4bit_blockwise_scalar<bf16_t>(P, g, p, state1, state2, qmap1, qmap2, absmax1, absmax2, n);
+        break;
+    case 2:
+        optimizer_4bit_blockwise_scalar<fp16_t>(P, g, p, state1, state2, qmap1, qmap2, absmax1, absmax2, n);
+        break;
+    default:
+        break;
+    }
+}
+
 // fused 8-bit blockwise-dequant GEMM: out[M,N] = A[M,K] @ dequant8(B[N,K])
 // ---------------------------------------------------------------------
 // 🔴 2026-09-23 修了一个【正确性 bug】。

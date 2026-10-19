@@ -505,6 +505,13 @@ void optimizer_update_8bit_blockwise_cpu(
     float* absmax1, float* absmax2, float weight_decay, float gnorm_scale, bool skip_zeros, long long n, int dtype
 );
 
+// 4-bit blockwise: 2 codes per byte (high nibble = even index), one fp32 absmax per 256.
+void optimizer_update_4bit_blockwise_cpu(
+    int optimizer_id, void* g, void* p, unsigned char* state1, unsigned char* state2, float beta1, float beta2,
+    float beta3, float alpha, float eps, int step, float lr, const float* qmap1, const float* qmap2,
+    float* absmax1, float* absmax2, float weight_decay, float gnorm_scale, bool skip_zeros, long long n, int dtype
+);
+
 // ----------------------------------------------------------------------------
 // Fused Gated DeltaNet recurrent forward/backward (csrc/cpu_gdn.cpp).
 //

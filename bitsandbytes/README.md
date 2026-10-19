@@ -5,7 +5,7 @@
 > toolkit and no driver** — just an AVX2 x86-64 CPU (or ARM64 NEON), the CPU build of PyTorch,
 > and 12–16 GB of RAM.
 
-**Version: `0.50.2.dev7`** · import name is unchanged (`import bitsandbytes as bnb`) · MIT.
+**Version: `0.50.2.dev8`** · import name is unchanged (`import bitsandbytes as bnb`) · MIT.
 
 What the CPU backend provides: 8-bit blockwise optimizers (≈2.3 bytes of state per parameter
 instead of 8; the 4-bit optimizer ≈1.03), 4/8-bit layers that run on CPU tensors, the fused
@@ -71,6 +71,23 @@ opt = bnb.optim.AdamW8bit([p], lr=1e-4)
 p.grad = torch.randn_like(p)
 opt.step()
 ```
+
+### 4-bit optimizer (half the state of 8-bit, ~1.03 B/param)
+
+```python
+import torch, bitsandbytes as bnb
+
+p = torch.nn.Parameter(torch.randn(1024, 1024))
+opt = bnb.optim.AdamW4bit([p], lr=1e-4)     # fp32 parameters only
+p.grad = torch.randn_like(p)
+opt.step()
+print(opt.state_bytes())                    # ~1.031 bytes per parameter
+```
+
+The 4-bit kernel is scalar (the AVX2 packing was never correct), so it is ~8x slower
+than the AVX2 8-bit kernel per element — use it to save state memory, not for speed.
+On wheels without the kernel symbol (Windows) it falls back to torch with the same
+numbers.
 
 ### 4-bit layer on CPU
 
@@ -154,7 +171,7 @@ Also: `estimate_training_memory_gb()`, `spawn_training_jobs(cmds, plan)` (logs p
 | Area | What it does |
 |---|---|
 | 8-bit optimizers | AdamW/Adam/AdEMAMix/LAMB/LARS/Lion + paged variants, blockwise 8-bit state with single-pass dequant→update→requant kernels (AVX2/NEON) |
-| 4-bit optimizers | AdamW4bit etc. with ≈1.03 bytes of state per parameter |
+| 4-bit optimizer | `AdamW4bit`: ≈1.03 bytes of state per parameter (restored in dev8; scalar kernel + torch fallback) |
 | Quantisation | blockwise 8-bit, NF4/FP4 4-bit quantize/dequantize; 4-bit GEMV inference kernel |
 | `gemm_8bit` | `out = A @ dequant8(B)` with weights kept uint8 (¼ DRAM traffic), no fp32 temporary (`bnb.functional.fused_dequant_linear_8bit`) |
 | GDN | fused Gated DeltaNet forward + chunk-checkpointed backward (`gdn_fwd_cpu` / `gdn_bwd_cpu`), plus `patch_transformers()` / `patch_fla()` |
@@ -166,6 +183,35 @@ The library never loads a CUDA/ROCm/XPU library: `bnb.cuda`/`bnb.optim` CPU path
 `import bitsandbytes` succeeds on a CPU-only host with no CUDA anywhere.
 
 ---
+
+## 3-bit frozen base + LoRA (`bitsandbytes.q3bit`, experimental)
+
+A frozen weight can be stored as blockwise **3-bit** codes (≈11% of fp32 memory) and
+trained through LoRA; the native Linux wheels contain the C dequant / fused-GEMM
+kernels, other platforms fall back to a pure-torch implementation with identical
+numbers (slower):
+
+```python
+import torch, torch.nn as nn
+from bitsandbytes import q3bit
+
+w = torch.randn(1024, 1024)
+packed, absmax = q3bit.quantize_3bit(w, block=64)       # 3 bytes per 8 weights
+back = q3bit.dequantize_3bit(packed, absmax, w.shape)   # native kernel when available
+
+layer = nn.Linear(1024, 1024)
+ql = q3bit.QuantLinear3bit.from_linear(layer, lora_r=8)  # frozen 3-bit base + LoRA
+y = ql(torch.randn(2, 1024))                             # only lora_A/lora_B train
+print([n for n, p in ql.named_parameters() if p.requires_grad])  # ['lora_A', 'lora_B']
+
+# freeze every Linear in a model at 3 bits (lm_head stays fp32):
+q3bit.convert_linears_3bit(model, lora_r=8)
+```
+
+Functions: `quantize_3bit` / `dequantize_3bit` / `gemm_3bit` (A @ dequant(B).T without
+materialising B) / `gemm_3bit_transposed`; 2-bit variants are available as
+`quantize_2bit` / `dequantize_2bit` (dequant only). `Bits` are blockwise symmetric
+(block=64, one absmax per block) and match the C kernel layout exactly.
 
 ## Performance notes (measured on this fork's target laptops)
 
@@ -179,6 +225,7 @@ R5-4500U (6C/6T, AVX2, 15.4 GB) / i5-10400 (6C/12T, AVX2, 12 GB), no NVIDIA GPU.
 | Concurrency packing (synthetic jobs) | 6 jobs × 1 thread **5619 tok/s** vs 1 job × 6 threads **3843 tok/s** (+46%) |
 | Real model (Qwen3.5-0.8B LoRA, seq 64) | 4 threads beat 6 by **7–10%** — measure with `tune_threads()` |
 | Fused lm_head 3-bit GEMM (research) | 14–22% faster than fp32 matmul, 89% less weight memory |
+| AdamW4bit step (1M params) | 28.6 ms vs 3.3 ms for the AVX2 8-bit kernel; state 1.031 vs 2.062 B/param |
 
 Not every workload is faster than fp32: 4-bit/8-bit kernels trade compute for memory traffic,
 and small per-layer matmuls are better left to oneDNN. See `bench_results/` and the report for
@@ -189,8 +236,9 @@ the full trade-off tables, including negative results.
 ## Platform limitations
 
 - **CPU only.** CUDA/ROCm/XPU kernels are not built; a GPU is never required or used.
-- **Windows wheel** ships a prebuilt DLL. That DLL predates the dev5/dev6 experimental
-  2/3-bit quantization kernels, so those research symbols are Linux-only for now.
+- **Windows wheel** ships a prebuilt DLL. That DLL predates the dev5/dev6 2/3-bit
+  kernels and the restored 4-bit optimizer kernel, so those run the pure-torch
+  fallback there (same numbers, lower speed).
 - **manylinux_2_17 wheel**: the AVX-512 library inside it is single-threaded (the parallel
   build is only for the native `manylinux_2_39` wheel). On AVX-512 machines set
   `BNB_CPU_DISABLE_AVX512=1` to run the AVX2 OpenMP path.
@@ -198,9 +246,8 @@ the full trade-off tables, including negative results.
   Termux instructions in `docs_cpu/TERMUX_GUIDE.md`.
 - **macOS**: no wheel is published and the CPU backend is not tested there; the sdist build may
   work with clang + OpenMP, but treat it as unsupported.
-- The 2/3-bit blockwise quantisation + fused dequant/GEMM kernels (dev5/dev6) are **research
-  prototypes with C kernels only** (no Python API). They are covered by the C self-test and
-  `test_q3bit_kernels.py`; do not build products on them yet.
+- 3-bit (and 2-bit dequant-only) is **experimental**: the API and kernels are covered
+  by tests, but there is no long-run quality study yet; treat it as a research feature.
 - `torch` must be installed separately as the CPU build (see above).
 
 ## Build from source
@@ -226,7 +273,9 @@ the zig manylinux_2_17 portable build and the devtoolset-8 manylinux_2_17 **Open
 bash build_linux.sh --selftest          # C kernels: 9 checks (quantize/gemm_8bit/gemv_4bit/
                                         # AdamW8bit/vector-vs-scalar/2-3bit dequant/fused GEMM)
 python test_efst_regressions.py         # EFST: nested blocks, 3-D tensor experts, routing usage
-python test_q3bit_kernels.py            # 2/3-bit pack/unpack, error bounds, AVX2 kernel exactness
+python test_q3bit_kernels.py            # 2/3-bit research prototype (old DLL-based tests)
+python test_q3bit_api.py                # public q3bit API: pack/dequant/gemm, QuantLinear3bit, fallback
+python test_adamw4bit.py                # restored 4-bit optimizer: state bytes, native vs torch, fp32 tracking
 python test_concurrency_plan.py         # planner / memory estimate / tune_threads / launcher
 python test_disk_balancer_safety.py     # data-safety rules for the disk balancer
 ```
@@ -253,6 +302,7 @@ The long-form docs live in the repository (`bitsandbytes/docs_cpu/`, Chinese and
 | `0.50.2.dev5` | WSL/Linux disk balancer (ext4-only, 9P rejected, in-flight byte cap); `torch_cpu_kit` concurrency planner / memory estimator / `tune_threads`; optional `kernels` warning fix; EPYC validation docs |
 | `0.50.2.dev6` | manylinux_2_17 wheel is now **OpenMP** (devtoolset-8, bundled libgomp → 3–4× optimizer-kernel speedup on old glibc); csrc 2/3-bit dequant + fused GEMM kernels with 9-item C self-test; EFST fused tensor-expert routing fix; GCC 8 `<cpuid.h>` portability fix |
 | `0.50.2.dev7` | documentation release: README rewritten for the CPU fork (install/wheels/platform matrix, feature table, measured performance, limitations, tests, full dev1→dev7 changelog, EFST/disk-balancer/toolbox examples) |
+| `0.50.2.dev8` | **restored `AdamW4bit`** (the kernel was dropped when dev4 vendored upstream; now scalar C kernel + torch fallback, 1.031 B/param); **new `bitsandbytes.q3bit` API** — `quantize_3bit`/`dequantize_3bit`/`gemm_3bit`/`gemm_3bit_transposed`, `QuantLinear3bit` (frozen 3-bit base + LoRA), `convert_linears_3bit`, native kernels on Linux with identical pure-torch fallback; CLI reference now includes 4bitopt/q3bit and all 43 examples execute in CI-style verification |
 
 ## License and attribution
 
