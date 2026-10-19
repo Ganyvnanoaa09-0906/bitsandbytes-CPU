@@ -181,10 +181,64 @@ def case_no_expert_model():
     print("[PASS] case 3: 非 MoE 模型默认报错，allow_no_experts=True 显式放行")
 
 
+def case_tensor_usage_counts():
+    """Regression: fused tensor-expert routing usage must not be all-zero.
+
+    HF transformers 5.x Mixtral stores experts as 3D Parameters and calls
+    experts(hidden, top_k_index, top_k_weights). collect_expert_usage keys tensor-expert
+    counters by strings, so the int keys from top_k_index used to miss and every count
+    stayed 0 -> select_top_experts always returned the first keys ([0,1]). This case pins
+    the int/str normalization.
+    """
+    import torch.nn as nn
+    from bitsandbytes.efst import (collect_expert_usage, find_expert_groups,
+                                   select_top_experts)
+
+    class TensorExperts(nn.Module):
+        def __init__(self, n=4, h=8, i=4):
+            super().__init__()
+            self.num_experts = n
+            self.gate_up_proj = nn.Parameter(torch.randn(n, 2 * i, h))
+            self.down_proj = nn.Parameter(torch.randn(n, h, i))
+
+        def forward(self, hidden, top_k_index, top_k_weights):
+            return hidden
+
+    class Blk(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.experts = TensorExperts()
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.block = Blk()
+
+        def forward(self, top_k_index, top_k_weights):
+            return self.block.experts(torch.zeros(4, 8), top_k_index, top_k_weights)
+
+    model = Model()
+    groups = find_expert_groups(model)
+    assert len(groups) == 1 and groups[0].is_tensor, groups
+    idx = torch.tensor([[0, 3], [0, 3], [1, 2], [3, 3]])
+    weights = torch.ones(4, 2)
+    usage = collect_expert_usage(model, [None], forward_fn=lambda _: model(idx, weights))
+    path = groups[0].path
+    counts = usage[path]
+    expected = {0: 2, 1: 1, 2: 1, 3: 4}
+    for k, v in expected.items():
+        got = counts.get(k, counts.get(str(k), 0))
+        assert got == v, (k, got, v, counts)
+    selected = select_top_experts(model, [None], 1, forward_fn=lambda _: model(idx, weights))
+    assert selected[path][0] in (3, "3"), selected
+    print("[PASS] case 4: 融合张量专家的路由 usage 计数与 top-k 选择正确")
+
+
 def main():
     torch.manual_seed(0)
     case_nested_block()
     case_tensor_experts()
+    case_tensor_usage_counts()
     case_no_expert_model()
     print("\nEFST REGRESSION TESTS PASSED")
 

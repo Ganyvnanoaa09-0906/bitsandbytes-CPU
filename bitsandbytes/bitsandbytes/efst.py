@@ -516,8 +516,13 @@ def collect_expert_usage(
                 return
             for e in idx.detach().cpu().flatten().tolist():
                 e = int(e)
-                if e in counters[path]:
-                    counters[path][e] += 1
+                # Tensor-expert groups may key their counters by strings (ParameterList /
+                # expert container names) while top_k_index contains ints; normalize instead
+                # of silently counting zero (this bug made select_top_experts always pick
+                # the first keys for HF transformers 5.x fused-expert Mixtral).
+                key = e if e in counters[path] else (str(e) if str(e) in counters[path] else None)
+                if key is not None:
+                    counters[path][key] += 1
         return hook
 
     for g in groups:
