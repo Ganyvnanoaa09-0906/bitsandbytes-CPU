@@ -41,7 +41,9 @@ except AttributeError:
     pass
 
 MIRROR = os.environ.get('HF_ENDPOINT', 'https://hf-mirror.com')
-DLL = r'D:\work\clblast_build\CLBlast-master\build\clblast.dll'
+DLL = os.environ.get('CLBLAST_PATH') or (
+    r'D:\work\clblast_build\CLBlast-master\build\clblast.dll'
+    if os.name == 'nt' else 'libclblast.so')
 ROW, NO, YES = 101, 111, 112
 
 ctx = cl.create_some_context(interactive=False)

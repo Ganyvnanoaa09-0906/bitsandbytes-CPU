@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import os
 import glob
 import json
 import math
@@ -31,7 +32,9 @@ try:
 except AttributeError:
     pass
 
-DLL = r'D:\work\clblast_build\CLBlast-master\build\clblast.dll'
+DLL = os.environ.get('CLBLAST_PATH') or (
+    r'D:\work\clblast_build\CLBlast-master\build\clblast.dll'
+    if os.name == 'nt' else 'libclblast.so')
 ROW, NO, YES = 101, 111, 112
 ctx = cl.create_some_context(interactive=False)
 queue = cl.CommandQueue(ctx)
@@ -473,7 +476,7 @@ class Engine:
     def forward(self, ids):
         M, V = self.M, self.VOCAB
         x0 = self.embed[np.asarray(ids).reshape(-1)[:M]].astype(np.float32)
-        cl.enqueue_copy(queue, self.xb[0], np.ascontiguousarray(x0))
+        cl.enqueue_copy(queue, self.xb[0], np.ascontiguousarray(x0), is_blocking=True)
         for li in range(self.NL):
             self.forward_layer(li, self.xb[li], self.xb[li + 1])
         self.rms(self.xb[self.NL], self.wfinal, self.rfin, self.hfn)
