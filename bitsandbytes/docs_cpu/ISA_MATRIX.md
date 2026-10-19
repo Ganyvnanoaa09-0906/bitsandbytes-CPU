@@ -70,3 +70,10 @@ aarch64 库的 NEON 类指令从 570 条增加到 **674 条**（新增 dequant N
 不物化 fp32 权重矩阵。自检第 8 项要求它与标量参考的相对误差 < 1e-4；x86 AVX2/generic、
 aarch64 qemu 全部 **8/8 PASS**。性能见 `bench_results/2bit3bit_proto.md` §7
 （lm_head 形状：比 fp32 matmul 快 14–22%，内存 -89%）。
+
+## 9. 训练反向的转置融合 GEMM（第 9 项自检）
+
+`q3bit_gemm_t_cpu` / `cbq3bit_gemm_t_cpu`：`dX[M,K] = dY[M,N] @ dequant(B)[N,K]`，线程私有
+dX 部分和再归约。自检第 9 项（transposed fused GEMM vs 标量参考，rel < 1e-4）：x86 AVX2 原生、
+x86 generic、aarch64 qemu 全部 **9/9 PASS**。性能见 `bench_results/2bit3bit_proto.md` §8
+（反向比 oneDNN fp32 慢 2.4×，暂不替换；前向融合仍严格更优）。

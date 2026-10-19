@@ -4274,6 +4274,118 @@ void q3bit_gemm_cpu(const float* A, int M, const unsigned char* packed, const fl
     for (auto& th : threads) th.join();
 }
 
+// ---------------------------------------------------------------------------
+// Transposed variant for training backward: dX[M,K] = dY[M,N] @ dequant(B)[N,K].
+// Each thread accumulates a private dX (M*K floats, small) over its B-row range; the
+// partials are summed at the end, so there is no locking in the hot loop.
+// ---------------------------------------------------------------------------
+struct BnbQ3GemmTCtx {
+    const float* dY;
+    const unsigned char* packed;
+    const float* absmax;
+    int M, N, K, block, ntile, row_start, row_end, row_stride;
+};
+
+static void bnb_q3bit_gemm_t_worker(const BnbQ3GemmTCtx* ctx, float* part) {
+    const int nblocks = ctx->K / ctx->block;
+    std::vector<float> buf((size_t)ctx->ntile * ctx->K);
+    for (size_t i = 0; i < (size_t)ctx->M * ctx->K; ++i) part[i] = 0.0f;
+    for (int n0 = ctx->row_start; n0 < ctx->row_end; n0 += ctx->ntile) {
+        const int nt = std::min(ctx->ntile, ctx->row_end - n0);
+        for (int t = 0; t < nt; ++t) {
+            const unsigned char* prow = ctx->packed +
+                (size_t)(n0 + t) * nblocks * ctx->row_stride;
+            const float* amax_row = ctx->absmax + (size_t)(n0 + t) * nblocks;
+            float* dst = buf.data() + (size_t)t * ctx->K;
+            for (int b = 0; b < nblocks; ++b) {
+                dequantize_3bit_cpu(prow + (size_t)b * ctx->row_stride, amax_row + b,
+                                    dst + (size_t)b * ctx->block, 1, ctx->block);
+            }
+        }
+        for (int m = 0; m < ctx->M; ++m) {
+            float* dxrow = part + (size_t)m * ctx->K;
+            const float* dyrow = ctx->dY + (size_t)m * ctx->N + n0;
+            for (int t = 0; t < nt; ++t) {
+                const float s = dyrow[t];
+                const float* brow = buf.data() + (size_t)t * ctx->K;
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
+                int k = 0;
+                const __m256 vs = _mm256_set1_ps(s);
+                for (; k + 8 <= ctx->K; k += 8) {
+                    __m256 acc = _mm256_loadu_ps(dxrow + k);
+                    acc = _mm256_fmadd_ps(vs, _mm256_loadu_ps(brow + k), acc);
+                    _mm256_storeu_ps(dxrow + k, acc);
+                }
+                for (; k < ctx->K; ++k) dxrow[k] += s * brow[k];
+#else
+                for (int k = 0; k < ctx->K; ++k) dxrow[k] += s * brow[k];
+#endif
+            }
+        }
+    }
+}
+
+void q3bit_gemm_t_cpu(const float* dY, int M, const unsigned char* packed,
+                      const float* absmax, float* dX, int N, int K, int block,
+                      int nthreads, int ntile) {
+    if (!dY || !packed || !absmax || !dX || M <= 0 || N <= 0 || K <= 0 || block <= 0 ||
+        (block % 8) != 0 || (K % block) != 0) {
+        return;
+    }
+    if (ntile <= 0) ntile = 64;
+    if (nthreads <= 0) {
+        nthreads = (int)std::thread::hardware_concurrency();
+        if (nthreads <= 0) nthreads = 1;
+    }
+    const int row_stride = (block / 8) * 3;
+    std::vector<std::vector<float>> partials((size_t)nthreads);
+    std::vector<BnbQ3GemmTCtx> ctxs((size_t)nthreads);
+    std::vector<std::thread> threads;
+    threads.reserve((size_t)nthreads);
+    for (int t = 0; t < nthreads; ++t) {
+        const int row_start = (int)((long long)N * t / nthreads);
+        const int row_end = (int)((long long)N * (t + 1) / nthreads);
+        if (row_start >= row_end) continue;
+        partials[t].assign((size_t)M * K, 0.0f);
+        ctxs[t] = BnbQ3GemmTCtx{dY, packed, absmax, M, N, K, block, ntile, row_start,
+                                row_end, row_stride};
+        threads.emplace_back(bnb_q3bit_gemm_t_worker, &ctxs[t], partials[t].data());
+    }
+    for (auto& th : threads) th.join();
+    for (size_t i = 0; i < (size_t)M * K; ++i) dX[i] = 0.0f;
+    for (auto& part : partials) {
+        for (size_t i = 0; i < (size_t)M * K; ++i) dX[i] += part[i];
+    }
+}
+
+void q3bit_gemm_t_ref_cpu(const float* dY, int M, const unsigned char* packed,
+                          const float* absmax, float* dX, int N, int K, int block) {
+    const int nblocks = K / block;
+    const int row_stride = (block / 8) * 3;
+    for (int i = 0; i < M * K; ++i) dX[i] = 0.0f;
+    for (int n = 0; n < N; ++n) {
+        const unsigned char* prow = packed + (size_t)n * nblocks * row_stride;
+        const float* amax_row = absmax + (size_t)n * nblocks;
+        for (int m = 0; m < M; ++m) {
+            const float s = dY[(size_t)m * N + n];
+            float* dxrow = dX + (size_t)m * K;
+            for (int b = 0; b < nblocks; ++b) {
+                const float amax = amax_row[b];
+                const float scale = amax / 3.5f;
+                const unsigned char* p = prow + (size_t)b * row_stride;
+                for (int i = 0; i < block; i += 8) {
+                    const unsigned char* q = p + (i / 8) * 3;
+                    unsigned v = (unsigned)q[0] | ((unsigned)q[1] << 8) | ((unsigned)q[2] << 16);
+                    for (int j = 0; j < 8; ++j) {
+                        int code = (int)((v >> (3 * j)) & 7);
+                        dxrow[b * block + i + j] += s * ((float)code * scale - amax);
+                    }
+                }
+            }
+        }
+    }
+}
+
 void q3bit_gemm_ref_cpu(const float* A, int M, const unsigned char* packed,
                         const float* absmax, float* C, int N, int K, int block) {
     const int nblocks = K / block;

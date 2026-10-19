@@ -623,6 +623,12 @@ void q3bit_gemm_cpu(const float* A, int M, const unsigned char* packed, const fl
 // Scalar reference for tests.
 void q3bit_gemm_ref_cpu(const float* A, int M, const unsigned char* packed,
                         const float* absmax, float* C, int N, int K, int block);
+// Transposed variant for training backward: dX[M,K] = dY[M,N] @ dequant(B)[N,K].
+void q3bit_gemm_t_cpu(const float* dY, int M, const unsigned char* packed,
+                      const float* absmax, float* dX, int N, int K, int block,
+                      int nthreads, int ntile);
+void q3bit_gemm_t_ref_cpu(const float* dY, int M, const unsigned char* packed,
+                          const float* absmax, float* dX, int N, int K, int block);
 #if defined(__cplusplus)
 }
 #endif

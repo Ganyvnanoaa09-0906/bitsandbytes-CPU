@@ -153,3 +153,36 @@ x86 AVX2 原生 **8/8 PASS**、x86 generic **8/8 PASS**、aarch64 qemu **8/8 PAS
 
 结论：**lm_head 走 fused 3-bit GEMM 是严格双赢**（内存 -89%、前向速度 +14~22%）。限制：
 当前实现只做前向 / `C=A@B^T`；训练反向还需要 `dX = dY @ W` 的转置融合变体（下一轮）。
+
+## 8. 训练反向：转置融合 GEMM（dX = dY @ W）+ 端到端 lm_head 训练（第四轮）
+
+**转置内核** `q3bit_gemm_t`（`dX[M,K] = dY[M,N] @ dequant(B)[N,K]`，线程私有 dX 再归约；
+已进 csrc：`cbq3bit_gemm_t_cpu`，自检第 9 项）。实测（Qwen3.5-0.8B lm_head 形状
+M=64,N=248320,K=1024）：
+
+| 路径 | 时间 |
+|---|---|
+| torch fp32 backward matmul | 158.6 ms |
+| fused transposed 3-bit (ntile=16/64) | 381.6 ms（慢 2.4×） |
+| 正确性 | reldiff 3.78e-06 |
+
+反向是计算密集型（输出只有 64×1024），oneDNN 的 GEMM 效率更高；我们的融合内核优势在
+"不读 fp32 表"，反向场景下 dequant+AXPY 抵消不了 GEMM 效率差距。**结论：前向融合值得，
+反向当前不建议替换**（保留这个能力，等更好的分块/外积实现再评估）。
+
+**端到端真实训练**（Qwen3.5-0.8B，CE loss，seq=64，LoRA，AdamW8bit，3 步）：
+
+| 配置 | 步时 | 权重内存 | RSS | CE loss |
+|---|---|---|---|---|
+| fp32 base + fp32 lm_head | 3206 ms | 3.202 GB | 5.40 GB | 7.00 → 3.85 |
+| **3-bit linear+embedding+lm_head（fused 前向）** | 4202 ms（+31%） | **0.378 GB（-88%）** | **2.69 GB（-50%）** | 8.47 → 6.00 |
+
+即：全 3-bit 训练（含 logits）能正常收敛，内存减半以上，代价约 +31% 步时。当前瓶颈是
+**每个 Linear 每步都要解包成 fp32 再 F.linear**（前向 +0.5s）；把线性层也做成 fused
+3-bit GEMM（像 lm_head 前向那样）是下一步，可把这部分开销消掉。
+
+调试中修掉两个真实 bug：① backward 里 K 从 packed 行宽推算错误（384//3*64=8192）导致越界
+访问——改为由 forward 保存 K；② lmhead 脚本构建时没先 `load_kernel()`，QuantLinear 回退
+到 torch 解包（前向 5.4s vs 正确 1.9s），是个值得记的"静默变慢"陷阱。
+
+自检扩到 **9 项**：x86 AVX2 原生 9/9、x86 generic 9/9、aarch64 qemu 9/9；ISA 矩阵 PASS。

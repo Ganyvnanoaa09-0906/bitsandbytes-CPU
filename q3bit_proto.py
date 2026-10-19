@@ -431,11 +431,15 @@ def train(args):
     for step in range(args.steps + 1):
         t = time.perf_counter()
         h = hidden_from(model, ids)
+        t_fwd = time.perf_counter()
         loss = F.mse_loss(h, target)
         loss.backward()
         opt.step()
         opt.zero_grad(set_to_none=True)
-        dt = time.perf_counter() - t
+        t_end = time.perf_counter()
+        dt = t_end - t
+        if os.environ.get('BNB_Q3_PROFILE'):
+            print('    [phase] fwd %.0f | rest %.0f ms' % ((t_fwd - t) * 1e3, (t_end - t_fwd) * 1e3))
         if step:
             times.append(dt)
             losses.append(float(loss.detach()))
