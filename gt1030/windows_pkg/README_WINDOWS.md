@@ -48,6 +48,20 @@ train.bat --backend cpu --model D:\models\x --steps 20
 train.bat --model D:\models\x --check
 ```
 
+### 优化器（和 CPU 训练脚本一致）
+
+优化器在 CPU 上跑，`--backend igpu` 与 `--backend cpu` 的选择和语义完全相同：
+
+```bat
+train.bat --model <dir> --optimizer adamw      --steps 20
+train.bat --model <dir> --optimizer adamw8bit  --steps 20
+train.bat --model <dir> --optimizer muon       --steps 20
+train.bat --model <dir> --optimizer muon --muon-lr 0.02 --ns-iters 3 --steps 20
+```
+
+- `muon`：2-D 权重（不含 emb/head）Newton-Schulz5，其余 AdamW8bit（与 `train_ar_v2.py` 同一规则）；
+- `--save` 同时保存 `trainable.pt` + `optimizer.pt`，`--resume` 恢复两者。
+
 每次训练开始前脚本会自动做 **CPU/iGPU 对拍**：用原始模型算 CPU 参考 loss，替换模块后算第一步
 核显 loss，打印 `parity |diff|`；对不上会判失败。这是为了抓"接线错了但 loss 还在动"的静默错误。
 
@@ -63,7 +77,7 @@ train.bat --model D:\models\x --check
 - **LoRA（默认）**：冻结的 base 权重上传核显一次后释放 CPU 副本（1.3B fp32：设备 5.2 GB，
   CPU 侧只剩 embedding/norm/LM head <1 GB），15.4 GB 机器可训 1.3B LoRA；
 - **全参**：CPU 侧保留权重和优化器状态，只建议小模型；
-- `--save dir` 保存 `trainable.pt`（LoRA 只有 adapter）+ `train_info.json`；
+- `--save dir` 保存 `trainable.pt`（LoRA 只有 adapter）+ `optimizer.pt` + `train_info.json`；
 - `--resume dir` 从 `trainable.pt` 恢复继续训练。
 
 ## 6. 常见问题

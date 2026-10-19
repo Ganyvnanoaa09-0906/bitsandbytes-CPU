@@ -31,9 +31,28 @@ python gt1030/igpu_train.py --model <dir> --data corpus.txt --tokens 128 --steps
 | `--backend auto\|igpu\|cpu` | `auto`：有 OpenCL 设备用核显、没有则自动退回纯 CPU；`cpu` 可强行跑 CPU 基线（任何 Linux/容器可用） |
 | `--task auto\|clm\|mlm` | 自动判断因果语言模型 / masked-LM；一般不用手写 |
 | `--steps` `--tokens` `--batch` `--lr` `--lora-r` | 训练规模 |
+| `--optimizer adamw\|adamw8bit\|muon` | 与 CPU 训练脚本一致的优化器选择（默认 adamw；优化器在 CPU 跑，两种后端相同） |
+| `--weight-decay` `--momentum` `--muon-lr` `--ns-iters` | Muon 超参（2-D 权重走 NS5，其余走 AdamW8bit；与 `train_ar_v2.py` 同一规则） |
 | `--data file.txt` | 用 tokenizer 切窗训练真实文本；默认合成 batch |
 | `--save dir` | 保存可训练权重（LoRA 只有 adapter）与 `train_info.json` |
 | `--log-every` | 日志间隔 |
+
+## 优化器：和 CPU 训练同一套体验
+
+优化器本身在 CPU 上跑，两种后端（`--backend cpu` / `igpu`）共用同一套实现和超参：
+
+```bash
+# 与 CPU 训练脚本相同的三个选择
+python gt1030/igpu_train.py --model <dir> --backend igpu --optimizer adamw     --steps 20
+python gt1030/igpu_train.py --model <dir> --backend igpu --optimizer adamw8bit --steps 20
+python gt1030/igpu_train.py --model <dir> --backend igpu --optimizer muon --muon-lr 0.02 --steps 20
+```
+
+- `muon`：2-D 权重（名字不含 `emb`/`head`）走 Newton-Schulz5，其余走 `bnb.optim.AdamW8bit`；
+  与 `train_ar_v2.py --optimizer muon` 是同一规则；
+- `--save` 现在同时写 `trainable.pt`、`optimizer.pt`、`train_info.json`；
+  `--resume` 会恢复权重与优化器状态（恢复后 `--check` 跳过 base-model parity，因为参照已不适用）；
+- 没有 OpenCL 时 `--backend cpu` 用同一优化器，得到完全相同的训练循环语义。
 
 ## 自动正确性对拍（重要）
 
@@ -78,4 +97,5 @@ LoRA 模式下，冻结的 base 权重在**上传核显一次后即释放 CPU �
 
 - `gt1030/model_matrix.py`：跨架构健康矩阵（自动跑全参/LoRA 各 6 步，JSON 输出）
 - `gt1030/igpu_train_lora.py`：早期单模型原型（保留做对比）
+- `gt1030/test_optimizer_parity.py`：3 个优化器 × 2 个后端 + save/resume 的自动回归
 - 报告：`D:\work\research\CPU_FORGE_TECHNICAL_REPORT.md` §7.121–§7.124

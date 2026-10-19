@@ -280,6 +280,130 @@ class CpuLoRAConv1D(nn.Module):
         return y + (x @ self.lora_A.t()) @ self.lora_B.t() * self.scale
 
 
+# ---------------------------------------------------------------------------
+# Optimizers: the CPU training scripts offer AdamW / AdamW8bit / Muon; the iGPU path
+# runs the optimizer on the CPU too, so expose exactly the same choices here.
+# Muon follows train_ar_v2.py: NS5 on 2-D weights whose names contain neither 'emb' nor
+# 'head', AdamW(8bit) on everything else. The optimizer is CPU-side in both backends.
+# ---------------------------------------------------------------------------
+_MUON_A, _MUON_B, _MUON_C = 3.4445, -4.7750, 2.0315
+
+
+def newton_schulz5(G, steps=5, eps=1e-7):
+    """Newton-Schulz quintic orthogonalisation (same rule as train_ar_v2.py)."""
+    X = G.float()
+    X = X / (X.norm() + eps)
+    transposed = False
+    if X.size(0) > X.size(1):
+        X = X.T
+        transposed = True
+    for _ in range(steps):
+        A = X @ X.T
+        B = _MUON_B * A + _MUON_C * (A @ A)
+        X = _MUON_A * X + B @ X
+    return X.T if transposed else X
+
+
+class Muon(torch.optim.Optimizer):
+    """Muon on 2-D weights, for the iGPU kit (optimizer itself runs on the CPU)."""
+
+    def __init__(self, params, lr=0.02, momentum=0.95, ns_iters=5, weight_decay=0.0):
+        super().__init__(params, dict(lr=lr, momentum=momentum, ns_iters=ns_iters,
+                                      weight_decay=weight_decay))
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        for group in self.param_groups:
+            lr = group['lr']
+            momentum = group['momentum']
+            ns_iters = group['ns_iters']
+            wd = float(group.get('weight_decay', 0.0) or 0.0)
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                buf = self.state[p].get('buf')
+                if buf is None:
+                    buf = torch.zeros_like(p)
+                    self.state[p]['buf'] = buf
+                buf.mul_(momentum).add_(p.grad)
+                d = p.grad.add(buf, alpha=momentum)
+                if d.ndim == 2:
+                    d = newton_schulz5(d, ns_iters)
+                    d = d * max(1.0, d.size(0) / d.size(1)) ** 0.5
+                if wd > 0:
+                    p.mul_(1.0 - lr * wd)
+                p.add_(d, alpha=-lr)
+        return loss
+
+
+class CombinedOptimizer:
+    """Run a list of optimizers as one (Muon for 2-D + AdamW for the rest)."""
+
+    def __init__(self, optimizers):
+        self.optimizers = list(optimizers)
+
+    def step(self, closure=None):
+        loss = None
+        for i, opt in enumerate(self.optimizers):
+            loss = opt.step(closure if i == len(self.optimizers) - 1 else None)
+        return loss
+
+    def zero_grad(self, set_to_none=True):
+        for opt in self.optimizers:
+            opt.zero_grad(set_to_none=set_to_none)
+
+    def state_dict(self):
+        return {'optimizers': [o.state_dict() for o in self.optimizers]}
+
+    def load_state_dict(self, state):
+        parts = state.get('optimizers', state) if isinstance(state, dict) else state
+        for opt, sd in zip(self.optimizers, parts):
+            opt.load_state_dict(sd)
+
+
+def make_optimizer(args, named_params):
+    """Build the optimizer from --optimizer; returns (optimizer, description)."""
+    name = (getattr(args, 'optimizer', 'adamw') or 'adamw').lower()
+    wd = float(getattr(args, 'weight_decay', 0.0) or 0.0)
+    if name == 'muon':
+        muon_p, other_p = [], []
+        for n, p in named_params:
+            low = n.lower()
+            if p.ndim == 2 and 'emb' not in low and 'head' not in low:
+                muon_p.append(p)
+            else:
+                other_p.append(p)
+        opts = []
+        rest = 'no other params'
+        if muon_p:
+            opts.append(Muon(muon_p, lr=args.muon_lr, momentum=args.momentum,
+                             ns_iters=args.ns_iters, weight_decay=wd))
+        if other_p:
+            try:
+                import bitsandbytes as bnb
+                opts.append(bnb.optim.AdamW8bit(other_p, lr=args.lr, weight_decay=wd))
+                rest = 'AdamW8bit'
+            except Exception:
+                opts.append(torch.optim.AdamW(other_p, lr=args.lr, weight_decay=wd))
+                rest = 'AdamW (bitsandbytes missing)'
+        return CombinedOptimizer(opts), 'Muon NS%d on %d 2-D weights + %s on %d' % (
+            args.ns_iters, len(muon_p), rest, len(other_p))
+    if name in ('adamw8bit', '8bit'):
+        try:
+            import bitsandbytes as bnb
+            return bnb.optim.AdamW8bit([p for _, p in named_params], lr=args.lr,
+                                       weight_decay=wd), 'AdamW8bit (bnb)'
+        except Exception as exc:
+            print('  WARNING: bitsandbytes AdamW8bit unavailable (%s); using torch AdamW'
+                  % str(exc)[:80])
+    return torch.optim.AdamW([p for _, p in named_params], lr=args.lr,
+                             weight_decay=wd), 'AdamW (torch)'
+
+
 def patch_model_cpu(model: nn.Module, mode: str, r: int, skip_lm_head: bool) -> int:
 
     count = 0
@@ -544,9 +668,28 @@ def train(args) -> int:
              total / 1e6, trainable / 1e6, 100.0 * trainable / max(1, total), n,
              ' (lm_head kept on CPU: tied embeddings)' if skip_lm else ''))
     # De-duplicate: tied embeddings (and a tied lm_head) expose the same Parameter twice in
-    # model.parameters(); passing it twice makes AdamW apply two updates per step.
-    params = list({id(p): p for p in model.parameters() if p.requires_grad}.values())
-    opt = torch.optim.AdamW(params, lr=args.lr)
+    # model.parameters(); passing it twice makes the optimizer apply two updates per step.
+    seen_ids, named = set(), []
+    for n, p in model.named_parameters():
+        if p.requires_grad and id(p) not in seen_ids:
+            seen_ids.add(id(p))
+            named.append((n, p))
+    params = [p for _, p in named]
+    opt, opt_desc = make_optimizer(args, named)
+    print('  optimizer:', opt_desc, flush=True)
+    if args.resume:
+        opt_path = os.path.join(args.resume, 'optimizer.pt')
+        if os.path.exists(opt_path):
+            try:
+                try:
+                    state = torch.load(opt_path, map_location='cpu', weights_only=True)
+                except TypeError:
+                    state = torch.load(opt_path, map_location='cpu')
+                opt.load_state_dict(state)
+                print('  resumed optimizer state from', opt_path)
+            except Exception as exc:
+                print('  WARNING: could not load optimizer state (%s); weights-only resume'
+                      % str(exc)[:100])
     losses, times = [], []
     ok = True
     t_start = time.perf_counter()
@@ -573,8 +716,12 @@ def train(args) -> int:
         losses.append(float(loss.detach()))
         if step == 0:
             parity = abs(losses[0] - base_loss)
-            print('  parity CPU %.5f vs iGPU %.5f -> |diff| %.2e' % (base_loss, losses[0], parity),
-                  flush=True)
+            if args.resume:
+                print('  parity skipped: resumed weights, base-model reference does not apply',
+                      flush=True)
+            else:
+                print('  parity CPU %.5f vs iGPU %.5f -> |diff| %.2e'
+                      % (base_loss, losses[0], parity), flush=True)
         finite = math.isfinite(losses[-1]) and math.isfinite(grad_norm)
         ok &= finite
         if step % args.log_every == 0 or step == args.steps - 1:
@@ -591,16 +738,20 @@ def train(args) -> int:
         if args.mode == 'full':
             trainable = {k: v.detach().cpu() for k, v in model.state_dict().items()}
         torch.save(trainable, os.path.join(args.save, 'trainable.pt'))
+        torch.save(opt.state_dict(), os.path.join(args.save, 'optimizer.pt'))
         with open(os.path.join(args.save, 'train_info.json'), 'w', encoding='utf-8') as f:
             json.dump({'model': args.model, 'mode': args.mode, 'steps': args.steps,
+                       'optimizer': args.optimizer, 'lr': args.lr,
                        'loss0': losses[0], 'loss1': losses[-1], 'arch': model.config.architectures}, f, indent=1)
         print('saved trainable weights ->', args.save)
-    parity_v = abs(losses[0] - base_loss) if math.isfinite(base_loss) else float('nan')
-    print('RESULT %s | %s | %s | steps=%d | %.3f s/step | loss %.4f -> %.4f | finite=%s | parity=%.2e'
+    resume_mode = bool(args.resume)
+    parity_v = abs(losses[0] - base_loss) if (math.isfinite(base_loss) and not resume_mode) else float('nan')
+    print('RESULT %s | %s | %s | optimizer=%s | steps=%d | %.3f s/step | loss %.4f -> %.4f | finite=%s | parity=%s'
           % (args.model, args.mode, model.config.architectures[0] if getattr(model.config, 'architectures', None) else '?',
-             args.steps, med, losses[0], losses[-1], 'YES' if ok else 'NO', parity_v))
+             args.optimizer, args.steps, med, losses[0], losses[-1], 'YES' if ok else 'NO',
+             'n/a (resume)' if resume_mode else '%.2e' % parity_v))
     if args.check:
-        good = ok and math.isfinite(parity_v) and parity_v < 1e-2
+        good = ok and (resume_mode or (math.isfinite(parity_v) and parity_v < 1e-2))
         print('CHECK:', 'PASS' if good else 'FAIL')
         return 0 if good else 1
     return 0 if ok else 1
@@ -617,6 +768,12 @@ def main() -> int:
     ap.add_argument('--batch', type=int, default=1)
     ap.add_argument('--lora-r', type=int, default=8)
     ap.add_argument('--lr', type=float, default=1e-3)
+    ap.add_argument('--optimizer', choices=['adamw', 'adamw8bit', 'muon'], default='adamw',
+                    help='same choices as the CPU training scripts; runs on the CPU in both backends')
+    ap.add_argument('--weight-decay', type=float, default=0.0)
+    ap.add_argument('--momentum', type=float, default=0.95, help='Muon momentum')
+    ap.add_argument('--muon-lr', type=float, default=0.02, help='Muon learning rate (2-D weights)')
+    ap.add_argument('--ns-iters', type=int, default=5, help='Muon Newton-Schulz iterations')
     ap.add_argument('--log-every', type=int, default=5)
     ap.add_argument('--data', type=str, default=None, help='text file to train on')
     ap.add_argument('--save', type=str, default=None, help='dir to save the trainable weights')
