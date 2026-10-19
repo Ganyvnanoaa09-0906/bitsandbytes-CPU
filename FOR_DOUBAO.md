@@ -59,3 +59,31 @@ BNB_SRC_TARBALL=/path/to/bitsandbytes_cpu_fork-0.50.2.dev4.tar.gz \
 - 决定下一版 wheel 的 ISA 覆盖范围（AVX2 / AVX-512 / generic / aarch64）。
 
 有任何报错直接把原始输出贴回来即可，不用处理。
+
+---
+
+# 第二轮补测（如果还能再帮我们跑一个 3 分钟脚本就太好了）
+
+第一轮报告收到，非常有价值：sdist 现场编译的 **AVX-512 变体在 EPYC 上跑完了 5/5 C 自检**，
+且确认含 182 条 BF16 指令。只差最后一块：**装好的 PyPI wheel 在有 torch 的环境里，加载器是否
+真的选中 AVX-512 库，以及内核在 AVX-512 上是否正常**。
+
+请复制同目录的 **`container_isa_runtime_check.sh`**，在容器里执行：
+
+```bash
+cd /tmp
+bash container_isa_runtime_check.sh 2>&1 | tee /tmp/cpu_forge_runtime_report.txt
+```
+
+它会在 `/tmp` 建一个能看到系统 torch 的 venv（不会重装 torch），从 PyPI 装 wheel，然后：
+
+- 打印 `LOADED_NATIVE_LIB`（我们预期是 `libbitsandbytes_cpu_avx512.so`）；
+- 检查 AVX-512 库里的 `has_avx512bf16_cpu` 符号并调用它；
+- 跑 8-bit 优化器一步、blockwise 量化往返、2048³ fp32 矩阵乘（确认 AVX-512 上无 SIGILL，并报个 GFLOPS）；
+- 跑 GDN 内核自检（fwd/bwd 对比 float64 参考）。
+
+也是只写 `/tmp`、不需要 sudo。跑完把输出整段贴回来即可。
+
+（你上条提到的两点：① `avx512vnni` 是脚本里的旧写法，内核实际暴露 `avx512_vnni`，已修正；
+② torch-free CLI 的 `doctor` 只按平台名检查默认库、不经过我们的加载器选择逻辑，所以它显示
+base `.so` 是正常的——真正选库发生在 `import bitsandbytes` 时（需要 torch 可导入）。）

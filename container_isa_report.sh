@@ -87,7 +87,7 @@ df -h /tmp 2>/dev/null | tail -2 || true
 FLAGS="$(grep -m1 '^flags' /proc/cpuinfo 2>/dev/null | sed 's/^[^:]*: *//' || true)"
 echo
 echo "ISA flags we care about:"
-for f in avx avx2 fma f16c avx512f avx512bw avx512dq avx512vl avx512_bf16 avx512vnni amx_bf16 amx_tile sse4_2; do
+for f in avx avx2 fma f16c avx512f avx512bw avx512dq avx512vl avx512_bf16 avx512_vnni avx512vnni amx_bf16 amx_tile sse4_2; do
   printf '  %-14s %s\n' "$f" "$(flag_in "$FLAGS" "$f")"
 done
 echo
