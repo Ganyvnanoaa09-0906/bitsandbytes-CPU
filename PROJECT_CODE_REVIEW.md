@@ -77,8 +77,8 @@
 
 ## 4. 遗留风险与开放项
 
-1. **PyPI 上传**：产物已就绪，但本机没有 API token（`tools/publish.ps1` 设计为隐藏输入）。需要用户提供 token 或自行执行 `publish.ps1`。
-2. **GitHub push** 仍被网络重置阻断（本地领先 6+ commits），恢复后需补推。
+1. ~~**PyPI 上传**~~ **已完成（2026-10-19）**：`bitsandbytes-cpu-fork==0.50.2.dev4` 已发布，4 个文件（win_amd64 / manylinux_2_17 / manylinux_2_39 / sdist）全部在 PyPI；干净 venv 从 PyPI 安装后 import、EFST、`load_native` 均通过。token 文件已删除。
+2. ~~**GitHub push**~~ **已完成**：积压的 8 个 commit 已推送（`origin/perf/rmsnorm-twopass-nt` = 84c24dc0）。
 3. **Windows DLL 未随本次 csrc 改动重建**（本机无 MSVC；用 zig 重建会改变依赖/导出，故保留已验证的 MSVC 产物）。MSVC 分支不经过新 CPUID 头，功能等价。
 4. **AVX-512 Windows DLL 不发**：Windows 用户固定 AVX2；这是刻意保守选择。
 5. `llama_resident.py` 多层路径的 GPU buffer bug 仍未修（已标 WIP，非发布路径）。
