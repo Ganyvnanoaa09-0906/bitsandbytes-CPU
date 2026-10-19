@@ -124,6 +124,9 @@ class EFSTConfig:
     lora_r: int = 8
     lora_alpha: int = 16
     lora_dropout: float = 0.05
+    # 没有识别到任何 MoE 专家容器时：默认直接报错，避免“冻结全部 + 训练 0 参数”的静默失败。
+    # 只有明确要当「整模型冻结 / 只训 LoRA」用时才设为 True。
+    allow_no_experts: bool = False
 
 
 @dataclass
@@ -177,57 +180,89 @@ def _tensor_expert_info(module: nn.Module) -> Tuple[str, int]:
 
 
 def find_expert_groups(model: nn.Module) -> List[ExpertGroup]:
-    """自动找出模型里的 MoE 专家容器。
+    """自动找出模型里的 MoE 专家容器（含 3D 张量专家）。
 
-    返回的 ``ExpertGroup`` 是包含若干子模块的容器，例如 ModuleList/ModuleDict，
-    也可能是自定义的 ``Experts`` 模块。每个子模块视为一个专家。
-    也识别 3D 张量专家（``Qwen3NextExperts`` 等：权重 [E, ...]，无子模块）。
+    识别分三层，从最具体到最宽松：
+    1. **3D 张量专家**：模块自己持有 ``[E, ...]`` 参数（Qwen3Next/Qwen3.5 风格）；
+    2. **经典集合容器**：``ModuleList/ModuleDict/Sequential``，至少 2 个子模块，
+       路径或类型名含 expert/moe；
+    3. **兜底的同名模块**：名字/类型含 expert/moe 且有子模块，但只有它内部没有
+       更具体的候选时才采用。
+
+    关键修复：像 ``TinyMoEBlock`` 这样「block 里同时有 gate 和 experts」的结构，旧实现会把
+    block 本身当作 2 个专家（gate + experts），导致路由被当专家、专家冻结永远为 0。现在会
+    取内层的 ``experts`` 容器；若一个候选路径是另一个候选的祖先，则丢弃祖先。
     """
-    groups: List[ExpertGroup] = []
-    for name, module in model.named_modules():
-        if not name:
-            continue
-        # 已经在某个已识别容器内部，跳过，避免嵌套重复
-        if any(name == g.path or name.startswith(g.path + ".") for g in groups):
-            continue
+    modules = [(name, m) for name, m in model.named_modules() if name]
+    hints = _EXPERT_NAME_HINTS
 
-        type_name = type(module).__name__.lower()
-        is_container = isinstance(module, (nn.ModuleList, nn.ModuleDict, nn.Sequential))
-        has_children = len(list(module.children())) > 0
-        looks_by_name = _name_hits(name, _EXPERT_NAME_HINTS)
-        looks_by_type = _name_hits(type_name, _EXPERT_NAME_HINTS)
-
-        # 3D 张量专家：类型名含 expert/moe 且持有 [E, ...] 参数
-        # （先于容器判断：这类模块可能带着 act_fn 等非专家子模块）
+    tensor_cands = []   # (path, module, param_name, num_experts)
+    strong_cands = []   # (path, module) classic collections
+    for name, module in modules:
         tparam, ne = _tensor_expert_info(module)
         if tparam and ne > 0:
-            groups.append(ExpertGroup(
-                path=name, module=module,
-                tensor_param_names=(tparam,), num_experts=ne))
+            tensor_cands.append((name, module, tparam, ne))
             continue
+        if isinstance(module, (nn.ModuleList, nn.ModuleDict, nn.Sequential)):
+            if len(list(module.children())) < 2:
+                continue
+            if _name_hits(name, hints) or _name_hits(type(module).__name__.lower(), hints):
+                strong_cands.append((name, module))
 
-        if not has_children:
-            continue
-        if not (looks_by_name or looks_by_type):
-            continue
-        # 避免把普通 MLP 里恰好叫 "gate_proj" 的 Linear 当专家容器
-        if not is_container and not looks_by_type:
-            continue
+    tensor_paths = {p for p, _, _, _ in tensor_cands}
+    strong_paths = {p for p, _ in strong_cands}
 
-        children = list(module.named_children())
-        if not children:
+    def _has_descendant(path: str, paths) -> bool:
+        return any(p != path and p.startswith(path + '.') for p in paths)
+
+    def _inside_any(path: str, paths) -> bool:
+        return any(path != p and path.startswith(p + '.') for p in paths)
+
+    # 一个“强”集合若内部还包着张量专家，则它是 MoE 块外壳，不是专家容器
+    strong_cands = [(p, m) for p, m in strong_cands
+                    if not _has_descendant(p, tensor_paths)]
+    # 强集合之间若有嵌套，保留外层（内层是专家内部的子结构）
+    strong_paths_outer = {p for p, _ in strong_cands}
+    strong_cands = [(p, m) for p, m in strong_cands
+                    if not _inside_any(p, strong_paths_outer - {p})]
+    strong_paths = {p for p, _ in strong_cands}
+
+    generic_cands = []
+    for name, module in modules:
+        if name in tensor_paths or name in strong_paths:
             continue
-        # 若容器内部直接持有 3D 张量专家（如 ``mlp.experts``），则该容器
-        # 只是 MoE 块（gate/shared_expert 混杂），不作为专家容器——真正的
-        # 专家容器是内部那个 tensor 模块，它会在后续遍历中单独成组。
-        if any(_tensor_expert_info(m)[0] for _, m in children):
+        if not len(list(module.children())):
             continue
-        groups.append(ExpertGroup(path=name, module=module, children=children))
+        if _tensor_expert_info(module)[0]:
+            continue
+        if not (_name_hits(name, hints) or _name_hits(type(module).__name__.lower(), hints)):
+            continue
+        # 已经在更具体的候选内部（例如 experts.0 / experts.1）→ 跳过
+        if _inside_any(name, tensor_paths | strong_paths):
+            continue
+        # MoE 块外壳：内部有更具体的候选 → 跳过
+        if _has_descendant(name, tensor_paths | strong_paths):
+            continue
+        # 直接孩子就是张量专家 → 也是外壳
+        if any(_tensor_expert_info(c)[0] for _, c in module.named_children()):
+            continue
+        generic_cands.append((name, module))
+
+    groups: List[ExpertGroup] = []
+    for name, module, tparam, ne in sorted(tensor_cands, key=lambda x: x[0]):
+        groups.append(ExpertGroup(path=name, module=module,
+                                  tensor_param_names=(tparam,), num_experts=ne))
+    for name, module in sorted(strong_cands, key=lambda x: x[0]):
+        groups.append(ExpertGroup(path=name, module=module,
+                                  children=list(module.named_children())))
+    for name, module in sorted(generic_cands, key=lambda x: x[0]):
+        groups.append(ExpertGroup(path=name, module=module,
+                                  children=list(module.named_children())))
 
     if not groups:
         logger.warning(
-            "No MoE expert containers found. If this is a MoE model, "
-            "please check the module names; EFST will freeze everything."
+            "No MoE expert containers found. If this is a MoE model, please check the module "
+            "names; apply_efst() will refuse to silently freeze everything."
         )
     return groups
 
@@ -341,17 +376,33 @@ def _tensor_expert_forward(module: nn.Module):
         expert_mask = torch.nn.functional.one_hot(top_k_index, num_classes=module.num_experts)
         expert_mask = expert_mask.permute(2, 1, 0)
         act = module.act_fn
+
+        def _expert_mm(state: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+            """按权重布局选择 matmul 方向。
+
+            transformers 5.15+ 的 Qwen3Next/Qwen3.5 专家权重是 ``[E, in, out]``
+            （``torch._grouped_mm`` 语义），而旧式实现可能存成 ``[E, out, in]``
+            （``F.linear`` 语义）。只看最后一维是否等于输入维度即可区分，
+            两种布局都支持。
+            """
+            if weight.shape[0] == state.shape[-1]:
+                return state @ weight                     # [E, in, out]
+            if weight.shape[1] == state.shape[-1]:
+                return torch.nn.functional.linear(state, weight)   # [E, out, in]
+            raise ValueError(
+                "tensor expert weight has incompatible layout: state %s, weight %s"
+                % (tuple(state.shape), tuple(weight.shape))
+            )
+
         for e in range(module.num_experts):
             m = expert_mask[e]
             if not bool(m.any()):
                 continue
             top_k_pos, token_idx = torch.where(m)
             current_state = hidden_states[token_idx]
-            gate, up = torch.nn.functional.linear(
-                current_state, module.gate_up_proj[e]).chunk(2, dim=-1)
+            gate, up = _expert_mm(current_state, module.gate_up_proj[e]).chunk(2, dim=-1)
             current_hidden_states = act(gate) * up
-            current_hidden_states = torch.nn.functional.linear(
-                current_hidden_states, module.down_proj[e])
+            current_hidden_states = _expert_mm(current_hidden_states, module.down_proj[e])
             current_hidden_states = current_hidden_states * top_k_weights[token_idx, top_k_pos, None]
             final_hidden_states.index_add_(0, token_idx, current_hidden_states)
         return final_hidden_states
@@ -636,6 +687,14 @@ def apply_efst(model: nn.Module, config: Optional[EFSTConfig] = None) -> EFSTRes
         raise ValueError("apply_efst: model 不能为 None")
 
     groups = find_expert_groups(model)
+    if not groups and not config.allow_no_experts:
+        raise ValueError(
+            "apply_efst: no MoE expert containers were found in this model, so EFST would "
+            "freeze every parameter and nothing would train. If the model really has no "
+            "Mixture-of-Experts layers, use a plain LoRA setup instead; if you really want "
+            "to freeze the whole model (e.g. only adapters elsewhere), pass "
+            "EFSTConfig(allow_no_experts=True)."
+        )
     total = sum(p.numel() for p in model.parameters())
     trainable_before = sum(p.numel() for p in model.parameters() if p.requires_grad)
 

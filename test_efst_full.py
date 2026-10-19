@@ -65,15 +65,17 @@ for _ in range(3):
 loss1 = m(x).pow(2).mean().item()
 check("MoE 优化 loss 下降", loss1 < loss0, f"{loss0:.4f}->{loss1:.4f}")
 
-# 4) 冻结检查——注意：TinyMoEModel 的 gate+experts 在同一 block 内，EFST 会把
-#    gate+experts 当 2 个"专家"而非展开 experts 子模块（§18 结构注意点）。
-#    因此这里改为【软提示】，不计入 FAIL；标准 MoE 结构（mlp.experts=ModuleList）
-#    的冻结行为由 test_i5 的功能套件另测（标准结构下非选中专家应全冻结）。
+# 4) 冻结检查——嵌套 MoE 块结构（block 里同时有 gate 和 experts）曾是已知 bug：
+#    EFST 会把 block 当成 2 专家容器，导致专家永远冻结不了。修复后应识别内层
+#    `moe.experts`（8 专家），非选中专家全冻结、选中专家只有 LoRA 可训。
 print(f"[diag] selected={getattr(info, 'selected_experts', None)}")
-had_lora = [any(p.requires_grad for p in e.parameters()) for e in m.moe.experts]
-print(f"[diag] 各专家含可训练参数: {had_lora}")
-frozen_cnt = sum(1 for e in m.moe.experts if all(not p.requires_grad for p in e.parameters()))
-print(f"[info] 嵌套块结构下冻结专家={frozen_cnt}/8（已知限制，见 §18，不计为失败）")
+assert len(info.groups) == 1 and info.groups[0].path == "moe.experts", \
+    [(g.path, len(g)) for g in info.groups]
+selected = set(info.selected_experts["moe.experts"])
+trainable_experts = [e for e in range(8)
+                     if any(p.requires_grad for p in m.moe.experts[e].parameters())]
+check("嵌套块结构下仅选中专家可训", set(trainable_experts) == selected,
+      f"trainable={trainable_experts} selected={sorted(selected)}")
 # 5) 非 MoE 模型安全
 plain = nn.Sequential(nn.Linear(32,32), nn.ReLU(), nn.Linear(32,32))
 g2 = find_expert_groups(plain)

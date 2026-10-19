@@ -61,6 +61,24 @@ config = EFSTConfig(
 | `report_trainable(model)` | 打印可训练参数分布 |
 | `split_3d_expert_params(module)` | 把 3D 张量专家权重拆成 ParameterList（按专家行解冻的前提） |
 
+## 修复记录（2026-10-19, 0.50.2.dev4 周期）
+
+1. **嵌套 MoE 块误识别**：block 同时持有 ``gate`` 与 ``experts`` 时（如
+   ``Qwen2MoeSparseMoeBlock``、测试用的 ``TinyMoEBlock``），旧实现把 block 当成
+   2 个「专家」（gate + experts），于是 top-k 会在 gate/experts 之间选、非选中专家
+   永远冻结不了（旧测试里的「冻结专家=0/8 已知限制」）。现在按三层优先级识别
+   （3D 张量专家 → ModuleList/ModuleDict 集合 → 兜底同名模块），并丢弃任何作为
+   其他候选祖先的分组，最终得到内层的 ``moe.experts``。
+2. **3D 张量专家前向的权重方向**：Qwen3Next/Qwen3.5 的专家权重是
+   ``[E, in, out]``（grouped-mm 语义），旧实现按 ``F.linear`` 的 ``[E, out, in]``
+   处理，形状对不上。现在按最后一维自动判别两种布局。
+3. **非 MoE 模型静默冻结全部参数**：``apply_efst`` 以前只警告然后冻结整个模型
+   （可训练参数为 0，训练静默无效）。现在默认抛 ``ValueError``；确实要整模型冻结
+   时显式传 ``EFSTConfig(allow_no_experts=True)``。
+
+回归测试：``python test_efst_regressions.py``（嵌套块 / 3D 张量专家 / 非 MoE 安全），
+与 ``efst_selftest.py``、``test_efst_full.py``、``verify_efst_8bit.py`` 一起跑。
+
 ## 3D 张量专家支持（transformers 5.15+ Qwen3Next/Qwen3.5）
 
 新版 transformers 的 MoE 专家权重是 ``[num_experts, ...]`` 的大 Parameter
