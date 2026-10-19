@@ -374,6 +374,11 @@ def train(args) -> int:
     n = patch_model(model, args.mode, args.lora_r, skip_lm)
     _uniq = {id(p): p for p in model.parameters() if p.requires_grad}
     trainable = sum(p.numel() for p in _uniq.values())
+    if args.resume:
+        state = torch.load(os.path.join(args.resume, 'trainable.pt'), map_location='cpu')
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        print('  resumed %d tensors from %s (missing %d, unexpected %d)'
+              % (len(state), args.resume, len(missing), len(unexpected)))
     print('architecture: %s | params %.2f M | trainable %.2f M (%.1f%%) | iGPU linears %d%s'
           % (model.config.architectures[0] if getattr(model.config, 'architectures', None) else '?',
              total / 1e6, trainable / 1e6, 100.0 * trainable / max(1, total), n,
@@ -434,6 +439,10 @@ def train(args) -> int:
     print('RESULT %s | %s | %s | steps=%d | %.3f s/step | loss %.4f -> %.4f | finite=%s | parity=%.2e'
           % (args.model, args.mode, model.config.architectures[0] if getattr(model.config, 'architectures', None) else '?',
              args.steps, med, losses[0], losses[-1], 'YES' if ok else 'NO', parity_v))
+    if args.check:
+        good = ok and math.isfinite(parity_v) and parity_v < 1e-2
+        print('CHECK:', 'PASS' if good else 'FAIL')
+        return 0 if good else 1
     return 0 if ok else 1
 
 
@@ -450,9 +459,15 @@ def main() -> int:
     ap.add_argument('--log-every', type=int, default=5)
     ap.add_argument('--data', type=str, default=None, help='text file to train on')
     ap.add_argument('--save', type=str, default=None, help='dir to save the trainable weights')
+    ap.add_argument('--resume', type=str, default=None, help='dir with trainable.pt to resume from')
+    ap.add_argument('--check', action='store_true', help='verify CPU/iGPU parity and exit')
     args = ap.parse_args()
+    if args.check:
+        args.steps = min(args.steps, 2)
+        args.log_every = 1
     print('device:', ctx.devices[0].name)
-    return train(args)
+    rc = train(args)
+    return rc
 
 
 if __name__ == '__main__':
