@@ -15,6 +15,8 @@
 # Usage: bash build_oldgomp_linux.sh
 set -uo pipefail
 REPO=$(cd "$(dirname "$0")" && pwd)
+# shellcheck disable=SC1091
+if [ -x "$HOME/bnbvenv/bin/python" ]; then . "$HOME/bnbvenv/bin/activate"; fi
 ROOT=${BNB_DTS_ROOT:-$HOME/dts8/root}
 DTS=$ROOT/opt/rh/devtoolset-8/root
 BIN=$DTS/usr/bin
