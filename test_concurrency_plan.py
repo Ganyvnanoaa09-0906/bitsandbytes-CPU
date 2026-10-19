@@ -1,9 +1,5 @@
 ﻿# -*- coding: utf-8 -*-
-"""test_concurrency_plan.py — tests for torch_cpu_kit.plan_concurrency().
-
-The planner encodes the measured result that N single-threaded jobs beat one
-multi-threaded job on CPU: 6 cores -> 6 jobs x 1 thread by default.
-"""
+"""test_concurrency_plan.py — tests for plan_concurrency + memory estimate + job launcher."""
 from __future__ import annotations
 
 import os
@@ -41,7 +37,6 @@ def test_two_jobs():
 
 
 def test_ram_limit():
-    # 8 jobs requested, but only 5GB free and 3GB/job -> RAM allows 1
     plan = tck.plan_concurrency(n_jobs=8, per_job_ram_gb=3, cores=6, available_ram_gb=5)
     assert plan["max_by_ram"] == 1, plan
     assert plan["n_jobs"] == 1, plan
@@ -63,12 +58,59 @@ def test_apply_job_env():
     print("[PASS] apply_job_env writes the env")
 
 
+def test_memory_estimate():
+    # 1B params, full finetune, fp32 + AdamW8bit: 4+4+~2.02+1(act)+0.4 ~= 11.4GB
+    est = tck.estimate_training_memory_gb(1_000_000_000)
+    assert 10.0 < est["total_gb"] < 12.0, est
+    assert abs(est["weights_gb"] - 3.725) < 0.05, est
+    assert abs(est["grads_gb"] - 3.725) < 0.05, est
+    assert 1.8 < est["optimizer_gb"] < 2.0, est
+    print("[PASS] full fp32 AdamW8bit 1B -> %.2f GB" % est["total_gb"])
+
+    # LoRA: base frozen -> no grads for 99.5%% of params
+    est_lora = tck.estimate_training_memory_gb(
+        1_000_000_000, mode="lora", trainable_fraction=0.005)
+    assert est_lora["grads_gb"] < 0.03, est_lora
+    assert est_lora["total_gb"] < est["total_gb"] - 3.0
+    print("[PASS] LoRA 0.5%% trainable -> %.2f GB (grads %.3f)"
+          % (est_lora["total_gb"], est_lora["grads_gb"]))
+
+    # bf16 full: weights+grads halve
+    est_bf16 = tck.estimate_training_memory_gb(1_000_000_000, dtype="bf16")
+    assert est_bf16["total_gb"] < est["total_gb"] - 3.0
+    print("[PASS] bf16 full -> %.2f GB" % est_bf16["total_gb"])
+
+
+def test_plan_for_training():
+    plan = tck.plan_concurrency_for_training(
+        800_000_000, mode="lora", trainable_fraction=0.005,
+        activation_gb=0.5, cores=6, available_ram_gb=8)
+    assert "memory_estimate" in plan
+    assert plan["n_jobs"] >= 1
+    assert plan["threads_per_job"] >= 1
+    assert plan["advice"]
+    print("[PASS] plan for 0.8B LoRA: %s" % plan["advice"])
+
+
+def test_spawn_training_jobs():
+    code = "import os,sys; print('threads=' + os.environ.get('OMP_NUM_THREADS','?'))"
+    cmds = [[sys.executable, "-c", code], [sys.executable, "-c", code]]
+    plan = {"env": {"OMP_NUM_THREADS": "2", "MKL_NUM_THREADS": "2"}}
+    results = tck.spawn_training_jobs(cmds, plan=plan, echo=False)
+    assert len(results) == 2
+    assert all(rc == 0 for _, rc in results), results
+    print("[PASS] spawn_training_jobs ran 2 jobs with plan env, all rc=0")
+
+
 def main():
     test_default_packing()
     test_single_job_uses_all_cores()
     test_two_jobs()
     test_ram_limit()
     test_apply_job_env()
+    test_memory_estimate()
+    test_plan_for_training()
+    test_spawn_training_jobs()
     print("\nCONCURRENCY PLANNER TESTS PASSED")
 
 

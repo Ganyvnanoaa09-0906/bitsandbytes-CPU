@@ -56,3 +56,28 @@ Zen2 6 核 AVX2 FMA 峰值约 460 GFLOPS（2×FMA256/核），实测约 60%，GE
 `torch_cpu_kit.plan_concurrency()`：按物理核数 + 当前/给定单 job 内存，给出
 `n_jobs`/`threads_per_job` 和可直接传给子进程的 `OMP_NUM_THREADS` 等环境变量；
 `apply_job_env(plan)` 用于 launcher 自身。测试：`test_concurrency_plan.py`。
+
+## E. 优化器更新带宽（决定全参微调能不能跑起来）
+
+脚本：`bench_optimizer.py`（Windows / R5-4500U / torch 2.13 CPU）。有效字节按
+"p 读+写 + g 读 + 两路 1-byte 状态读+写 + absmax"（AdamW8bit ≈ 16 B/元素；
+torch AdamW fp32 ≈ 28 B/元素）计算。
+
+| 优化器 | 参数 | 线程 | ms/step | 有效 GB/s |
+|---|---|---|---|---|
+| AdamW8bit | 4M | 1 | 6.64 | 10.1 |
+| AdamW8bit | 4M | 6 | 9.95 | 6.8 |
+| AdamW8bit | 17M | 1 | 38.56 | 7.0 |
+| AdamW8bit | 17M | 6 | 34.69 | 7.7 |
+| AdamW fp32 | 4M | 1 | 21.25 | 5.5 |
+| AdamW fp32 | 17M | 6 | 82.38 | 5.7 |
+
+结论：
+- 8-bit 优化器不仅把状态内存从 8 B/元素降到 ~2.06 B/元素，**更新带宽也只要 16 B/元素**
+  （fp32 AdamW 要 28 B/元素），全参微调时这是实打实的 1.7x 交通量优势；
+- 实测有效带宽 7–10 GB/s，低于元素级 STREAM 的 12–20 GB/s，但离"必须搬的字节"已经不远：
+  A/B 实验把状态解码的 `_mm256_i32gather_ps` 换成 8 次标量 LUT 加载（微基准快 19%），
+  真实内核只快 **1–2%**（被 p/g 的刚性读写覆盖），因此**回滚、不改内核**；
+- 微基准还显示 NT store（非临时写）在纯解码+写场景能到 16 GB/s（2.15x），而优化器内核
+  已经对 `p` 使用 NT store——再往上压需要减少状态写入（如把两路 1-byte 状态打包）或
+  走更低精度，属于下一阶段可选项。

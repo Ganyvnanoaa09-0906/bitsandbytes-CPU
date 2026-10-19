@@ -28,6 +28,9 @@ from typing import Any, Optional
 
 __all__ = [
     "plan_concurrency",
+    "plan_concurrency_for_training",
+    "estimate_training_memory_gb",
+    "spawn_training_jobs",
     "apply_env",
     "init",
     "report",
@@ -555,6 +558,160 @@ def apply_job_env(plan: dict) -> dict:
     env = dict(plan.get("env") or {})
     os.environ.update(env)
     return env
+
+
+# ---------------------------------------------------------------------------
+# 单 job 内存估算 + 训练并发规划 + 多 job 启动器
+# ---------------------------------------------------------------------------
+_DTYPE_BYTES = {"fp32": 4, "float32": 4, "bf16": 2, "bfloat16": 2, "fp16": 2, "float16": 2}
+_OPT_BYTES_PER_PARAM = {
+    # 8-bit blockwise: 1-byte code x 2 states + 每 256 元素一个 fp32 absmax
+    "adamw8bit": 2.0 + 4.0 / 256.0,
+    # ademamix 8-bit: 2 个 8-bit 状态 + 1 个 8-bit 额外状态 + absmax
+    "ademamix8bit": 3.0 + 8.0 / 256.0,
+    "adamw": 8.0,   # fp32 m + v
+    "adam": 8.0,
+    "sgd": 0.0,
+    "sgd_momentum": 4.0,  # fp32 momentum
+    "none": 0.0,
+}
+_RUNTIME_GB = 0.4  # torch + CUDA-less 运行时 + Python 基线（实测约 0.35-0.40GB）
+
+
+def estimate_training_memory_gb(
+    param_count: int,
+    mode: str = "full",
+    optimizer: str = "adamw8bit",
+    trainable_fraction: float = 1.0,
+    trainable_params: Optional[int] = None,
+    dtype: str = "fp32",
+    activation_gb: float = 1.0,
+    runtime_gb: float = _RUNTIME_GB,
+) -> dict:
+    """粗估一个 CPU 训练 job 的常驻内存（GB）。
+
+    组成：权重（全部参数，fp32/bf16 按 dtype）+ 梯度（可训练参数）+ 优化器状态（可训练参数）
+    + 激活/工作区（由调用者按 batch*seq 估，默认 1GB）+ 运行时基线（默认 0.4GB）。
+
+    ``mode`` 只影响默认的 ``trainable_fraction``：
+      - ``full`` / ``finetune``：默认全部参数可训练（1.0）；
+      - ``lora`` / ``efst``：默认按调用方给的 ``trainable_fraction``（如 0.005），
+        冻结的基座**不产生梯度**（这是 LoRA/EFST 省内存的核心）。
+
+    注意：这是**估算**，用于决定并发数，不是精确值；首次跑起来后用
+    ``tck.mem_report()`` 或 ``psutil`` 校准。
+
+    返回 dict：``total_gb`` 以及 weights/grads/optimizer/activations/runtime 分项。
+    """
+    if param_count is None or param_count <= 0:
+        raise ValueError("param_count must be > 0")
+    mode = (mode or "full").lower()
+    if trainable_params is not None:
+        trainable = max(0, int(trainable_params))
+    else:
+        frac = 1.0 if mode in ("full", "finetune") else float(trainable_fraction)
+        frac = min(max(frac, 0.0), 1.0)
+        trainable = int(param_count * frac)
+
+    bpp = _DTYPE_BYTES.get((dtype or "fp32").lower())
+    if bpp is None:
+        raise ValueError(f"unsupported dtype {dtype!r}; use fp32/bf16/fp16")
+    opt_key = (optimizer or "none").lower()
+    if opt_key not in _OPT_BYTES_PER_PARAM:
+        raise ValueError(f"unsupported optimizer {optimizer!r}; "
+                         f"choose from {sorted(_OPT_BYTES_PER_PARAM)}")
+
+    weights = param_count * bpp
+    grads = trainable * bpp               # frozen base has no grads
+    opt_states = trainable * _OPT_BYTES_PER_PARAM[opt_key]
+    activations = float(activation_gb) * (1 << 30)
+    runtime = float(runtime_gb) * (1 << 30)
+    total = weights + grads + opt_states + activations + runtime
+    return {
+        "total_gb": total / (1 << 30),
+        "param_count": int(param_count),
+        "trainable_params": trainable,
+        "weights_gb": weights / (1 << 30),
+        "grads_gb": grads / (1 << 30),
+        "optimizer_gb": opt_states / (1 << 30),
+        "activations_gb": activations / (1 << 30),
+        "runtime_gb": runtime / (1 << 30),
+        "dtype": dtype,
+        "optimizer": opt_key,
+        "mode": mode,
+    }
+
+
+def plan_concurrency_for_training(
+    param_count: int,
+    mode: str = "full",
+    optimizer: str = "adamw8bit",
+    trainable_fraction: float = 1.0,
+    trainable_params: Optional[int] = None,
+    dtype: str = "fp32",
+    activation_gb: float = 1.0,
+    n_jobs: Optional[int] = None,
+    **kwargs: Any,
+) -> dict:
+    """``estimate_training_memory_gb`` + ``plan_concurrency`` 的组合。
+
+    例：0.8B 模型全参数微调（fp32 + AdamW8bit + 1GB 激活）：
+        plan = plan_concurrency_for_training(8e8)
+        plan["memory_estimate"]["total_gb"]  # 约 5.3GB
+        plan["n_jobs"] / plan["threads_per_job"] / plan["env"]
+    """
+    est = estimate_training_memory_gb(
+        param_count, mode=mode, optimizer=optimizer,
+        trainable_fraction=trainable_fraction, trainable_params=trainable_params,
+        dtype=dtype, activation_gb=activation_gb)
+    plan = plan_concurrency(n_jobs=n_jobs, per_job_ram_gb=est["total_gb"], **kwargs)
+    plan["memory_estimate"] = est
+    return plan
+
+
+def spawn_training_jobs(cmds, plan: Optional[dict] = None, cwd=None, echo: bool = True):
+    """并行启动多个训练命令，自动给日志加 ``[jobN]`` 前缀（不会混在一起）。
+
+    Args:
+        cmds: 命令列表，如 ``[[sys.executable, "train.py", "--seed", "1"], [...]]``。
+        plan: ``plan_concurrency()`` 的返回值；其 ``env`` 会合并进每个子进程的环境变量
+            （OMP/MKL 线程数等）。None = 继承当前进程环境。
+        cwd: 子进程工作目录。
+        echo: True 时实时打印带前缀的日志。
+
+    Returns:
+        ``[(cmd, returncode), ...]``。
+    """
+    env = dict(os.environ)
+    if plan:
+        env.update(plan.get("env") or {})
+    procs = []
+    readers = []
+    for i, cmd in enumerate(cmds):
+        proc = subprocess.Popen(
+            cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, bufsize=1)
+        procs.append((cmd, proc))
+
+        def _pump(p=proc, idx=i):
+            try:
+                for line in p.stdout:
+                    if echo:
+                        print(f"[job{idx}] {line.rstrip()}", flush=True)
+            except Exception:
+                pass
+
+        th = threading.Thread(target=_pump, daemon=True)
+        th.start()
+        readers.append(th)
+
+    results = []
+    for cmd, proc in procs:
+        rc = proc.wait()
+        results.append((cmd, rc))
+    for th in readers:
+        th.join(timeout=2.0)
+    return results
 
 
 if __name__ == "__main__":  # 自检：python torch_cpu_kit.py

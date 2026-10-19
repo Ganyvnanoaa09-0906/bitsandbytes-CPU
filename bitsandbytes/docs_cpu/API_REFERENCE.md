@@ -586,6 +586,26 @@ for i in range(plan["n_jobs"]):
 
 **`apply_job_env(plan)`** -- 把 planner 的 OMP/MKL 环境变量写进当前进程（launcher 自己用）。
 
+**`estimate_training_memory_gb(param_count, mode="full", optimizer="adamw8bit", ...)`** --
+粗估一个训练 job 的常驻内存：权重（全部参数）+ 梯度（可训练参数）+ 优化器状态 +
+激活工作区 + 运行时基线。LoRA/EFST 模式默认只给可训练部分算梯度和状态（冻结基座为零），
+支持 fp32/bf16/fp16 与 adamw8bit / ademamix8bit / adamw / sgd。
+
+**`plan_concurrency_for_training(param_count, ...)`** -- 内存估算 + 并发规划一步到位：
+返回 `n_jobs` / `threads_per_job` / OMP/MKL env 以及 `memory_estimate` 分项。
+
+```python
+import torch_cpu_kit as tck
+plan = tck.plan_concurrency_for_training(8e8, mode="lora", trainable_fraction=0.005,
+                                         activation_gb=0.5)
+print(plan["advice"])          # e.g. 3 job(s) x 2 thread(s) each ...
+for i in range(plan["n_jobs"]):
+    ...
+```
+
+**`spawn_training_jobs(cmds, plan=None, echo=True)`** -- 用 planner 的 env 并行启动多个
+训练命令，自动给每个 job 的日志加 `[jobN]` 前缀，返回各 job 的 returncode。
+
 **`start_mem_monitor`** -- a log line every 20 s, on a daemon thread
 
 **`RAM below ~8 GB free`** -- detect() sets recommend_disk_balancer, and `help disks` is the answer

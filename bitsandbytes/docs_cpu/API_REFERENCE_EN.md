@@ -586,6 +586,20 @@ for i in range(plan["n_jobs"]):
 
 **`apply_job_env(plan)`** -- writes the planner's OMP/MKL variables into the current process.
 
+**`estimate_training_memory_gb(param_count, mode="full", optimizer="adamw8bit", ...)`** --
+estimates one training job's resident memory: weights (all params) + grads (trainable params)
++ optimizer state + activation workspace + runtime baseline. LoRA/EFST modes only count
+grads/state for the trainable part (frozen base = zero); supports fp32/bf16/fp16 and
+adamw8bit / ademamix8bit / adamw / sgd.
+
+**`plan_concurrency_for_training(param_count, ...)`** -- memory estimate + concurrency plan
+in one call: returns `n_jobs` / `threads_per_job` / OMP+MKL env plus a `memory_estimate`
+breakdown.
+
+**`spawn_training_jobs(cmds, plan=None, echo=True)`** -- launches several training commands
+with the planner's env, prefixing each job's log lines with `[jobN]`, and returns the
+returncodes.
+
 **`start_mem_monitor`** -- a log line every 20 s, on a daemon thread
 
 **`RAM below ~8 GB free`** -- detect() sets recommend_disk_balancer, and `help disks` is the answer
