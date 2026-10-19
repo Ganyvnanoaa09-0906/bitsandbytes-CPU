@@ -59,3 +59,11 @@ cd /tmp
 bash container_isa_report.sh 2>&1 | tee /tmp/cpu_forge_isa_report.txt
 bash container_isa_runtime_check.sh 2>&1 | tee /tmp/cpu_forge_runtime_report.txt
 ```
+
+## 2026-10-19 补充：manylinux_2_17 并行 wheel 已可构建
+
+之前记录"EPYC 上 pip 选到 manylinux_2_17 serial wheel"的缺口已解决：`build_oldgomp_linux.sh`
+用 CentOS7 devtoolset-8 产出带 OpenMP 的 manylinux_2_17 wheel（C 自检 9/9，优化器内核比 serial
+快 4×）。注意该 wheel 的 avx512 .so 仍是 zig serial；在 AVX-512 机器上比较 AVX2 OpenMP 与
+AVX-512 serial 时可用 `BNB_CPU_DISABLE_AVX512=1` 切换。详见 `bench_results/oldglibc_openmp_wheel.md`。
+

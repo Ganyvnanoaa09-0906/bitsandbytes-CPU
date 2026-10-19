@@ -59,7 +59,10 @@
 #include <intrin.h>
 #include <windows.h>
 #elif defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+#ifndef BNB_CPUID_H_INCLUDED
+#define BNB_CPUID_H_INCLUDED
 #include <cpuid.h>
+#endif
 #endif
 
 namespace bnb_cache_detail {

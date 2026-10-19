@@ -13,7 +13,13 @@
 
 #if (defined(__x86_64__) || defined(__i386__)) && !defined(_MSC_VER)
 
+#ifndef BNB_CPUID_H_INCLUDED
+#define BNB_CPUID_H_INCLUDED
+// GCC 8's <cpuid.h> has no include guard, so include it exactly once across the build
+// (cpu_features.h and cpu_cache.h both need it; without this sentinel old GCC errors
+// with "redefinition of __get_cpuid_count").
 #include <cpuid.h>
+#endif
 // clang's <cpuid.h> defines __cpuid/__cpuid_count as function-like macros. Windows
 // headers (intrin.h -> psdk_inc/intrin-impl.h, pulled in later via cpu_cache.h) declare
 // void __cpuid(int[4], int), which those macros then break ("too few arguments provided
