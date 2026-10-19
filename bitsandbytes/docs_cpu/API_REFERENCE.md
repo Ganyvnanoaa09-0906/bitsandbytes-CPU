@@ -572,6 +572,20 @@ with tck.autocast():            # nullcontext on this machine, real on AMX/AVX51
 
 **`plan for the peak, not the weights`** -- a 4-bit model still materialises fp32 activations and one unpacked layer at a time
 
+**`plan_concurrency()`** -- 并发打包建议：按物理核数/内存给出「几个 job × 每 job 几线程」。
+实测在 6C CPU 上 **6 个单线程 job** 比 1 个 6 线程 job 的聚合吞吐高约 60%；返回的
+`env` 可直接传给 `subprocess.Popen(..., env={**os.environ, **plan["env"]})`。
+
+```python
+import torch_cpu_kit as tck
+plan = tck.plan_concurrency(per_job_ram_gb=1.5)   # 或在模型加载后调用，用当前 RSS 估算
+print(plan["advice"])
+for i in range(plan["n_jobs"]):
+    subprocess.Popen([sys.executable, "train.py"], env={**os.environ, **plan["env"]})
+```
+
+**`apply_job_env(plan)`** -- 把 planner 的 OMP/MKL 环境变量写进当前进程（launcher 自己用）。
+
 **`start_mem_monitor`** -- a log line every 20 s, on a daemon thread
 
 **`RAM below ~8 GB free`** -- detect() sets recommend_disk_balancer, and `help disks` is the answer

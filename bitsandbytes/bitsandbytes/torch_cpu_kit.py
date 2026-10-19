@@ -27,6 +27,7 @@ from contextlib import nullcontext
 from typing import Any, Optional
 
 __all__ = [
+    "plan_concurrency",
     "apply_env",
     "init",
     "report",
@@ -451,6 +452,109 @@ def start_mem_monitor(interval: float = 20.0) -> threading.Event:
 def suspend_mem_monitor(ev: Optional[threading.Event] = None) -> None:
     """停止 ``start_mem_monitor`` 启动的监视线程。"""
     (ev or _MON_STOP).set()
+
+
+# ---------------------------------------------------------------------------
+# 并发规划：多进程 x 单线程 通常优于 单进程 x 多线程（2026-10-19 实测）
+# ---------------------------------------------------------------------------
+def plan_concurrency(
+    n_jobs: Optional[int] = None,
+    per_job_ram_gb: Optional[float] = None,
+    cores: Optional[int] = None,
+    available_ram_gb: Optional[float] = None,
+) -> dict:
+    """给「同时跑几个训练 job、每个开几个线程」一个可落地的建议。
+
+    背景（R5-4500U，6C/6T，合成 3-block 训练 + AdamW8bit 实测）::
+
+        jobs x threads/job    aggregate tok/s   相对最佳
+        1 x 6                      3843          62.8%
+        2 x 3                      4672          76.3%
+        3 x 2                      4973          81.2%
+        6 x 1                      5619          91.8%
+        8 x 1（超订）              6123         100.0%
+
+    结论：**多进程 x 单线程** 比 **单进程吃满多线程** 的聚合吞吐高约 60%——
+    OpenMP 线程池的 barrier/自旋等待在进程间是纯浪费。推荐打包 = 每个物理核一个
+    job、每 job 1 线程（6C 机器就是 6 个单线程 job；超订到 8 个还能再涨一点，但收益变平，
+    且每个 job 都要一份内存）。RAM 是第二约束：每 job 的模型 + 优化器状态各自独立。
+
+    Args:
+        n_jobs: 想跑几个 job；None = 按物理核数推荐（每核 1 个）。
+        per_job_ram_gb: 单 job 预计占用的 RAM（GB）。None = 用当前进程 RSS 估算，
+            所以**请在加载完一个模型后调用**（或显式传入训练脚本的常驻内存）。
+        cores: 物理核数；None = ``physical_cores()``。
+        available_ram_gb: 系统可用内存；None = psutil 读取。
+
+    Returns:
+        dict: ``n_jobs`` / ``threads_per_job`` / ``cores`` / ``per_job_ram_gb`` /
+        ``max_by_ram`` / ``env``（给子进程用的 OMP/MKL 环境变量） / ``advice``。
+
+    用法::
+
+        import torch_cpu_kit as tck
+        plan = tck.plan_concurrency(per_job_ram_gb=1.5)
+        for i in range(plan["n_jobs"]):
+            subprocess.Popen([sys.executable, "train.py"], env={**os.environ, **plan["env"]})
+    """
+    cores = max(1, int(cores or physical_cores()))
+    if available_ram_gb is None:
+        try:
+            import psutil
+            available_ram_gb = psutil.virtual_memory().available / 1e9
+        except Exception:
+            available_ram_gb = 8.0
+    if per_job_ram_gb is None:
+        try:
+            import psutil
+            per_job_ram_gb = max(0.3, psutil.Process().memory_info().rss / 1e9)
+        except Exception:
+            per_job_ram_gb = 1.0
+
+    # 给系统/页缓存留 10%
+    max_by_ram = max(1, int((available_ram_gb * 0.9) // max(0.1, per_job_ram_gb)))
+    if n_jobs is None:
+        n_jobs = min(cores, max_by_ram)
+    else:
+        n_jobs = max(1, int(n_jobs))
+        if n_jobs > max_by_ram:
+            n_jobs = max_by_ram
+
+    if n_jobs <= 1:
+        threads_per_job = cores
+    else:
+        # 按核数均分；n_jobs >= cores 时每 job 1 线程（实测最优点）
+        threads_per_job = max(1, cores // n_jobs)
+
+    env = {
+        "OMP_NUM_THREADS": str(threads_per_job),
+        "MKL_NUM_THREADS": str(threads_per_job),
+        "OMP_WAIT_POLICY": "passive" if threads_per_job == 1 else "active",
+        "OMP_DYNAMIC": "FALSE",
+        "MKL_DYNAMIC": "FALSE",
+    }
+    advice = (
+        "recommended: %d job(s) x %d thread(s) each (physical cores=%d, "
+        "RAM %.1fGB available / %.2fGB per job -> RAM allows %d)"
+        % (n_jobs, threads_per_job, cores, available_ram_gb, per_job_ram_gb, max_by_ram)
+    )
+    return {
+        "n_jobs": n_jobs,
+        "threads_per_job": threads_per_job,
+        "cores": cores,
+        "per_job_ram_gb": round(per_job_ram_gb, 2),
+        "available_ram_gb": round(available_ram_gb, 1),
+        "max_by_ram": max_by_ram,
+        "env": env,
+        "advice": advice,
+    }
+
+
+def apply_job_env(plan: dict) -> dict:
+    """把 plan_concurrency() 的 env 写进当前进程（给 launcher 自己用；子进程可直接用 env=）。"""
+    env = dict(plan.get("env") or {})
+    os.environ.update(env)
+    return env
 
 
 if __name__ == "__main__":  # 自检：python torch_cpu_kit.py

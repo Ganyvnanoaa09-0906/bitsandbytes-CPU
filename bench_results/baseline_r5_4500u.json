@@ -1,0 +1,148 @@
+{
+  "bandwidth": {
+    "copy(read+write)": {
+      "GB/s": 12.434970815785391,
+      "bytes": 268435456
+    },
+    "scale_inplace(r+w)": {
+      "GB/s": 17.1576438554056,
+      "bytes": 268435456
+    },
+    "add(r+r+w)": {
+      "GB/s": 19.397830580186742,
+      "bytes": 402653184
+    }
+  },
+  "gemm": {
+    "512x1024x3584": {
+      "GFLOPS": 124.04159205547239,
+      "ms": 30.29706666711718
+    },
+    "512x3584x1024": {
+      "GFLOPS": 276.6751042395761,
+      "ms": 13.583066659824302
+    },
+    "512x1024x1024": {
+      "GFLOPS": 285.402643917579,
+      "ms": 3.7621999896752336
+    },
+    "2048x2048x2048": {
+      "GFLOPS": 212.17914063066317,
+      "ms": 80.96870000008494
+    }
+  },
+  "concurrency": [
+    {
+      "jobs": 1,
+      "ok_jobs": 1,
+      "wall_s": 11.61206959997071,
+      "aggregate_steps_per_s": 11.647368918563782,
+      "aggregate_tokens_per_s": 2981.726443152328,
+      "mean_step_ms": 85.85629999288358,
+      "rss_per_job_mb": 390.09375,
+      "scale_efficiency": 1.0
+    },
+    {
+      "jobs": 2,
+      "ok_jobs": 2,
+      "wall_s": 13.059639199986123,
+      "aggregate_steps_per_s": 16.91870062543829,
+      "aggregate_tokens_per_s": 4331.187360112202,
+      "mean_step_ms": 118.25780000071973,
+      "rss_per_job_mb": 374.3046875,
+      "scale_efficiency": 0.7262885181937084
+    },
+    {
+      "jobs": 4,
+      "ok_jobs": 4,
+      "wall_s": 16.313957299978938,
+      "aggregate_steps_per_s": 19.532089702204154,
+      "aggregate_tokens_per_s": 5000.214963764263,
+      "mean_step_ms": 206.44441249896772,
+      "rss_per_job_mb": 372.556640625,
+      "scale_efficiency": 0.41923823824008793
+    },
+    {
+      "jobs": 6,
+      "ok_jobs": 6,
+      "wall_s": 21.640371399989817,
+      "aggregate_steps_per_s": 19.547918091644853,
+      "aggregate_tokens_per_s": 5004.267031461082,
+      "mean_step_ms": 314.0597249973022,
+      "rss_per_job_mb": 373.9778645833333,
+      "scale_efficiency": 0.27971865331876283
+    }
+  ],
+  "packing": [
+    {
+      "jobs": 1,
+      "ok_jobs": 1,
+      "wall_s": 10.743824700010009,
+      "aggregate_steps_per_s": 15.010642547093653,
+      "aggregate_tokens_per_s": 3842.724492055975,
+      "mean_step_ms": 66.61939999321476,
+      "rss_per_job_mb": 379.0625,
+      "scale_efficiency": 1.0,
+      "threads_per_job": 6,
+      "total_threads": 6,
+      "pct_of_best": 62.76375680312191,
+      "oversubscribed": false
+    },
+    {
+      "jobs": 2,
+      "ok_jobs": 2,
+      "wall_s": 12.122119400009979,
+      "aggregate_steps_per_s": 18.24932549819721,
+      "aggregate_tokens_per_s": 4671.827327538485,
+      "mean_step_ms": 109.61239997413941,
+      "rss_per_job_mb": 373.009765625,
+      "scale_efficiency": null,
+      "threads_per_job": 3,
+      "total_threads": 6,
+      "pct_of_best": 76.30560942320432,
+      "oversubscribed": false
+    },
+    {
+      "jobs": 3,
+      "ok_jobs": 3,
+      "wall_s": 14.929687399999239,
+      "aggregate_steps_per_s": 19.424794056151107,
+      "aggregate_tokens_per_s": 4972.747278374683,
+      "mean_step_ms": 157.29696666433787,
+      "rss_per_job_mb": 375.9986979166667,
+      "scale_efficiency": null,
+      "threads_per_job": 2,
+      "total_threads": 6,
+      "pct_of_best": 81.22057708495971,
+      "oversubscribed": false
+    },
+    {
+      "jobs": 6,
+      "ok_jobs": 6,
+      "wall_s": 19.155613299983088,
+      "aggregate_steps_per_s": 21.947690110852484,
+      "aggregate_tokens_per_s": 5618.608668378236,
+      "mean_step_ms": 276.14223334239796,
+      "rss_per_job_mb": 371.9817708333333,
+      "scale_efficiency": null,
+      "threads_per_job": 1,
+      "total_threads": 6,
+      "pct_of_best": 91.76952153687407,
+      "oversubscribed": false
+    },
+    {
+      "jobs": 8,
+      "ok_jobs": 8,
+      "wall_s": 25.953148800006602,
+      "aggregate_steps_per_s": 23.916099532058308,
+      "aggregate_tokens_per_s": 6122.521480206927,
+      "mean_step_ms": 340.5332124893903,
+      "rss_per_job_mb": 372.33837890625,
+      "scale_efficiency": null,
+      "threads_per_job": 1,
+      "total_threads": 8,
+      "pct_of_best": 100.0,
+      "oversubscribed": true
+    }
+  ]
+}

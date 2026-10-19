@@ -571,6 +571,21 @@ with tck.autocast():            # nullcontext on this machine, real on AMX/AVX51
 
 **`plan for the peak, not the weights`** -- a 4-bit model still materialises fp32 activations and one unpacked layer at a time
 
+**`plan_concurrency()`** -- packing advice: given physical cores and RAM, returns "how many
+jobs x how many threads per job". Measured on a 6-core CPU, **six single-threaded jobs**
+reach ~60% higher aggregate throughput than one 6-threaded job; the returned `env` can be
+passed straight to `subprocess.Popen(..., env={**os.environ, **plan["env"]})`.
+
+```python
+import torch_cpu_kit as tck
+plan = tck.plan_concurrency(per_job_ram_gb=1.5)   # or call after loading a model to use RSS
+print(plan["advice"])
+for i in range(plan["n_jobs"]):
+    subprocess.Popen([sys.executable, "train.py"], env={**os.environ, **plan["env"]})
+```
+
+**`apply_job_env(plan)`** -- writes the planner's OMP/MKL variables into the current process.
+
 **`start_mem_monitor`** -- a log line every 20 s, on a daemon thread
 
 **`RAM below ~8 GB free`** -- detect() sets recommend_disk_balancer, and `help disks` is the answer
