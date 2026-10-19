@@ -74,7 +74,8 @@ assert len(info.groups) == 1 and info.groups[0].path == "moe.experts", \
 selected = set(info.selected_experts["moe.experts"])
 trainable_experts = [e for e in range(8)
                      if any(p.requires_grad for p in m.moe.experts[e].parameters())]
-check("嵌套块结构下仅选中专家可训", set(trainable_experts) == selected,
+check("嵌套块结构下仅选中专家可训",
+      set(trainable_experts) == {int(s) for s in selected},
       f"trainable={trainable_experts} selected={sorted(selected)}")
 # 5) 非 MoE 模型安全
 plain = nn.Sequential(nn.Linear(32,32), nn.ReLU(), nn.Linear(32,32))
