@@ -350,9 +350,18 @@ def train(args) -> int:
                 raise
             print('  causal-LM load failed (%s); trying masked-LM' % str(e)[:80])
     if model is None:
-        model = AutoModelForMaskedLM.from_pretrained(path, torch_dtype=torch.float32,
-                                                     local_files_only=True)
-        task = 'mlm'
+        try:
+            model = AutoModelForMaskedLM.from_pretrained(path, torch_dtype=torch.float32,
+                                                         local_files_only=True)
+            task = 'mlm'
+        except Exception as e:
+            print()
+            print('ERROR: cannot load %s as a text language model.' % args.model)
+            print('  tried AutoModelForCausalLM and AutoModelForMaskedLM; last error: %s' % str(e)[:250])
+            print('  This trainer supports any checkpoint those two can load (causal LM or masked LM).')
+            print('  Multimodal checkpoints / custom quantized formats need their own loader;')
+            print('  see gt1030/README_IGPU_TRAIN.md for the supported matrix.')
+            return 2
     args.task = task
     print('  task:', task)
     model.eval()
