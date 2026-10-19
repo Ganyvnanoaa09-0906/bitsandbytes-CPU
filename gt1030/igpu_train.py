@@ -94,10 +94,10 @@ class IgpuFn(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, x, w, w_dev, want_dw, layout):
+    def forward(ctx, x, w, w_dev, want_dw, layout, n_dim, k_dim):
         orig = x.shape
         k = orig[-1]
-        n = w.shape[1] if layout else w.shape[0]
+        n = n_dim
         x2 = np.ascontiguousarray(x.detach().reshape(-1, k).float().numpy(), dtype=np.float32)
         m = x2.shape[0]
         ad = _buf(m * k * 4, 'actA')
@@ -139,7 +139,7 @@ class IgpuFn(torch.autograd.Function):
             cl.enqueue_copy(queue, dwn, cdw)
             dW = torch.from_numpy(dwn)
         queue.finish()
-        return torch.from_numpy(dx), dW, None, None, None
+        return torch.from_numpy(dx), dW, None, None, None, None, None
 
 
 def _as_dev(arr, role):
@@ -168,7 +168,8 @@ class IgpuConv1D(nn.Module):
     def forward(self, x):
         if self.w_dev is None:
             self.refresh()
-        y = IgpuFn.apply(x, self.weight, self.w_dev, self.weight.requires_grad, 1)
+        y = IgpuFn.apply(x, self.weight, self.w_dev, self.weight.requires_grad, 1,
+                         self.out_features, self.in_features)
         if self.bias is not None:
             y = y + self.bias
         return y
@@ -192,7 +193,8 @@ class IgpuLinear(nn.Module):
     def forward(self, x):
         if self.w_dev is None:
             self.refresh()
-        y = IgpuFn.apply(x, self.weight, self.w_dev, self.weight.requires_grad, 0)
+        y = IgpuFn.apply(x, self.weight, self.w_dev, self.weight.requires_grad, 0,
+                         self.out_features, self.in_features)
         if self.bias is not None:
             y = y + self.bias
         return y
@@ -217,11 +219,13 @@ class IgpuLoRALinear(nn.Module):
     def refresh(self):
         w = np.ascontiguousarray(self.base_weight.float().numpy())
         self.w_dev = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=w)
+        if not self.base_weight.requires_grad:
+            self.base_weight = None      # frozen base: keep only the device copy (halves host RAM)
 
     def forward(self, x):
         if self.w_dev is None:
             self.refresh()
-        y = IgpuFn.apply(x, self.base_weight, self.w_dev, False, 0)
+        y = IgpuFn.apply(x, None, self.w_dev, False, 0, self.out_features, self.in_features)
         if self.use_bias:
             y = y + self.base_bias
         return y + (x @ self.lora_A.t()) @ self.lora_B.t() * self.scale
@@ -381,6 +385,14 @@ def train(args) -> int:
         except Exception:
             base_loss = float('nan')
     n = patch_model(model, args.mode, args.lora_r, skip_lm)
+    if args.mode == 'lora':
+        # upload every frozen base weight once and drop the CPU copies (saves ~model-size host RAM)
+        for m in model.modules():
+            if isinstance(m, IgpuLoRALinear) and m.w_dev is None:
+                m.refresh()
+        import gc as _gc
+        _gc.collect()
+        print('  froze base on device; freed CPU copies of base weights')
     _uniq = {id(p): p for p in model.parameters() if p.requires_grad}
     trainable = sum(p.numel() for p in _uniq.values())
     if args.resume:
