@@ -1,138 +1,81 @@
-# bitsandbytes (CPU Training Fork)
+# bitsandbytes CPU fork — English summary
 
-**Training-grade CPU kernels for bitsandbytes — no NVIDIA GPU required.**
+This is the CPU fork of bitsandbytes, published on PyPI as **`bitsandbytes-cpu-fork`**
+(import name unchanged: `import bitsandbytes as bnb`). Current release: **`0.50.2.dev7`**.
+The full README is [`README.md`](README.md); this file is a short English mirror.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+PyPI: https://pypi.org/project/bitsandbytes-cpu-fork/
 
-This is a fork of [`bitsandbytes`](https://github.com/bitsandbytes-foundation/bitsandbytes)
-(v0.45.1) that adds **fused training kernels** to its **CPU backend**, so that
-low-resource machines — **no discrete GPU, only an AVX2 CPU or ARM64 NEON
-(consumer laptops, mini-PCs, 12–16 GB RAM)** — can actually train
-LLMs and diffusion models.
+## What it is
 
-> Upstream bitsandbytes' CPU backend is **inference-oriented**. This fork makes
-> pure-CPU **LoRA fine-tuning, quantization, alignment (DPO/KTO/…), and SD
-> image generation** practical (seconds per step, not minutes/hours).
+A pure-CPU training backend for laptops/Mini-PCs with no NVIDIA GPU — x86-64 AVX2 (a generic
+SSE2 artifact is shipped too) or ARM64 NEON, with the CPU build of PyTorch and 12–16 GB RAM.
+The CUDA kernels are removed and replaced by AVX2/NEON C kernels:
+8-bit blockwise optimizers (≈2.3 B state/param; 4-bit optimizer ≈1.03 B), 4/8-bit layers that
+run on CPU tensors, fused Gated DeltaNet fwd/bwd for Qwen3-Next/3.5 linear attention, fused
+`gemm_8bit`, fused RMSNorm/SwiGLU, fused 4-bit GEMV, plus the `torch_cpu_kit`,
+`disk_balancer` and `efst` tooling.
 
----
-
-## ✨ What this fork adds
-
-| Kernel | Entry point | What it does |
-|---|---|---|
-| **Gated DeltaNet fwd/bwd** | `gdn_fwd_cpu` / `gdn_bwd_cpu` (`csrc/cpu_gdn.cpp`) | Fused Gated DeltaNet (Qwen3-Next/3.5 linear attention) — **~35× faster** than the per-step Python fallback; chunk-checkpointed backward |
-| **Fused 8-bit blockwise dequant GEMM** | `cgemm_8bit_inference_cpu_fp32` (`bitsandbytes::gemm_8bit`, `bnb.functional.fused_dequant_linear_8bit`) | `out = A @ dequant8(B)` with weights **kept uint8** (¼ DRAM traffic), **no fp32 temporary tensor** |
-| **Fused 8-bit optimizer** | `coptimizer_update_8bit_blockwise_cpu` (`bnb.optim.AdamW8bit`, …) | Single-pass dequant→update→requant; optimizer state memory ≈ **1/3.8 of fp32** |
-| **Blockwise 8/4-bit quant & dequant** | `cquantize_blockwise_cpu_*` / `cdequantize_blockwise_cpu_*` | AVX2 LUT quantize + dequantize; NF4/FP4 kernels with **AVX2 & NEON** paths |
-| **4-bit inference GEMV** | `cgemv_4bit_inference_cpu_*` | Fused 4-bit dequant GEMV for AVX2 machines (fixes a symbol-alias bug in the upstream fallback) |
-| **GDN runtime patch** | `bitsandbytes/gdn_cpu.py` | `patch_transformers()` / `patch_fla()` — route transformers' slow GDN paths to the fused kernel |
-| **Disk load balancer** | `disk_balancer.py` (`DiskLoadBalancer`, `--flash`) | On memory pressure, offload frozen-layer ("cold") weights to disk via mmap to avoid SSD thrash from Windows virtual memory |
-| **iGPU (DirectML) scheduler** | `gpu_scheduler.py` (`IgpuExecutor`, `train.py --igpu`) | Experimental: frozen weights resident on the DirectML iGPU, forward/backward on-device, **one sync per step**; **off by default** — measured **+30~35%** for GEMM-dense seq≤256 training, **negative** at long sequences (driver limits) |
-
-> **Install (Windows, no compiler needed)**:
->
-> ```bash
-> pip install bitsandbytes-cpu-fork
-> ```
->
-> The wheel bundles the prebuilt CPU kernel and its OpenMP runtime, so nothing has to
-> be built after installing; `pip` pulls `torch` and `numpy` itself. One wheel covers
-> every Python 3 version on 64-bit Windows. The import name is unchanged
-> (`import bitsandbytes as bnb`), so existing code and the Transformers / PEFT /
-> Diffusers integrations keep working. Building from source instead is covered in
-> [`docs_cpu/QUICKSTART_EN.md`](docs_cpu/QUICKSTART_EN.md) sections 2 and 2A.
-
-> **Docs** (`docs_cpu/`):
-> - [`TECHNICAL_GUIDE.md`](docs_cpu/TECHNICAL_GUIDE.md) — what was modified + per-kernel architecture (engineer-facing)
-> - [`QUICKSTART.md`](docs_cpu/QUICKSTART.md) — beginner manual: commands, parameters, copy-and-runnable
-> - [`TECH_REPORT.md`](docs_cpu/TECH_REPORT.md) — methodology, measured data, conclusions (incl. negative findings)
-> - **English** is a set of **separate files**, not an appendix: [`QUICKSTART_EN.md`](docs_cpu/QUICKSTART_EN.md),
->   [`TECHNICAL_GUIDE_EN.md`](docs_cpu/TECHNICAL_GUIDE_EN.md), [`TECH_REPORT_EN.md`](docs_cpu/TECH_REPORT_EN.md)
->   (they correspond to the Chinese versions; Chinese is authoritative). Disaster recovery is in `QUICKSTART_EN.md` §9.
-
-> **About disk_balancer**: it can help keep training running when memory is tight, but it
-> **does not replace Windows virtual memory**. During training we still **recommend keeping
-> at least 1 GB of virtual memory** to handle unexpected memory spikes.
-
----
-
-## 🔧 Install & build
-
-Prebuilt wheels (`pip install bitsandbytes-<ver>-py3-none-<platform>.whl`) are available
-from **Release** (Windows `win_amd64` / Linux `linux_x86_64` / aarch64
-`linux_aarch64`) — no build needed. Otherwise build the native library yourself:
-
-### Linux (x86_64 AVX2, or aarch64 NEON)
+## Install
 
 ```bash
-# dependencies: g++ (or clang++) + libomp
-bash build_linux.sh            # -> bitsandbytes/libbitsandbytes_cpu.so
-bash build_linux.sh --selftest # also build + run the torch-free C self-test
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install bitsandbytes-cpu-fork
+python -m bitsandbytes
 ```
 
-### Windows (x86/x64)
+`torch` is not a dependency on purpose (the PyPI `torch` name would pull the CUDA build).
 
-Requires **Visual Studio** (C++ build tools). In an **x64 Native Tools** prompt:
+Linux x86-64 wheels: `manylinux_2_17` (glibc ≥ 2.17, **OpenMP since dev6**, bundled libgomp;
+its AVX-512 `.so` is single-threaded, use `BNB_CPU_DISABLE_AVX512=1` for the AVX2 OpenMP path)
+and `manylinux_2_39` (native OpenMP, AVX-512/BF16). Windows: prebuilt `win_amd64` wheel.
+Other platforms: sdist (`build_linux.sh` compiles with the local toolchain; aarch64/NEON
+supported that way).
 
-```bat
-cd <repo>\bitsandbytes\build_manual
-build_manual.bat amd    :: uses /favor:AMD64 for AMD CPUs
-::  or build_manual.bat intel   :: /favor:INTEL64 (compare); omit to auto-detect
-```
-
----
-
-## ✅ Self-test (no torch required)
-
-```bash
-bash build_linux.sh --selftest
-# covers: blockwise 8-bit quantize roundtrip, gemm_8bit forward,
-#         4-bit GEMV (nf4), single AdamW8bit step
-```
-
-**Full self-test** (requires torch):
+## Try it
 
 ```python
-python -m bitsandbytes.gdn_cpu   # should print "selftest PASSED"
+import torch, bitsandbytes as bnb
+p = torch.nn.Parameter(torch.randn(1024, 1024))
+opt = bnb.optim.AdamW8bit([p], lr=1e-4)
+p.grad = torch.randn_like(p)
+opt.step()
+
+from bitsandbytes.gdn_cpu import patch_transformers   # fused GDN for hybrid attention models
+patch_transformers()
+
+from bitsandbytes import torch_cpu_kit as tck          # concurrency planner / thread calibration
+plan = tck.plan_concurrency_for_training(800_000_000, mode="lora",
+                                         trainable_fraction=0.005, activation_gb=0.5)
 ```
 
----
+CLI: `bitsandbytes-cpu detect | doctor | selftest | help`.
 
-## 🧪 What it's good for
+## Tests
 
-On an **AVX2-only machine** (e.g. AMD Ryzen 5 4500U, 16 GB — measured):
+```bash
+bash build_linux.sh --selftest        # C kernels: 9 checks (incl. 2/3-bit dequant + fused GEMM)
+bash arm64_selftest.sh                # aarch64 static selftest under qemu-aarch64
+python test_efst_regressions.py
+python test_q3bit_kernels.py
+python test_concurrency_plan.py
+python test_disk_balancer_safety.py
+```
 
-| Workload | Result |
-|---|---|
-| 1.7B LoRA fine-tune (fp32, max_len 64) | ~7 s/step, peak ~11 GB |
-| 8B NF4 quantized LoRA | ~38 s/step, peak ~11 GB (fits 16 GB) |
-| SD image LoRA (bk-sdm-small, 256px) | ~2.1 s/step, peak ~3.2 GB |
-| KTO alignment (1.7B nf4, batch 2) | ~10 s/step (max_len 64) |
+## Notes / limitations
 
-**Hard rules on this hardware** (see `docs_cpu/TECH_REPORT.md`):
-- **Use fp32** — bf16 GEMM is software-emulated on AVX2 and >90 s per matmul (effectively hangs).
-- **Don't offload base weights to lower precision for training** — 8-bit/bf16 storage + forward
-  conversion is **10–29× slower** (measured). Optimize via activation size + 8-bit optimizer
-  (+ optional frozen-layer quantization).
+- CPU only; no CUDA/ROCm/XPU kernels.
+- The Windows DLL predates the experimental 2/3-bit kernels (Linux-only for now).
+- 2/3-bit quantisation + fused dequant/GEMM are research prototypes (C kernels, no Python API).
+- Documentation (Chinese + English) is in [`docs_cpu/`](docs_cpu/).
 
----
+## Changelog
 
-## 📄 Documentation
+dev1 CPU-fork release · dev2 AdamW4bit · dev3 docs for the 4-bit optimizer ·
+dev4 Linux wheels + AVX-512 BF16 loader safety / data-safety fixes ·
+dev5 WSL/Linux disk balancer + concurrency planner + `tune_threads` ·
+dev6 OpenMP `manylinux_2_17` wheel (devtoolset-8 + bundled libgomp) + csrc 2/3-bit kernels +
+9-item C self-test + EFST fused tensor-expert fix + GCC 8 `<cpuid.h>` portability fix ·
+dev7 documentation release (READMEs rewritten for the CPU fork).
 
-Detailed docs live in `docs_cpu/`:
-- [TECHNICAL_GUIDE.md](docs_cpu/TECHNICAL_GUIDE.md) — each kernel's design & data
-- [QUICKSTART.md](docs_cpu/QUICKSTART.md) — beginner-friendly walkthrough
-- [TECH_REPORT.md](docs_cpu/TECH_REPORT.md) — full measured results, incl. negative findings
-
----
-
-## 📜 License
-
-- This fork is based on bitsandbytes **v0.45.1 (MIT, Facebook)** and keeps the
-  **MIT license**. Contributions are listed in [`NOTICE.md`](NOTICE.md).
-
-## 🙏 Attribution
-
-Upstream: [`bitsandbytes-foundation/bitsandbytes`](https://github.com/bitsandbytes-foundation/bitsandbytes)
-(© Facebook / the bitsandbytes contributors). This fork's CPU training kernels are
-an additive extension and are released under the same MIT terms.
+MIT, same as upstream bitsandbytes (based on upstream 0.50.2). See `NOTICE.md`.

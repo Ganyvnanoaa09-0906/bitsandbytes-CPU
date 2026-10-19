@@ -1,421 +1,262 @@
-> **This is the CPU fork** — `bitsandbytes-cpu-fork`, not upstream `bitsandbytes`.
-> It replaces the CUDA kernels with a pure-CPU backend (AVX2 on x86-64, NEON on ARM64):
-> 8-bit optimizers, fused Gated DeltaNet, `gemm_8bit`, block-wise 4/8-bit quantisation.
-> No GPU, no CUDA toolkit, no NVIDIA driver. Full guide:
-> [`docs_cpu/QUICKSTART.md`](docs_cpu/QUICKSTART.md) (中文) ·
-> [`docs_cpu/QUICKSTART_EN.md`](docs_cpu/QUICKSTART_EN.md).
+# bitsandbytes CPU fork — `bitsandbytes-cpu-fork`
+
+> **Not upstream `bitsandbytes`.** This is the CPU fork: the CUDA kernels are replaced by a
+> pure-CPU backend, so it runs on ordinary laptops and Mini-PCs with **no NVIDIA GPU, no CUDA
+> toolkit and no driver** — just an AVX2 x86-64 CPU (or ARM64 NEON), the CPU build of PyTorch,
+> and 12–16 GB of RAM.
+
+**Version: `0.50.2.dev7`** · import name is unchanged (`import bitsandbytes as bnb`) · MIT.
+
+What the CPU backend provides: 8-bit blockwise optimizers (≈2.3 bytes of state per parameter
+instead of 8; the 4-bit optimizer ≈1.03), 4/8-bit layers that run on CPU tensors, the fused
+Gated DeltaNet kernel for Qwen3-Next / Qwen3.5 linear attention, fused `gemm_8bit`, fused
+RMSNorm/SwiGLU, an SSD cold-memory balancer, and a CPU training/concurrency toolbox.
+
+---
 
 ## Install
 
-**`torch` is deliberately not a dependency.** On PyPI the name `torch` resolves to the
-CUDA build, so declaring it made this CPU-only library download roughly 2.5 GB of
-`nvidia-*` wheels — cublas, cudnn, nccl, nvshmem and thirteen more — onto machines with
-no NVIDIA device at all. Measured on a clean Ubuntu install. `install_requires` cannot
-express "the CPU build", because that lives on a different index, so install it first:
+`torch` is **deliberately not a dependency**: on PyPI the name `torch` resolves to the CUDA
+build, which pulls ~2.5 GB of `nvidia-*` wheels onto machines with no NVIDIA device. Install
+the CPU build first, then this fork:
 
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install bitsandbytes-cpu-fork
+python -m bitsandbytes          # prints version / platform / library info
 ```
 
-**Linux wheels.** This release ships two Linux x86_64 wheels: a native one
-(`manylinux_2_39`) with the OpenMP-parallel kernels, and a portable one
-(`manylinux_2_17`, single-threaded) for older distributions. pip picks the best one
-for the host automatically. If neither matches your glibc, install from the sdist
-(it compiles `csrc` with the local toolchain via `build_linux.sh`).
+Requirements: Python ≥ 3.10 (64-bit), PyTorch ≥ 2.0 CPU build, x86-64 with AVX2 (a generic
+SSE2 fallback is shipped) or ARM64 with NEON, Windows 10/11 or Linux glibc ≥ 2.17.
 
+### Wheels and platform support (dev7)
 
-### Windows
+| Artifact | Platform | Parallel | Notes |
+|---|---|---|---|
+| `win_amd64.whl` | Windows 10/11 x64 | MSVC OpenMP (bundled) | prebuilt DLL, no compiler needed |
+| `manylinux_2_17_x86_64.whl` | Linux, glibc ≥ 2.17 | **OpenMP (bundled libgomp)** | portable wheel: AVX2 + generic `.so`; the bundled AVX-512 `.so` is single-threaded — set `BNB_CPU_DISABLE_AVX512=1` to use the AVX2 OpenMP path |
+| `manylinux_2_39_x86_64.whl` | Linux, glibc ≥ 2.39 | OpenMP (native build) | native wheel incl. AVX-512/BF16 kernels |
+| `sdist` | any platform with a C++ compiler + OpenMP | OpenMP | builds `csrc` locally (aarch64 Linux / Android Termux supported this way) |
 
-A wheel is published with the CPU library already built in, so no compiler and no
-Visual C++ Redistributable are needed:
-
-```bat
-pip install bitsandbytes-cpu-fork
-```
-
-### Linux
-
-Only the source distribution is published. `pip` builds it, and `setup.py` runs
-`build_linux.sh` for you, so the library is compiled against your own glibc rather than
-shipped prebuilt. That needs a C++ compiler with OpenMP:
-
-```bash
-sudo apt install g++ libomp-dev        # Debian / Ubuntu
-sudo dnf install gcc-c++ libomp-devel  # Fedora / RHEL
-sudo pacman -S gcc openmp              # Arch
-```
-
-If the toolchain is missing the build **stops and names that command**, rather than
-producing a wheel that installs cleanly and then fails at `import bitsandbytes`.
-
-To build by hand instead, or to check the kernels without torch:
-
-```bash
-bash build_linux.sh --selftest
-```
+pip picks the best matching wheel automatically. If your glibc is older than 2.17 (or the
+platform is not x86-64), install the sdist: `pip install --no-binary bitsandbytes-cpu-fork
+bitsandbytes-cpu-fork`.
 
 ### Verify the install
 
 ```bash
-python -m bitsandbytes
+python -m bitsandbytes          # version, platform, which native library loads
+bitsandbytes-cpu detect         # CPU model, cores, SIMD, RAM, recommended thread count
+bitsandbytes-cpu doctor         # which .dll/.so will load and which kernel symbols it has
+bitsandbytes-cpu selftest       # 4-bit layer + 8-bit optimizer step + GDN kernel
+bitsandbytes-cpu help           # full feature reference with runnable examples
+bitsandbytes-cpu help 8bitopt   # one section: 8-bit optimizers
+bitsandbytes-cpu help 4bit      # one section: 4-bit layers on a CPU
+bitsandbytes-cpu help kernels   # one section: fused kernels, called directly
 ```
 
-### Then ask it what it can do
-
-`pip` installs a `bitsandbytes-cpu` command (also available as `bnb-cpu`). It is the
-reference for this fork: what the hardware is, whether the kernels load, and **how to
-call every feature it adds** — each entry carries the exact call, and every Python
-example in it is executed before release.
-
-```bash
-bitsandbytes-cpu detect          # CPU model, cores, SIMD, RAM, recommended thread count
-bitsandbytes-cpu selftest        # runs a 4-bit layer, an 8-bit optimizer step, the GDN kernel
-bitsandbytes-cpu help            # the whole reference
-bitsandbytes-cpu help 8bitopt    # one section: the 8-bit optimizer
-bitsandbytes-cpu help 4bit       # one section: 4-bit layers on a CPU
-bitsandbytes-cpu help kernels    # one section: the fused kernels, called directly
-bitsandbytes-cpu doctor          # which .dll/.so will load, and which symbols it has
-```
-
-Section keys: `intro start 4bit qlora 8bitopt kernels toolkit threads memory gdn disks
-layers optim functional notes`. The same tables are published as
-[`docs_cpu/API_REFERENCE.md`](docs_cpu/API_REFERENCE.md)
-([English](docs_cpu/API_REFERENCE_EN.md)).
+`bitsandbytes-cpu` is also installed as `bnb-cpu`.
 
 ---
 
-<p align="center"><img src="https://avatars.githubusercontent.com/u/175231607?s=200&v=4" alt=""></p>
-<h1 align="center">bitsandbytes</h1>
-<p align="center">
-    <a href="https://github.com/bitsandbytes-foundation/bitsandbytes/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/bitsandbytes-foundation/bitsandbytes.svg?color=blue"></a>
-    <a href="https://pepy.tech/project/bitsandbytes"><img alt="Downloads" src="https://static.pepy.tech/badge/bitsandbytes/month"></a>
-    <a href="https://github.com/bitsandbytes-foundation/bitsandbytes/actions/workflows/tests-nightly.yml"><img alt="Nightly Unit Tests" src="https://img.shields.io/github/actions/workflow/status/bitsandbytes-foundation/bitsandbytes/tests-nightly.yml?logo=github&label=Nightly%20Tests"></a>
-    <a href="https://github.com/bitsandbytes-foundation/bitsandbytes/releases"><img alt="GitHub Release" src="https://img.shields.io/github/v/release/bitsandbytes-foundation/bitsandbytes"></a>
-    <a href="https://pypi.org/project/bitsandbytes/"><img alt="PyPI - Python Version" src="https://img.shields.io/pypi/pyversions/bitsandbytes"></a>
-</p>
+## Quick start
 
-`bitsandbytes` enables accessible large language models via k-bit quantization for PyTorch. We provide three main features for dramatically reducing memory consumption for inference and training:
-
-* 8-bit optimizers uses block-wise quantization to maintain 32-bit performance at a small fraction of the memory cost.
-* LLM.int8() or 8-bit quantization enables large language model inference with only half the required memory and without any performance degradation. This method is based on vector-wise quantization to quantize most features to 8-bits and separately treating outliers with 16-bit matrix multiplication.
-* QLoRA or 4-bit quantization enables large language model training with several memory-saving techniques that don't compromise performance. This method quantizes a model to 4-bits and inserts a small set of trainable low-rank adaptation (LoRA) weights to allow training.
-
-The library includes quantization primitives for 8-bit & 4-bit operations, through `bitsandbytes.nn.Linear8bitLt` and `bitsandbytes.nn.Linear4bit` and 8-bit optimizers through `bitsandbytes.optim` module.
-
-## System Requirements
-bitsandbytes has the following minimum requirements for all platforms:
-
-* Python 3.10+
-* [PyTorch](https://pytorch.org/get-started/locally/) 2.4+
-  * _Note: While we aim to provide wide backwards compatibility, we recommend using the latest version of PyTorch for the best experience._
-
-#### Accelerator support:
-
-<small>Note: this table reflects the status of the current development branch. For the latest stable release, see the
-[document in the 0.50.0 tag](https://github.com/bitsandbytes-foundation/bitsandbytes/blob/0.50.0/README.md#accelerator-support).
-</small>
-
-##### Legend:
-🚧 = Planned |
-〰️ = Partially Supported |
-✅ = Supported |
-❌ = Not Supported
-
-<table>
-  <thead>
-    <tr>
-      <th>Platform</th>
-      <th>Accelerator</th>
-      <th>Hardware Requirements</th>
-      <th>LLM.int8()</th>
-      <th>QLoRA 4-bit</th>
-      <th>8-bit Optimizers</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td colspan="6">🐧 <strong>Linux, glibc >= 2.24</strong></td>
-    </tr>
-    <tr>
-      <td align="right">x86-64</td>
-      <td>◻️ CPU</td>
-      <td>Minimum: AVX2<br>Optimized: AVX512F, AVX512BF16</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td></td>
-      <td>🟩 NVIDIA GPU <br><code>cuda</code></td>
-      <td>SM60+ minimum<br>SM75+ recommended</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td></td>
-      <td>🟥 AMD GPU <br><code>cuda</code></td>
-      <td>
-        CDNA: gfx908, gfx90a, gfx942, gfx950, gfx1250<br>
-        RDNA: gfx101X, gfx103X, gfx110X, gfx115X, gfx120X
-      </td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td></td>
-      <td>🟦 Intel GPU <br><code>xpu</code></td>
-      <td>
-        Data Center GPU Max Series<br>
-        Arc A-Series (Alchemist)<br>
-        Arc B-Series (Battlemage)
-      </td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td></td>
-      <td>🟪 Intel Gaudi <br><code>hpu</code></td>
-      <td>Gaudi2, Gaudi3</td>
-      <td>✅</td>
-      <td>〰️</td>
-      <td>❌</td>
-    </tr>
-    <tr>
-      <td align="right">aarch64</td>
-      <td>◻️ CPU</td>
-      <td></td>
-      <td>✅ *</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td></td>
-      <td>🟩 NVIDIA GPU <br><code>cuda</code></td>
-      <td>SM75+</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td colspan="6">🪟 <strong>Windows 11 / Windows Server 2022+</strong></td>
-    </tr>
-    <tr>
-      <td align="right">x86-64</td>
-      <td>◻️ CPU</td>
-      <td>AVX2</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td></td>
-      <td>🟩 NVIDIA GPU <br><code>cuda</code></td>
-      <td>SM60+ minimum<br>SM75+ recommended</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td></td>
-      <td>🟥 AMD GPU <br><code>cuda</code></td>
-      <td>
-        CDNA: gfx908, gfx90a<br>
-        RDNA: gfx101X, gfx103X, gfx110X, gfx115X, gfx120X
-      </td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td></td>
-      <td>🟦 Intel GPU <br><code>xpu</code></td>
-      <td>
-        Arc A-Series (Alchemist) <br>
-        Arc B-Series (Battlemage)
-      </td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td align="right">arm64</td>
-      <td>◻️ CPU</td>
-      <td></td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td></td>
-      <td>🟩 NVIDIA GPU <br><code>cuda</code></td>
-      <td>SM121</td>
-      <td>✅</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td colspan="6">🍎 <strong>macOS 14+</strong></td>
-    </tr>
-    <tr>
-      <td align="right">arm64</td>
-      <td>◻️ CPU</td>
-      <td>Apple M1+</td>
-      <td>✅ *</td>
-      <td>✅</td>
-      <td>✅</td>
-    </tr>
-    <tr>
-      <td></td>
-      <td>⬜ Metal <br><code>mps</code></td>
-      <td>Apple M1+</td>
-      <td>✅ *</td>
-      <td>✅</td>
-      <td>🚧</td>
-  </tbody>
-</table>
-<sup>* While supported, these marked features may lack in performance optimizations.</sup>
-
-## :book: Documentation
-* [Official Documentation](https://huggingface.co/docs/bitsandbytes/main)
-* 🤗 [Transformers](https://huggingface.co/docs/transformers/quantization/bitsandbytes)
-* 🤗 [Diffusers](https://huggingface.co/docs/diffusers/quantization/bitsandbytes)
-* 🤗 [PEFT](https://huggingface.co/docs/peft/developer_guides/quantization#quantize-a-model)
-
-## :computer: CPU Backend Extensions (this fork)
-
-This fork adds **training-grade CPU kernels** to the bitsandbytes CPU backend, for
-machines **without NVIDIA GPUs** (AVX2 only / ARM64 NEON, e.g. consumer laptops,
-Mini-PCs). The upstream CPU backend is inference-oriented; these
-extensions make pure-CPU LoRA / quantization / diffusion training practical.
-
-### Install (Windows, no compiler needed)
-
-```bash
-pip install bitsandbytes-cpu-fork
-```
-
-The wheel bundles the prebuilt CPU kernel and its OpenMP runtime, so nothing has to
-be built after installing; `pip` pulls `torch` and `numpy` itself. One wheel covers
-every Python 3 version on 64-bit Windows. The import name is unchanged, so existing
-code and the Transformers / PEFT / Diffusers integrations keep working as-is:
+### 8-bit optimizer (≈2.3 B of state per parameter)
 
 ```python
-import bitsandbytes as bnb          # the fork, not upstream
-print(bnb.__version__)              # 0.50.2.dev6
+import torch, bitsandbytes as bnb
+
+p = torch.nn.Parameter(torch.randn(1024, 1024))
+opt = bnb.optim.AdamW8bit([p], lr=1e-4)
+p.grad = torch.randn_like(p)
+opt.step()
 ```
 
-Building from source instead (any platform) is described in
-[`docs_cpu/QUICKSTART.md`](docs_cpu/QUICKSTART.md) §2 and §2A.
+### 4-bit layer on CPU
 
-> 📚 **Docs** (`docs_cpu/`):
-> - `TECHNICAL_GUIDE.md` — **技术文档**：改了什么、每个内核的架构与细节（面向技术人员）
-> - `QUICKSTART.md` — **快速入门手册**：命令、用途与参数（面向首次使用者）
-> - `TECH_REPORT.md` — **技术报告**：完整方法论、实验数据与结论（含负面结论）
-> - 灾难恢复指南已并入 `QUICKSTART.md` §9。
-> - 🌐 **English**: 英文为**独立文件** —— `QUICKSTART_EN.md`、`TECHNICAL_GUIDE_EN.md`、
->   `TECH_REPORT_EN.md`（内容与中文版对应，以中文为准；灾难恢复同样在 `QUICKSTART_EN.md` §9）。
->
-> 🌐 **English README**: see [`README_EN.md`](README_EN.md).
->
-> > **关于硬盘均衡负载**：它能在内存紧张时帮助维持训练，但**不能替代 Windows 虚拟内存**。
-> > 训练期间仍**建议保留至少 1GB 虚拟内存**以应对突发内存峰值。
+```python
+import torch, bitsandbytes as bnb
 
-### What's added
+layer = bnb.nn.Linear4bit(1024, 1024, quant_type="nf4", compute_dtype=torch.float32)
+layer = layer.to("cpu")      # .to() is what quantises the weights
+y = layer(torch.randn(2, 1024))
+```
 
-| Kernel | Entry point | Purpose |
-|---|---|---|
-| **Gated DeltaNet fwd/bwd** | `gdn_fwd_cpu` / `gdn_bwd_cpu` (csrc/cpu_gdn.cpp) | Fused Gated DeltaNet (Qwen3-Next/3.5 linear attention) — ~35× vs per-step Python loop; chunk-checkpointed backward |
-| **Fused 8-bit blockwise dequant GEMM** | `cgemm_8bit_inference_cpu_fp32` (`bitsandbytes::gemm_8bit`, `bnb.functional.fused_dequant_linear_8bit`) | `out = A @ dequant8(B)` with weights kept uint8 (¼ DRAM traffic), no fp32 temporary |
-| **Fused 8-bit optimizer** | `coptimizer_update_8bit_blockwise_cpu` (`bnb.optim.AdamW8bit` etc.) | Single-pass dequant→update→requant; optimizer state memory ≈ 1/3.8 of fp32 |
-| **Blockwise 8/4-bit quant & dequant** | `cquantize_blockwise_cpu_*` / `cdequantize_blockwise_cpu_*` | AVX2 LUT quantize + dequantize; NF4/FP4 kernels with NEON/AVX2 paths |
-| **4-bit inference GEMV** | `cgemv_4bit_inference_cpu_*` | Fused 4-bit dequant GEMV/GEMM for AVX2 machines (symbol alias fixed) |
-| **GDN runtime patch** | `bitsandbytes/gdn_cpu.py` | `patch_transformers()` / `patch_fla()` — route transformers GDN slow paths to the fused kernel |
-| **iGPU (DirectML) block-level executor** | `gpu_scheduler.py` (`IgpuExecutor`, `train.py --igpu`) | Experimental: frozen weights resident on the DirectML iGPU, forward/backward on-device, **one sync per step**; **off by default** — measured **+30~35%** for GEMM-dense seq≤256 training, **negative** at long sequences (driver limits) |
+### Fused Gated DeltaNet (Qwen3-Next / Qwen3.5 linear attention)
 
-### Build
+```python
+from bitsandbytes.gdn_cpu import patch_transformers
+
+patched = patch_transformers()   # routes the transformers torch fallback to the fused CPU kernel
+# patched == True means the hybrid-attention models now use the fused fwd/bwd kernel
+# (transformers 5.x and older models both supported; see docs_cpu/EPYC_VALIDATION.md for HW notes)
+```
+
+### EFST — frozen experts + expert LoRA for MoE training
+
+```python
+from bitsandbytes.efst import EFSTConfig, apply_efst
+
+cfg = EFSTConfig(
+    top_k=2,                                   # keep the 2 hottest experts per layer
+    calibration_dataloader=calib_batches,
+    calibration_forward_fn=lambda batch: model(**batch),
+    lora=True, lora_r=8, lora_alpha=16,        # train LoRA adapters inside the selected experts
+)
+info = apply_efst(model, cfg)
+print(info.summary())                          # expert groups, trainable before/after
+```
+
+Works with classic `ModuleList` experts and with the fused 3-D tensor experts used by HF
+transformers 5.x Mixtral / Qwen3-Next (routing-usage calibration included).
+
+### Disk load balancer — spill cold tensors to SSD when RAM is tight
+
+```python
+import torch
+from bitsandbytes.disk_balancer import DiskLoadBalancer, DiskBalancerConfig
+
+bal = DiskLoadBalancer(DiskBalancerConfig(mode="auto"))
+bal.start()                                    # picks a safe local SSD cache dir
+t = torch.arange(2 * 1024 * 1024, dtype=torch.float32)
+bal.put_cold("cold_embeddings", t, tier="ssd")
+bal.wait_writes()
+back = bal.get_cold_shape("cold_embeddings", t.shape)
+bal.cleanup()                                  # deletes only its own cache dir
+```
+
+Safety rules: on Linux/WSL only native ext4/xfs/btrfs are used — 9P host drives (`/mnt/[drive]`),
+network filesystems, read-only mounts, tmpfs and `/` are rejected; explicit unsafe
+`--flash_paths` raise. In-flight write bytes are capped (`max_inflight_bytes`) so offload cannot
+silently pin source tensors; quota and free-space limits are enforced.
+
+### CPU concurrency planner / thread calibration (`torch_cpu_kit`)
+
+```python
+from bitsandbytes import torch_cpu_kit as tck
+
+plan = tck.plan_concurrency_for_training(
+    800_000_000, mode="lora", trainable_fraction=0.005, activation_gb=0.5)
+print(plan["advice"])        # e.g. "3 job(s) x 2 thread(s) each ..."
+print(plan["env"])           # OMP/MKL env for each job
+
+# Measured on a real step, not guessed (hybrid-attention models often prefer fewer threads):
+best = tck.tune_threads(lambda: train_step(model, batch))
+```
+
+Also: `estimate_training_memory_gb()`, `spawn_training_jobs(cmds, plan)` (logs prefixed
+`[jobN]`), `apply_env()`, `init()`, `mem_report()`.
+
+---
+
+## What is inside the CPU backend
+
+| Area | What it does |
+|---|---|
+| 8-bit optimizers | AdamW/Adam/AdEMAMix/LAMB/LARS/Lion + paged variants, blockwise 8-bit state with single-pass dequant→update→requant kernels (AVX2/NEON) |
+| 4-bit optimizers | AdamW4bit etc. with ≈1.03 bytes of state per parameter |
+| Quantisation | blockwise 8-bit, NF4/FP4 4-bit quantize/dequantize; 4-bit GEMV inference kernel |
+| `gemm_8bit` | `out = A @ dequant8(B)` with weights kept uint8 (¼ DRAM traffic), no fp32 temporary (`bnb.functional.fused_dequant_linear_8bit`) |
+| GDN | fused Gated DeltaNet forward + chunk-checkpointed backward (`gdn_fwd_cpu` / `gdn_bwd_cpu`), plus `patch_transformers()` / `patch_fla()` |
+| Fused elementwise | RMSNorm fwd/bwd, SwiGLU, add-scale, NT-store variants |
+| CPU detection | CPUID/XCR0 probe with OS-state checks; the AVX-512 library is only loaded when AVX-512 **and** BF16 are present, otherwise AVX2 (or the generic zero-AVX artifact) |
+| Tooling | `torch_cpu_kit`, `disk_balancer`, `efst`, `bitsandbytes-cpu` CLI |
+
+The library never loads a CUDA/ROCm/XPU library: `bnb.cuda`/`bnb.optim` CPU paths work, and
+`import bitsandbytes` succeeds on a CPU-only host with no CUDA anywhere.
+
+---
+
+## Performance notes (measured on this fork's target laptops)
+
+All numbers are from the repodata in `bench_results/` and the technical report; hardware:
+R5-4500U (6C/6T, AVX2, 15.4 GB) / i5-10400 (6C/12T, AVX2, 12 GB), no NVIDIA GPU.
+
+| Scenario | Result |
+|---|---|
+| 17M-parameter AdamW8bit step | ≈34.7 ms (6 threads) / ≈38.6 ms (1 thread); 7–10 GB/s effective |
+| 8-bit vs fp32 optimizer traffic | ≈16 B/element vs ≈28 B/element (1.7× less bandwidth) |
+| Concurrency packing (synthetic jobs) | 6 jobs × 1 thread **5619 tok/s** vs 1 job × 6 threads **3843 tok/s** (+46%) |
+| Real model (Qwen3.5-0.8B LoRA, seq 64) | 4 threads beat 6 by **7–10%** — measure with `tune_threads()` |
+| Fused lm_head 3-bit GEMM (research) | 14–22% faster than fp32 matmul, 89% less weight memory |
+
+Not every workload is faster than fp32: 4-bit/8-bit kernels trade compute for memory traffic,
+and small per-layer matmuls are better left to oneDNN. See `bench_results/` and the report for
+the full trade-off tables, including negative results.
+
+---
+
+## Platform limitations
+
+- **CPU only.** CUDA/ROCm/XPU kernels are not built; a GPU is never required or used.
+- **Windows wheel** ships a prebuilt DLL. That DLL predates the dev5/dev6 experimental
+  2/3-bit quantization kernels, so those research symbols are Linux-only for now.
+- **manylinux_2_17 wheel**: the AVX-512 library inside it is single-threaded (the parallel
+  build is only for the native `manylinux_2_39` wheel). On AVX-512 machines set
+  `BNB_CPU_DISABLE_AVX512=1` to run the AVX2 OpenMP path.
+- **aarch64**: there is no PyPI wheel yet; build from the sdist (`build_linux.sh`) or use the
+  Termux instructions in `docs_cpu/TERMUX_GUIDE.md`.
+- **macOS**: no wheel is published and the CPU backend is not tested there; the sdist build may
+  work with clang + OpenMP, but treat it as unsupported.
+- The 2/3-bit blockwise quantisation + fused dequant/GEMM kernels (dev5/dev6) are **research
+  prototypes with C kernels only** (no Python API). They are covered by the C self-test and
+  `test_q3bit_kernels.py`; do not build products on them yet.
+- `torch` must be installed separately as the CPU build (see above).
+
+## Build from source
 
 ```bash
-# Linux (x86_64 AVX2 or aarch64 NEON, g++/clang + OpenMP)
-# deps: sudo apt install g++ libomp-dev   (Debian/Ubuntu)
-bash build_linux.sh            # -> bitsandbytes/libbitsandbytes_cpu.so
-bash build_linux.sh --selftest # also build+run torch-free C self-test
+# Linux (x86-64 AVX2 or aarch64 NEON; g++/clang + OpenMP)
+sudo apt install g++ libomp-dev           # Debian/Ubuntu
+bash build_linux.sh                       # -> bitsandbytes/libbitsandbytes_cpu.so
+bash build_linux.sh --selftest            # also build + run the torch-free C self-test
 
-# Windows (MSVC, manual cl build, no CMake)
-build_manual\build_manual.bat amd   # (in VS x64 Native Tools prompt)
+# Windows (MSVC, manual build, no CMake)
+build_manual\build_manual.bat amd         # run inside "x64 Native Tools Command Prompt"
 ```
 
-> `.gitattributes` 强制 C/C++ 源码与构建脚本用 LF 换行，clone 到 Windows/Linux 均可
-> 直接编译（CRLF 会让 MSVC 吞行、Linux `g++` 报 `bad interpreter`）。
-> `disk_balancer`（`--flash`）跨平台：Windows 用 ctypes；Linux 用 `/proc/mounts` + psutil + `/sys/block/*/queue/rotational`；**WSL 已支持**——缓存只落在 WSL 自己的 ext4（默认 `~/.cache/bnb_flash_cache`），9P 宿主盘 `/mnt/[盘符]`、网络盘、只读挂载、tmpfs 一律拒绝（显式 `--flash_paths` 指过去会直接报错）。零拷贝写盘队列有在飞字节上限（`max_inflight_bytes`），卸载不会把源张量内存偷偷留住。
+Two special wheel builds used by this project are documented in
+[`docs_cpu/WHEEL_PLATFORM_NOTES.md`](https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/blob/HEAD/bitsandbytes/docs_cpu/WHEEL_PLATFORM_NOTES.md):
+the zig manylinux_2_17 portable build and the devtoolset-8 manylinux_2_17 **OpenMP** build
+(`build_oldgomp_linux.sh`, bundles libgomp).
 
-### Prebuilt wheels (optional)
-
-预编译的 wheel（`pip install bitsandbytes-<ver>-py3-none-<platform>.whl`）可从 **Release**
-获取，无需自己编译（Windows `win_amd64` / Linux `linux_x86_64` / aarch64
-`linux_aarch64`）。wheel 内含 `bitsandbytes/` 包 + 编译好的 native 库
-（`.dll`/`.so`），安装即用。
-
-### Self-test (no torch required)
+## Tests
 
 ```bash
-# C-level kernel self-test: quantize roundtrip / gemm_8bit / 4bit GEMV / 8bit optimizer
-bash build_linux.sh --selftest
+bash build_linux.sh --selftest          # C kernels: 9 checks (quantize/gemm_8bit/gemv_4bit/
+                                        # AdamW8bit/vector-vs-scalar/2-3bit dequant/fused GEMM)
+python test_efst_regressions.py         # EFST: nested blocks, 3-D tensor experts, routing usage
+python test_q3bit_kernels.py            # 2/3-bit pack/unpack, error bounds, AVX2 kernel exactness
+python test_concurrency_plan.py         # planner / memory estimate / tune_threads / launcher
+python test_disk_balancer_safety.py     # data-safety rules for the disk balancer
 ```
 
-### Notes
+## Documentation
 
-- This fork is based on bitsandbytes v0.45.1 (MIT, Facebook) and keeps the upstream
-  MIT license. See `NOTICE.md` for contributions.
-- The CPU backend keeps the upstream NEON/AVX paths for plain quant/dequant;
-  the **fused training kernels** (GDN, gemm_8bit, 8-bit optimizer) are the
-  addition of this fork.
-- Not recommended for use without the compiled native library — build first
-  (Windows: `build_manual\build_manual.bat amd`, Linux: `build_linux.sh`).
+The long-form docs live in the repository (`bitsandbytes/docs_cpu/`, Chinese and English):
 
-## :heart: Sponsors
-The continued maintenance and development of `bitsandbytes` is made possible thanks to the generous support of our sponsors. Their contributions help ensure that we can keep improving the project and delivering valuable updates to the community.
+- [`QUICKSTART.md`](https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/blob/HEAD/bitsandbytes/docs_cpu/QUICKSTART.md) / `QUICKSTART_EN.md` — commands, features, disaster recovery
+- [`API_REFERENCE.md`](https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/blob/HEAD/bitsandbytes/docs_cpu/API_REFERENCE.md) / `API_REFERENCE_EN.md` — every public API
+- [`TECHNICAL_GUIDE.md`](https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/blob/HEAD/bitsandbytes/docs_cpu/TECHNICAL_GUIDE.md) — kernel architecture (AVX2/NEON paths, layouts, sync rules)
+- [`EPYC_VALIDATION.md`](https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/blob/HEAD/bitsandbytes/docs_cpu/EPYC_VALIDATION.md) — real AVX-512/BF16 machine validation
+- [`ISA_MATRIX.md`](https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/blob/HEAD/bitsandbytes/docs_cpu/ISA_MATRIX.md) — x86 AVX2/generic/AVX-512 + aarch64 test matrix
+- [`WHEEL_PLATFORM_NOTES.md`](https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/blob/HEAD/bitsandbytes/docs_cpu/WHEEL_PLATFORM_NOTES.md) — which wheel runs where, and why
 
-<kbd><a href="https://hf.co" target="_blank"><img width="100" src="https://huggingface.co/datasets/huggingface/brand-assets/resolve/main/hf-logo.svg" alt="Hugging Face"></a></kbd>
+## Changelog
 
-## License
-`bitsandbytes` is MIT licensed.
+| Version | Changes |
+|---|---|
+| `0.50.2.dev1` | First CPU-fork release: AVX2/NEON CPU backend (8-bit optimizers, fused GDN, `gemm_8bit`, 4/8-bit quantisation) |
+| `0.50.2.dev2` | AdamW4bit packaged; PyPI release |
+| `0.50.2.dev3` | README / API reference / summary document the 4-bit optimizer |
+| `0.50.2.dev4` | Linux wheels (manylinux_2_17 portable + manylinux_2_39 OpenMP); libgcc-free CPUID detection; AVX-512 BF16 loader safety; portability and data-safety fixes |
+| `0.50.2.dev5` | WSL/Linux disk balancer (ext4-only, 9P rejected, in-flight byte cap); `torch_cpu_kit` concurrency planner / memory estimator / `tune_threads`; optional `kernels` warning fix; EPYC validation docs |
+| `0.50.2.dev6` | manylinux_2_17 wheel is now **OpenMP** (devtoolset-8, bundled libgomp → 3–4× optimizer-kernel speedup on old glibc); csrc 2/3-bit dequant + fused GEMM kernels with 9-item C self-test; EFST fused tensor-expert routing fix; GCC 8 `<cpuid.h>` portability fix |
+| `0.50.2.dev7` | documentation release: README rewritten for the CPU fork (install/wheels/platform matrix, feature table, measured performance, limitations, tests, full dev1→dev7 changelog, EFST/disk-balancer/toolbox examples) |
 
-## How to cite us
-If you found this library useful, please consider citing our work:
+## License and attribution
 
-### QLoRA
-
-```bibtex
-@article{dettmers2023qlora,
-  title={Qlora: Efficient finetuning of quantized llms},
-  author={Dettmers, Tim and Pagnoni, Artidoro and Holtzman, Ari and Zettlemoyer, Luke},
-  journal={arXiv preprint arXiv:2305.14314},
-  year={2023}
-}
-```
-
-### LLM.int8()
-
-```bibtex
-@article{dettmers2022llmint8,
-  title={LLM.int8(): 8-bit Matrix Multiplication for Transformers at Scale},
-  author={Dettmers, Tim and Lewis, Mike and Belkada, Younes and Zettlemoyer, Luke},
-  journal={arXiv preprint arXiv:2208.07339},
-  year={2022}
-}
-```
-
-### 8-bit Optimizers
-
-```bibtex
-@article{dettmers2022optimizers,
-  title={8-bit Optimizers via Block-wise Quantization},
-  author={Dettmers, Tim and Lewis, Mike and Shleifer, Sam and Zettlemoyer, Luke},
-  journal={9th International Conference on Learning Representations, ICLR},
-  year={2022}
-}
-```
+`bitsandbytes-cpu-fork` is MIT licensed, like upstream
+[bitsandbytes](https://github.com/bitsandbytes-foundation/bitsandbytes) (this fork is based on
+upstream `0.50.2`); the CUDA kernels were removed and replaced by the CPU backend described
+above. See `NOTICE.md` for details and upstream attribution.
