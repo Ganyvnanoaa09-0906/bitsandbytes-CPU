@@ -283,39 +283,78 @@ def resolve_model(spec: str) -> str:
     return local
 
 
-def make_data(args, model, tokenizer=None):
-    """Synthetic fixed batch (default) or random windows from --data text."""
+def _load_tokenizer(path):
+    try:
+        from transformers import AutoTokenizer
+        return AutoTokenizer.from_pretrained(path, local_files_only=True)
+    except Exception:
+        return None
+
+
+def make_data(args, model):
+    """Task-aware batch: causal LM (input/target shifted) or masked LM (15% random masks)."""
     from transformers import AutoConfig
     cfg = AutoConfig.from_pretrained(args.model_path, local_files_only=True)
     vocab = getattr(cfg, 'vocab_size', None) or getattr(getattr(cfg, 'text_config', cfg), 'vocab_size', 32000)
-    if not args.data:
+    tok = _load_tokenizer(args.model_path) if (args.data or args.task == 'mlm') else None
+    if args.data:
+        text = open(args.data, encoding='utf-8', errors='replace').read()
+        toks = tok(text)['input_ids']
+        if len(toks) < args.tokens + 2:
+            raise SystemExit('data file too short after tokenisation: %d tokens' % len(toks))
+        g = np.random.default_rng(1234)
+        win = args.tokens + 1
+        seqs = [toks[int(g.integers(0, len(toks) - win)):][:win] for _ in range(args.batch)]
+        ids = torch.tensor(seqs, dtype=torch.long)
+    else:
         g = torch.Generator().manual_seed(1234)
         ids = torch.randint(0, min(vocab, 4000), (args.batch, args.tokens + 1), generator=g)
-        return ids[:, :-1], ids[:, 1:]
-    from transformers import AutoTokenizer
-    tok = AutoTokenizer.from_pretrained(args.model_path, local_files_only=True)
-    text = open(args.data, encoding='utf-8', errors='replace').read()
-    toks = tok(text)['input_ids']
-    if len(toks) < args.tokens + 2:
-        raise SystemExit('data file too short after tokenisation: %d tokens' % len(toks))
-    g = np.random.default_rng(1234)
-    win = args.tokens + 1
-    batch = []
-    for _ in range(args.batch):
-        s = int(g.integers(0, len(toks) - win))
-        batch.append(toks[s:s + win])
-    ids = torch.tensor(batch, dtype=torch.long)
-    return ids[:, :-1], ids[:, 1:]
+    if args.task == 'mlm':
+        input_ids = ids[:, :-1].clone()
+        labels = input_ids.clone()
+        mask_id = getattr(tok, 'mask_token_id', None) if tok is not None else None
+        if mask_id is None:
+            mask_id = 103
+        rng = np.random.default_rng(1234)
+        prob = rng.random(input_ids.shape)
+        mask_pos = prob < 0.15
+        input_ids[mask_pos] = mask_id
+        labels[~mask_pos] = -100
+        attn = torch.ones_like(input_ids)
+        return {'input_ids': input_ids, 'labels': labels, 'attention_mask': attn}
+    return {'input_ids': ids[:, :-1], 'labels': ids[:, 1:]}
+
+
+def run_loss(model, task, batch):
+    if task == 'mlm':
+        return model(input_ids=batch['input_ids'], attention_mask=batch['attention_mask'],
+                     labels=batch['labels']).loss
+    return model(batch['input_ids'], labels=batch['labels'], use_cache=False).loss
 
 
 def train(args) -> int:
-    from transformers import AutoModelForCausalLM
+    from transformers import AutoModelForCausalLM, AutoModelForMaskedLM
     torch.set_num_threads(6)
     path = resolve_model(args.model)
     args.model_path = path
     print('model dir:', path)
-    model = AutoModelForCausalLM.from_pretrained(path, torch_dtype=torch.float32,
-                                                 local_files_only=True)
+    task = args.task
+    model = None
+    if task in ('auto', 'clm'):
+        try:
+            model = AutoModelForCausalLM.from_pretrained(path, torch_dtype=torch.float32,
+                                                         local_files_only=True)
+            task = 'clm'
+        except Exception as e:
+            if args.task == 'clm':
+                raise
+            print('  causal-LM load failed (%s); trying masked-LM' % str(e)[:80])
+    if model is None:
+        model = AutoModelForMaskedLM.from_pretrained(path, torch_dtype=torch.float32,
+                                                     local_files_only=True)
+        task = 'mlm'
+    args.task = task
+    print('  task:', task)
     model.eval()
     if args.mode == 'full':
         for p in model.parameters():
@@ -325,15 +364,16 @@ def train(args) -> int:
             p.requires_grad_(False)
     skip_lm = bool(getattr(model.config, 'tie_word_embeddings', False))
     total = sum(p.numel() for p in model.parameters())      # before patching: base weights leave Parameters
-    inp, tgt = make_data(args, model)
+    batch = make_data(args, model)
     # CPU reference on the same batch, before patching: the iGPU first-step loss must match it
     with torch.no_grad():
         try:
-            base_loss = float(model(inp, labels=tgt, use_cache=False).loss)
+            base_loss = float(run_loss(model, task, batch))
         except Exception:
             base_loss = float('nan')
     n = patch_model(model, args.mode, args.lora_r, skip_lm)
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    _uniq = {id(p): p for p in model.parameters() if p.requires_grad}
+    trainable = sum(p.numel() for p in _uniq.values())
     print('architecture: %s | params %.2f M | trainable %.2f M (%.1f%%) | iGPU linears %d%s'
           % (model.config.architectures[0] if getattr(model.config, 'architectures', None) else '?',
              total / 1e6, trainable / 1e6, 100.0 * trainable / max(1, total), n,
@@ -347,8 +387,8 @@ def train(args) -> int:
         for k in STATS:
             STATS[k] = 0
         t0 = time.perf_counter()
-        out = model(inp, labels=tgt, use_cache=False)
-        loss = out.loss
+        out = run_loss(model, task, batch)
+        loss = out
         loss.backward()
         grad_norm = 0.0
         for p in params:
@@ -401,6 +441,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--model', required=True)
     ap.add_argument('--mode', choices=['lora', 'full'], default='lora')
+    ap.add_argument('--task', choices=['auto', 'clm', 'mlm'], default='auto')
     ap.add_argument('--steps', type=int, default=5)
     ap.add_argument('--tokens', type=int, default=64)
     ap.add_argument('--batch', type=int, default=1)
