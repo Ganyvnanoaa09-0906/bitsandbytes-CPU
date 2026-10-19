@@ -595,6 +595,25 @@ long long fused_add_scale_rmsnorm_cpu(
     float* x, const float* y, const float* scale,
     const float* weight, float* out, float* xs, long long M, long long D, float eps
 );
+
+// ---------------------------------------------------------------------------
+// 2-/3-bit blockwise dequantization (from the 2bit/3bit CPU training research,
+// see q3bit_proto.py / report 7.139-7.141). Layout matches the prototype:
+//   blocks of `block` elements; 3-bit block = block/8*3 bytes, 2-bit = block/4;
+//   one float absmax per block; value(code) = code*(absmax/center) - absmax,
+//   center = (2^bits - 1) / 2.
+// `dequantize_*_cpu` dispatch to the best available path (NEON on ARM, AVX2 on
+// x86, scalar otherwise); the `*_scalar_cpu` variants are the reference used by
+// the C selftest to cross-check the vector paths.
+// ---------------------------------------------------------------------------
+void dequantize_3bit_cpu(const unsigned char* packed, const float* absmax, float* out,
+                         long long n_blocks, long long block);
+void dequantize_2bit_cpu(const unsigned char* packed, const float* absmax, float* out,
+                         long long n_blocks, long long block);
+void dequantize_3bit_scalar_cpu(const unsigned char* packed, const float* absmax, float* out,
+                                long long n_blocks, long long block);
+void dequantize_2bit_scalar_cpu(const unsigned char* packed, const float* absmax, float* out,
+                                long long n_blocks, long long block);
 #if defined(__cplusplus)
 }
 #endif

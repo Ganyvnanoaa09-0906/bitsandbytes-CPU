@@ -1013,4 +1013,23 @@ long long cfused_add_scale_rmsnorm_cpu(
     return fused_add_scale_rmsnorm_cpu(x, y, scale, weight, out, xs, M, D, eps);
 }
 
+// 2-/3-bit blockwise dequantization (research prototype; see cpu_ops.h).
+long long cbdequantize_3bit_cpu(
+    const unsigned char* packed, const float* absmax, float* out,
+    long long n_blocks, long long block
+) {
+    if (!packed || !absmax || !out || n_blocks <= 0 || block <= 0 || (block % 8) != 0) return -1;
+    dequantize_3bit_cpu(packed, absmax, out, n_blocks, block);
+    return 0;
+}
+
+long long cbdequantize_2bit_cpu(
+    const unsigned char* packed, const float* absmax, float* out,
+    long long n_blocks, long long block
+) {
+    if (!packed || !absmax || !out || n_blocks <= 0 || block <= 0 || (block % 4) != 0) return -1;
+    dequantize_2bit_cpu(packed, absmax, out, n_blocks, block);
+    return 0;
+}
+
 }

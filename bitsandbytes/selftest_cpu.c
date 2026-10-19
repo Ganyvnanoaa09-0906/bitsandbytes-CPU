@@ -10,7 +10,7 @@
 //         csrc/cpu_ops.cpp csrc/cpu_gdn.cpp csrc/pythonInterface.cpp \
 //         -o selftest_cpu && ./selftest_cpu
 //
-// 覆盖（**实际 5 项**）：
+// 覆盖（**实际 7 项**）：
 //   1) quantize_blockwise(8bit) 往返：量化→反量化 误差 < 0.6%
 //   2) gemm_8bit 线性前向：A @ dequant8(B) 与 A @ B 近似
 //   3) gemv_4bit(nf4) 推理：A @ dequant4(B) 输出有限且非全零
@@ -18,6 +18,9 @@
 //   5) **向量分派与标量路径的叉验证**：同一份权重只改 blocksize，
 //      使其分别命中 NEON/AVX 分派与标量回退，输出必须逐位相同。
 //      —— 这一项是为了补上"只有入口数值正确、向量路径从未被验证"的缺口。
+//
+//   6/7) 2-/3-bit dequant：C 里量化后分别用标量参考路径与 AVX2/NEON 路径反量化，
+//        要求两条路径一致（补上"低比特反量化向量路径从未被验证"的缺口）。
 //
 //   ⚠️ 本段原先写的是“5 项”，但其中第 4 项标成 optimizer、第 5 项写成
 //      “GDN fwd 前向”。实测 main() 里当时只有 4 个 CHECK —— **没有** GDN fwd。
@@ -56,6 +59,14 @@ void cgemv_4bit_inference_cpu_fp32(
     float* A, unsigned char* B, const float* absmax, float* out,
     long long M, long long N, long long K,
     long long lda, long long ldb, long long ldc, long long blocksize, int data_type);
+void dequantize_3bit_cpu(const unsigned char* packed, const float* absmax, float* out,
+                         long long n_blocks, long long block);
+void dequantize_2bit_cpu(const unsigned char* packed, const float* absmax, float* out,
+                         long long n_blocks, long long block);
+void dequantize_3bit_scalar_cpu(const unsigned char* packed, const float* absmax, float* out,
+                                long long n_blocks, long long block);
+void dequantize_2bit_scalar_cpu(const unsigned char* packed, const float* absmax, float* out,
+                                long long n_blocks, long long block);
 void coptimizer_update_8bit_blockwise_cpu(
     int optimizer_id, void* g, void* p, unsigned char* state1, unsigned char* state2,
     float beta1, float beta2, float beta3, float alpha, float eps, int step, float lr,
@@ -258,7 +269,91 @@ int main(void) {
         free(W); free(amA); free(amB); free(A2); free(outA); free(outB);
     }
 
-    printf("\n=== 汇总: %d 失败 / 5 项 ===\n", failures);
+    // ---- 6/7) 2/3-bit dequant：向量路径 vs 标量参考 ----
+    {
+        const long long nb = 512, bs = 64;
+        const long long n = nb * bs;
+        float* A = (float*)malloc(n * sizeof(float));
+        for (long long i = 0; i < n; i++) A[i] = sinf(i * 0.017f) * 2.5f + 0.1f;
+        float* absmax = (float*)malloc(nb * sizeof(float));
+        float* out_ref = (float*)malloc(n * sizeof(float));
+        float* out_impl = (float*)malloc(n * sizeof(float));
+        unsigned char* packed = (unsigned char*)malloc(nb * (bs / 8) * 3);
+
+        // 3-bit: per-block absmax + 8 codes/3 bytes
+        for (long long b = 0; b < nb; b++) {
+            const float* blk = A + b * bs;
+            float amax = 0.0f;
+            for (long long i = 0; i < bs; i++) {
+                float a = fabsf(blk[i]);
+                if (a > amax) amax = a;
+            }
+            absmax[b] = amax;
+            const float scale = amax / 3.5f;
+            for (long long g = 0; g < bs; g += 8) {
+                unsigned v = 0;
+                for (int j = 0; j < 8; j++) {
+                    int code = 0;
+                    if (scale > 0.0f) {
+                        code = (int)lroundf(blk[g + j] / scale + 3.5f);
+                        if (code < 0) code = 0;
+                        if (code > 7) code = 7;
+                    }
+                    v |= (unsigned)code << (3 * j);
+                }
+                unsigned char* q = packed + b * (bs / 8) * 3 + (g / 8) * 3;
+                q[0] = (unsigned char)(v & 0xFF);
+                q[1] = (unsigned char)((v >> 8) & 0xFF);
+                q[2] = (unsigned char)((v >> 16) & 0xFF);
+            }
+        }
+        dequantize_3bit_scalar_cpu(packed, absmax, out_ref, nb, bs);
+        dequantize_3bit_cpu(packed, absmax, out_impl, nb, bs);
+        double maxdiff = 0.0;
+        for (long long i = 0; i < n; i++) {
+            double d = fabs((double)out_impl[i] - (double)out_ref[i]);
+            if (d > maxdiff) maxdiff = d;
+        }
+        CHECK("3-bit dequant 向量路径与标量参考一致", maxdiff < 1e-6, "maxdiff=%.3e", maxdiff);
+
+        // 2-bit: 4 codes/byte
+        for (long long b = 0; b < nb; b++) {
+            const float* blk = A + b * bs;
+            float amax = absmax[b];
+            const float scale = amax / 1.5f;
+            for (long long g = 0; g < bs; g += 8) {
+                unsigned v = 0;
+                for (int j = 0; j < 8; j++) {
+                    int code = 0;
+                    if (scale > 0.0f) {
+                        code = (int)lroundf(blk[g + j] / scale + 1.5f);
+                        if (code < 0) code = 0;
+                        if (code > 3) code = 3;
+                    }
+                    v |= (unsigned)code << (2 * j);
+                }
+                unsigned char* q = packed + b * (bs / 4) + (g / 4);
+                q[0] = (unsigned char)(v & 0xFF);
+                q[1] = (unsigned char)((v >> 8) & 0xFF);
+            }
+        }
+        dequantize_2bit_scalar_cpu(packed, absmax, out_ref, nb, bs);
+        dequantize_2bit_cpu(packed, absmax, out_impl, nb, bs);
+        double maxdiff2 = 0.0;
+        for (long long i = 0; i < n; i++) {
+            double d = fabs((double)out_impl[i] - (double)out_ref[i]);
+            if (d > maxdiff2) maxdiff2 = d;
+        }
+        CHECK("2-bit dequant 向量路径与标量参考一致", maxdiff2 < 1e-6, "maxdiff=%.3e", maxdiff2);
+
+        free(A);
+        free(absmax);
+        free(out_ref);
+        free(out_impl);
+        free(packed);
+    }
+
+    printf("\n=== 汇总: %d 失败 / 7 项 ===\n", failures);
     if (failures == 0) {
         printf("[PASSED] bitsandbytes CPU 内核自检全部通过（可安全在 Linux/ARM 使用）\n");
         return 0;

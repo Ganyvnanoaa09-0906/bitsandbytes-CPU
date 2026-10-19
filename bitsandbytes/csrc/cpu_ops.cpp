@@ -4036,3 +4036,159 @@ long long fused_add_scale_rmsnorm_cpu(
     // 第二步：对 x 做 RMSNorm（x 现在就是 h），res 传 NULL
     return fused_rmsnorm_fwd_cpu(x, nullptr, weight, out, xs, M, D, eps);
 }
+
+// ---------------------------------------------------------------------------
+// 2-/3-bit blockwise dequantization (research prototype, see q3bit_proto.py).
+// The scalar reference is cross-checked against the vector paths by selftest_cpu.
+// ---------------------------------------------------------------------------
+static inline float bnb_q3bit_value(int code, float scale, float amax) {
+    return (float)code * scale - amax;
+}
+
+void dequantize_3bit_scalar_cpu(const unsigned char* packed, const float* absmax, float* out,
+                                long long n_blocks, long long block) {
+    for (long long b = 0; b < n_blocks; ++b) {
+        const unsigned char* p = packed + b * (block / 8) * 3;
+        const float amax = absmax[b];
+        const float scale = amax / 3.5f;
+        float* dst = out + b * block;
+        for (long long g = 0; g < block; g += 8) {
+            const unsigned char* q = p + (g / 8) * 3;
+            unsigned v = (unsigned)q[0] | ((unsigned)q[1] << 8) | ((unsigned)q[2] << 16);
+            for (int j = 0; j < 8; ++j) {
+                dst[g + j] = bnb_q3bit_value((int)((v >> (3 * j)) & 7), scale, amax);
+            }
+        }
+    }
+}
+
+void dequantize_2bit_scalar_cpu(const unsigned char* packed, const float* absmax, float* out,
+                                long long n_blocks, long long block) {
+    for (long long b = 0; b < n_blocks; ++b) {
+        const unsigned char* p = packed + b * (block / 4);
+        const float amax = absmax[b];
+        const float scale = amax / 1.5f;
+        float* dst = out + b * block;
+        for (long long g = 0; g < block; g += 8) {
+            const unsigned char* q = p + (g / 4);
+            unsigned v = (unsigned)q[0] | ((unsigned)q[1] << 8);
+            for (int j = 0; j < 8; ++j) {
+                dst[g + j] = bnb_q3bit_value((int)((v >> (2 * j)) & 3), scale, amax);
+            }
+        }
+    }
+}
+
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
+static inline void bnb_dequant_3bit_avx2(const unsigned char* packed, const float* absmax,
+                                         float* out, long long n_blocks, long long block) {
+    for (long long b = 0; b < n_blocks; ++b) {
+        const unsigned char* p = packed + b * (block / 8) * 3;
+        const float amax = absmax[b];
+        const float scale = amax / 3.5f;
+        const __m256 vs = _mm256_set1_ps(scale);
+        const __m256 va = _mm256_set1_ps(amax);
+        float* dst = out + b * block;
+        for (long long g = 0; g < block; g += 8) {
+            const unsigned char* q = p + (g / 8) * 3;
+            unsigned v = (unsigned)q[0] | ((unsigned)q[1] << 8) | ((unsigned)q[2] << 16);
+            __m256i codes = _mm256_setr_epi32(
+                (int)(v & 7), (int)((v >> 3) & 7), (int)((v >> 6) & 7), (int)((v >> 9) & 7),
+                (int)((v >> 12) & 7), (int)((v >> 15) & 7), (int)((v >> 18) & 7),
+                (int)((v >> 21) & 7));
+            __m256 f = _mm256_sub_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(codes), vs), va);
+            _mm256_storeu_ps(dst + g, f);
+        }
+    }
+}
+
+static inline void bnb_dequant_2bit_avx2(const unsigned char* packed, const float* absmax,
+                                         float* out, long long n_blocks, long long block) {
+    for (long long b = 0; b < n_blocks; ++b) {
+        const unsigned char* p = packed + b * (block / 4);
+        const float amax = absmax[b];
+        const float scale = amax / 1.5f;
+        const __m256 vs = _mm256_set1_ps(scale);
+        const __m256 va = _mm256_set1_ps(amax);
+        float* dst = out + b * block;
+        for (long long g = 0; g < block; g += 8) {
+            const unsigned char* q = p + (g / 4);
+            unsigned v = (unsigned)q[0] | ((unsigned)q[1] << 8);
+            __m256i codes = _mm256_setr_epi32(
+                (int)(v & 3), (int)((v >> 2) & 3), (int)((v >> 4) & 3), (int)((v >> 6) & 3),
+                (int)((v >> 8) & 3), (int)((v >> 10) & 3), (int)((v >> 12) & 3),
+                (int)((v >> 14) & 3));
+            __m256 f = _mm256_sub_ps(_mm256_mul_ps(_mm256_cvtepi32_ps(codes), vs), va);
+            _mm256_storeu_ps(dst + g, f);
+        }
+    }
+}
+#endif
+
+#if defined(_M_ARM64) || defined(__aarch64__)
+static inline void bnb_dequant_3bit_neon(const unsigned char* packed, const float* absmax,
+                                         float* out, long long n_blocks, long long block) {
+    for (long long b = 0; b < n_blocks; ++b) {
+        const unsigned char* p = packed + b * (block / 8) * 3;
+        const float amax = absmax[b];
+        const float scale = amax / 3.5f;
+        const float32x4_t vs = vdupq_n_f32(scale);
+        const float32x4_t va = vdupq_n_f32(amax);
+        float* dst = out + b * block;
+        for (long long g = 0; g < block; g += 8) {
+            const unsigned char* q = p + (g / 8) * 3;
+            unsigned v = (unsigned)q[0] | ((unsigned)q[1] << 8) | ((unsigned)q[2] << 16);
+            uint32_t codes[8];
+            for (int j = 0; j < 8; ++j) codes[j] = (v >> (3 * j)) & 7;
+            float32x4_t c0 = vcvtq_f32_u32(vld1q_u32(codes));
+            float32x4_t c1 = vcvtq_f32_u32(vld1q_u32(codes + 4));
+            vst1q_f32(dst + g, vsubq_f32(vmulq_f32(c0, vs), va));
+            vst1q_f32(dst + g + 4, vsubq_f32(vmulq_f32(c1, vs), va));
+        }
+    }
+}
+
+static inline void bnb_dequant_2bit_neon(const unsigned char* packed, const float* absmax,
+                                         float* out, long long n_blocks, long long block) {
+    for (long long b = 0; b < n_blocks; ++b) {
+        const unsigned char* p = packed + b * (block / 4);
+        const float amax = absmax[b];
+        const float scale = amax / 1.5f;
+        const float32x4_t vs = vdupq_n_f32(scale);
+        const float32x4_t va = vdupq_n_f32(amax);
+        float* dst = out + b * block;
+        for (long long g = 0; g < block; g += 8) {
+            const unsigned char* q = p + (g / 4);
+            unsigned v = (unsigned)q[0] | ((unsigned)q[1] << 8);
+            uint32_t codes[8];
+            for (int j = 0; j < 8; ++j) codes[j] = (v >> (2 * j)) & 3;
+            float32x4_t c0 = vcvtq_f32_u32(vld1q_u32(codes));
+            float32x4_t c1 = vcvtq_f32_u32(vld1q_u32(codes + 4));
+            vst1q_f32(dst + g, vsubq_f32(vmulq_f32(c0, vs), va));
+            vst1q_f32(dst + g + 4, vsubq_f32(vmulq_f32(c1, vs), va));
+        }
+    }
+}
+#endif
+
+void dequantize_3bit_cpu(const unsigned char* packed, const float* absmax, float* out,
+                         long long n_blocks, long long block) {
+#if defined(_M_ARM64) || defined(__aarch64__)
+    bnb_dequant_3bit_neon(packed, absmax, out, n_blocks, block);
+#elif BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
+    bnb_dequant_3bit_avx2(packed, absmax, out, n_blocks, block);
+#else
+    dequantize_3bit_scalar_cpu(packed, absmax, out, n_blocks, block);
+#endif
+}
+
+void dequantize_2bit_cpu(const unsigned char* packed, const float* absmax, float* out,
+                         long long n_blocks, long long block) {
+#if defined(_M_ARM64) || defined(__aarch64__)
+    bnb_dequant_2bit_neon(packed, absmax, out, n_blocks, block);
+#elif BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
+    bnb_dequant_2bit_avx2(packed, absmax, out, n_blocks, block);
+#else
+    dequantize_2bit_scalar_cpu(packed, absmax, out, n_blocks, block);
+#endif
+}

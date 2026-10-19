@@ -27,21 +27,21 @@ wsl -d Ubuntu -- bash /mnt/d/work/bitsandbytes-CPU/isa_matrix.sh   # 审计 + �
 | x86_64 AVX2 | 8,058 | 0 | 0 | 否 |
 | x86_64 generic | **0** | 0 | 0 | 否 |
 | x86_64 AVX-512 | 9,890 | 2,947 | **182** | 是 |
-| aarch64 gnu/musl | —（ARM） | — | — | 否（NEON 类指令 570 条，AArch64 机器码） |
+| aarch64 gnu/musl | —（ARM） | — | — | 否（NEON 类指令 674 条（含新增的 2/3-bit dequant NEON 路径），AArch64 机器码） |
 
 结论：generic 库**零 AVX 指令**（可在任何 x86_64 上跑）；AVX2 库无 AVX-512/zmm；
 AVX-512 库的 182 条 BF16 指令与 `_cpu_caps` 的 `avx512_bf16` 门控一致（不会在无 BF16
 的机器上误载入）。
 
-## 运行时自检（C 内核独立自检，5 项：quantize 往返 / gemm_8bit / gemv_4bit /
-AdamW8bit / 向量-标量叉验证）
+## 运行时自检（C 内核独立自检，7 项：quantize 往返 / gemm_8bit / gemv_4bit /
+AdamW8bit / 向量-标量叉验证 / 3-bit dequant / 2-bit dequant）
 
 | 变体 | 运行方式 | 结果 |
 |---|---|---|
-| x86_64 AVX2 | 本机（R5-4500U，AVX2） | **5/5 PASS** |
-| x86_64 generic | 本机 | **5/5 PASS** |
+| x86_64 AVX2 | 本机（R5-4500U，AVX2） | **7/7 PASS** |
+| x86_64 generic | 本机 | **7/7 PASS** |
 | x86_64 AVX-512 | 本机无 AVX-512 → 静态审计；EPYC 9Y24 容器真机 | 静态 182 BF16 指令；EPYC 上 **5/5 PASS**、GDN 5/5（见 `EPYC_VALIDATION.md`） |
-| aarch64 musl | qemu-aarch64（x86 开发机） | **5/5 PASS** |
+| aarch64 musl | qemu-aarch64（x86 开发机） | **7/7 PASS** |
 
 ## 边界
 
