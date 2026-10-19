@@ -325,15 +325,19 @@ def train(args) -> int:
             p.requires_grad_(False)
     skip_lm = bool(getattr(model.config, 'tie_word_embeddings', False))
     total = sum(p.numel() for p in model.parameters())      # before patching: base weights leave Parameters
+    inp, tgt = make_data(args, model)
+    # CPU reference on the same batch, before patching: the iGPU first-step loss must match it
+    with torch.no_grad():
+        try:
+            base_loss = float(model(inp, labels=tgt, use_cache=False).loss)
+        except Exception:
+            base_loss = float('nan')
     n = patch_model(model, args.mode, args.lora_r, skip_lm)
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    total += sum(m.base_weight.numel() for m in model.modules()
-                 if isinstance(m, IgpuLoRALinear)) if args.mode != 'full' else 0
     print('architecture: %s | params %.2f M | trainable %.2f M (%.1f%%) | iGPU linears %d%s'
           % (model.config.architectures[0] if getattr(model.config, 'architectures', None) else '?',
              total / 1e6, trainable / 1e6, 100.0 * trainable / max(1, total), n,
              ' (lm_head kept on CPU: tied embeddings)' if skip_lm else ''))
-    inp, tgt = make_data(args, model)
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.AdamW(params, lr=args.lr)
     losses, times = [], []
@@ -362,6 +366,10 @@ def train(args) -> int:
         dt = time.perf_counter() - t0
         times.append(dt)
         losses.append(float(loss.detach()))
+        if step == 0:
+            parity = abs(losses[0] - base_loss)
+            print('  parity CPU %.5f vs iGPU %.5f -> |diff| %.2e' % (base_loss, losses[0], parity),
+                  flush=True)
         finite = math.isfinite(losses[-1]) and math.isfinite(grad_norm)
         ok &= finite
         if step % args.log_every == 0 or step == args.steps - 1:
@@ -382,9 +390,10 @@ def train(args) -> int:
             json.dump({'model': args.model, 'mode': args.mode, 'steps': args.steps,
                        'loss0': losses[0], 'loss1': losses[-1], 'arch': model.config.architectures}, f, indent=1)
         print('saved trainable weights ->', args.save)
-    print('RESULT %s | %s | %s | steps=%d | %.3f s/step | loss %.4f -> %.4f | finite=%s'
+    parity_v = abs(losses[0] - base_loss) if math.isfinite(base_loss) else float('nan')
+    print('RESULT %s | %s | %s | steps=%d | %.3f s/step | loss %.4f -> %.4f | finite=%s | parity=%.2e'
           % (args.model, args.mode, model.config.architectures[0] if getattr(model.config, 'architectures', None) else '?',
-             args.steps, med, losses[0], losses[-1], 'YES' if ok else 'NO'))
+             args.steps, med, losses[0], losses[-1], 'YES' if ok else 'NO', parity_v))
     return 0 if ok else 1
 
 

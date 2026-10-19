@@ -21,7 +21,7 @@ ROOT = r'D:\deepsleep\tiny_models'
 TRAINER = r'D:\work\bitsandbytes-CPU\gt1030\igpu_train.py'
 PY = sys.executable
 RESULT = re.compile(
-    r'RESULT (.+?) \| (\w+) \| (\S+) \| steps=(\d+) \| ([\d.]+) s/step \| loss ([\d.]+) -> ([\d.]+) \| finite=(\w+)')
+    r'RESULT (.+?) \| (\w+) \| (\S+) \| steps=(\d+) \| ([\d.]+) s/step \| loss ([\d.]+) -> ([\d.]+) \| finite=(\w+) \| parity=([\d.eE+-]+)')
 
 
 def run_one(model_dir, mode, steps=6):
@@ -37,7 +37,7 @@ def run_one(model_dir, mode, steps=6):
         if m:
             return dict(model=m.group(1), mode=m.group(2), arch=m.group(3), steps=int(m.group(4)),
                         step_s=float(m.group(5)), loss0=float(m.group(6)), loss1=float(m.group(7)),
-                        finite=m.group(8) == 'YES', wall=dt, error=None)
+                        finite=m.group(8) == 'YES', parity=float(m.group(9)), wall=dt, error=None)
     err = ' | '.join(l.strip() for l in out.splitlines()[-4:] if l.strip())[:300]
     return dict(model=model_dir, mode=mode, arch=arch, steps=0, step_s=0.0, loss0=0.0,
                 loss1=0.0, finite=False, wall=dt, error=err)
