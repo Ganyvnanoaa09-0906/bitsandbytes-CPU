@@ -32,6 +32,32 @@ import torch.nn.functional as F
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU\bitsandbytes')
 
+_KERNEL = None
+_KERNEL_TRIED = False
+
+
+def load_kernel():
+    """Load the optional C dequant kernel (q3bit_kernel.dll/.so next to this file)."""
+    global _KERNEL, _KERNEL_TRIED
+    if _KERNEL_TRIED:
+        return _KERNEL
+    _KERNEL_TRIED = True
+    try:
+        import ctypes
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'q3bit_kernel.dll')
+        if not os.path.exists(path):
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'q3bit_kernel.so')
+        lib = ctypes.CDLL(path)
+        for fn in ('bnb_dequant_3bit', 'bnb_dequant_2bit'):
+            getattr(lib, fn).argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                                         ctypes.c_longlong, ctypes.c_int]
+            getattr(lib, fn).restype = None
+        _KERNEL = lib
+    except Exception as exc:
+        print('  [kernel] not available:', exc)
+        _KERNEL = None
+    return _KERNEL
+
 
 # ---------------------------------------------------------------------------
 # blockwise quantization: per-block absmax, symmetric levels (2/3/4/8 bit)
@@ -124,9 +150,11 @@ class QuantLinear(nn.Module):
     """Frozen base weight stored as 2/3-bit blocks + trainable LoRA adapters."""
 
     def __init__(self, base: nn.Linear, bits: int, block: int = 64,
-                 r: int = 8, alpha: int = 16, keep_fp32: bool = False):
+                 r: int = 8, alpha: int = 16, keep_fp32: bool = False,
+                 use_kernel: bool = False):
         super().__init__()
         self.bits = bits
+        self.use_kernel = bool(use_kernel) and bits in (2, 3)
         self.block = block
         self.in_features = base.in_features
         self.out_features = base.out_features
@@ -155,6 +183,12 @@ class QuantLinear(nn.Module):
     def weight(self) -> torch.Tensor:
         if self.weight_fp32 is not None:
             return self.weight_fp32
+        if self.use_kernel and _KERNEL is not None:
+            out = torch.empty(self.n, dtype=torch.float32)
+            fn = _KERNEL.bnb_dequant_3bit if self.bits == 3 else _KERNEL.bnb_dequant_2bit
+            fn(self.packed.data_ptr(), self.absmax.data_ptr(), out.data_ptr(),
+               self.absmax.numel(), self.block)
+            return out.reshape(self.shape).to(self.lora_A.dtype)
         return dequantize_blocks(self.packed, self.absmax, self.shape, self.n,
                                  self.bits, self.block).to(self.lora_A.dtype)
 
@@ -163,17 +197,97 @@ class QuantLinear(nn.Module):
         return y + (x @ self.lora_A.t()) @ self.lora_B.t() * self.scale
 
 
+class QuantEmbedding(nn.Module):
+    """Frozen 2/3-bit embedding table; lookups dequantize only the selected rows.
+
+    The table is quantized per row with blocks along the hidden dimension, so a lookup of
+    N tokens only unpacks N rows instead of the whole vocab (this is what makes quantized
+    embeddings actually cheaper at inference/training time).
+    """
+
+    def __init__(self, base: nn.Embedding, bits: int, block: int = 64):
+        super().__init__()
+        self.bits = bits
+        self.block = block
+        self.num_embeddings = base.num_embeddings
+        self.embedding_dim = base.embedding_dim
+        w = base.weight.detach().float()
+        self.padded_dim = ((self.embedding_dim + block - 1) // block) * block
+        if self.padded_dim != self.embedding_dim:
+            w = F.pad(w, (0, self.padded_dim - self.embedding_dim))
+        packed_chunks, absmax_chunks = [], []
+        nb_h = self.padded_dim // block
+        center = (_levels(bits) - 1) / 2.0
+        for start in range(0, self.num_embeddings, 4096):
+            chunk = w[start:start + 4096]
+            chunk_n = chunk.shape[0]
+            blocks = []
+            amaxs = []
+            for i in range(nb_h):
+                blk = chunk[:, i * block:(i + 1) * block]
+                amax = blk.abs().amax(dim=1)
+                scale = (amax / center).clamp_min(1e-12)
+                q = torch.round(blk / scale.unsqueeze(1) + center).clamp(0, _levels(bits) - 1)
+                qc = q.to(torch.uint8)
+                if bits == 3:
+                    v = (qc[:, 0::8].to(torch.int32) | (qc[:, 1::8].to(torch.int32) << 3)
+                         | (qc[:, 2::8].to(torch.int32) << 6) | (qc[:, 3::8].to(torch.int32) << 9)
+                         | (qc[:, 4::8].to(torch.int32) << 12) | (qc[:, 5::8].to(torch.int32) << 15)
+                         | (qc[:, 6::8].to(torch.int32) << 18) | (qc[:, 7::8].to(torch.int32) << 21))
+                    bs = torch.stack([(v & 0xFF).to(torch.uint8), ((v >> 8) & 0xFF).to(torch.uint8),
+                                      ((v >> 16) & 0xFF).to(torch.uint8)], dim=-1)
+                    blocks.append(bs.reshape(chunk_n, -1))
+                else:
+                    v = (qc[:, 0::4].to(torch.int32) | (qc[:, 1::4].to(torch.int32) << 2)
+                         | (qc[:, 2::4].to(torch.int32) << 4) | (qc[:, 3::4].to(torch.int32) << 6))
+                    blocks.append(v.to(torch.uint8))
+                amaxs.append(amax)
+            packed_chunks.append(torch.cat(blocks, dim=1))   # (chunk_n, nb_h*bytes)
+            absmax_chunks.append(torch.stack(amaxs, dim=1))  # (chunk_n, nb_h)
+        self.register_buffer('packed', torch.cat(packed_chunks, dim=0))
+        self.register_buffer('absmax', torch.cat(absmax_chunks, dim=0))
+
+    def forward(self, ids):
+        shape = ids.shape
+        idx = ids.reshape(-1)
+        packed = self.packed[idx]       # (N, nb_h*bytes)
+        absmax = self.absmax[idx]       # (N, nb_h)
+        blocks = []
+        nb_h = self.padded_dim // self.block
+        bytes_per_block = packed.shape[1] // nb_h
+        for i in range(nb_h):
+            p = packed[:, i * bytes_per_block:(i + 1) * bytes_per_block]
+            codes = unpack_codes(p, self.bits, self.block)
+            center = (_levels(self.bits) - 1) / 2.0
+            scale = absmax[:, i:i + 1] / center
+            blocks.append(codes.float() * scale - absmax[:, i:i + 1])
+        out = torch.cat(blocks, dim=1)[:, :self.embedding_dim]
+        return out.reshape(*shape, self.embedding_dim)
+
+
+def quantize_embeddings(model: nn.Module, bits: int, block: int = 64) -> int:
+    n = 0
+    for name, child in list(model.named_children()):
+        if isinstance(child, nn.Embedding) and child.num_embeddings > 64:
+            setattr(model, name, QuantEmbedding(child, bits, block))
+            n += 1
+        else:
+            n += quantize_embeddings(child, bits, block)
+    return n
+
+
 def quantize_model(model: nn.Module, bits: int, block: int = 64, r: int = 8,
-                   keep_fp32: bool = False):
+                   keep_fp32: bool = False, use_kernel: bool = False):
     n = 0
     for name, child in list(model.named_children()):
         if isinstance(child, nn.Linear):
             if name == 'lm_head':
                 continue
-            setattr(model, name, QuantLinear(child, bits, block, r=r, keep_fp32=keep_fp32))
+            setattr(model, name, QuantLinear(child, bits, block, r=r, keep_fp32=keep_fp32,
+                                             use_kernel=use_kernel))
             n += 1
         else:
-            n += quantize_model(child, bits, block, r, keep_fp32)
+            n += quantize_model(child, bits, block, r, keep_fp32, use_kernel)
     return n
 
 
@@ -289,18 +403,25 @@ def load_model(which: str):
 def train(args):
     import bitsandbytes as bnb
     torch.set_num_threads(6)
+    if args.kernel:
+        load_kernel()
     t0 = time.time()
     outer, model, hidden = load_model(args.model)
     outer.train()
     for p in outer.parameters():
         p.requires_grad_(False)
+    n_emb = 0
+    if args.quant_emb and args.bits < 32:
+        if hasattr(outer, 'lm_head'):
+            outer.lm_head = None  # not used by this hidden-state objective; frees the tied fp32 table
+        n_emb = quantize_embeddings(model, args.bits, args.block)
     n_lora = quantize_model(model, args.bits, args.block, args.lora_r,
-                            keep_fp32=(args.bits >= 32))
+                            keep_fp32=(args.bits >= 32), use_kernel=args.kernel)
     gc.collect()
     trainable = [p for p in outer.parameters() if p.requires_grad]
     opt = bnb.optim.AdamW8bit(trainable, lr=args.lr)
-    print('loaded %.1fs | quantized %d linears to %s-bit | trainable %.2fM | weight-mem %.2f GB | rss %.2f GB'
-          % (time.time() - t0, n_lora, args.bits, sum(p.numel() for p in trainable) / 1e6,
+    print('loaded %.1fs | quantized %d linears + %d embeddings to %s-bit | trainable %.2fM | weight-mem %.2f GB | rss %.2f GB'
+          % (time.time() - t0, n_lora, n_emb, args.bits, sum(p.numel() for p in trainable) / 1e6,
              model_mem_gb(outer), rss_gb()))
 
     torch.manual_seed(0)
@@ -339,6 +460,8 @@ def main():
     ap.add_argument('--seq', type=int, default=64)
     ap.add_argument('--lora-r', type=int, default=8)
     ap.add_argument('--lr', type=float, default=1e-4)
+    ap.add_argument('--quant-emb', action='store_true')
+    ap.add_argument('--kernel', action='store_true')
     args = ap.parse_args()
     if args.mode == 'packtest':
         packtest()

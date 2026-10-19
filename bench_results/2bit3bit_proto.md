@@ -62,3 +62,49 @@ python q3bit_proto.py --mode train --model qwen --bits 3  --steps 2 --seq 64
   优化器状态而非权重）。
 
 产物：`q3bit_proto.py`；数据归档本文件；报告 §7.139。
+
+## 5. 进阶：embedding 量化 + C 融合解包内核（第二轮）
+
+### 5.1 embedding 量化
+
+Qwen3.5-0.8B 是视觉+语言多模态模型，文本侧 `language_model.embed_tokens` 是
+`(248320, 1024)` 的 fp32 表（~1 GB，lm_head 与它 tie）。`QuantEmbedding` 按行分块量化，
+lookup 时只解包被选中的 token 行；原型里为 hidden-state 目标把 lm_head 置空以释放 tied 表
+（真实 LM 训练需要单独处理 lm_head，见结论）。
+
+| 配置 | 权重内存 | RSS | 步时 | loss 首→末 |
+|---|---|---|---|---|
+| fp32 base | 3.202 GB | 5.34 GB | 3026.7 ms | 13.61 → 12.37 |
+| 3-bit linear only（torch 解包） | 1.228 GB | 3.57 GB | 7493.4 ms | 13.44 → 12.14 |
+| 3-bit linear+embedding（torch 解包） | 0.378 GB | 2.68 GB | 6650.0 ms | 13.32 → 12.06 |
+| **3-bit linear+embedding + C kernel** | **0.378 GB** | 2.76 GB | **3107.9 ms** | 13.33 → 12.06 |
+| 2-bit linear+embedding + C kernel | 0.279 GB | 2.48 GB | 3008.8 ms | 15.05（1 步） |
+
+### 5.2 C 融合解包内核（q3bit_kernel.cpp）
+
+AVX2 内核：每 block 3 字节 → 8 个 3-bit code，`_mm256_cvtepi32_ps` + FMA 算出 8 个 float，
+直接写 fp32 权重缓冲；再用 torch F.linear。编译：
+
+```bash
+g++ -O3 -mavx2 -mfma -fPIC -shared q3bit_kernel.cpp -o q3bit_kernel.so   # Linux
+zig c++ -target x86_64-windows-gnu -O3 -mavx2 -mfma -shared q3bit_kernel.cpp -o q3bit_kernel.dll
+```
+
+验证与性能：
+- **bit-exact**：2/3-bit 内核输出与 torch 解包 maxdiff = 0；
+- 微基准（67M 元素，约 0.8B 模型 1/8 的 Linear 权重）：内核 **32.8 ms** vs torch **239.8 ms**，
+  **7.31× 加速**；
+- 端到端：0.8B 3-bit 训练步时 **7493 → 3108 ms**（embedding 版 6650→3108），
+  与 fp32 的 3027 ms 基本持平（1.03×）；tiny 模型 36.1 → **25.3 ms**（fp32 25.1 ms）。
+
+### 5.3 更新后的结论
+
+- **"低比特冻结 base + LoRA 训练"在 CPU 上可行且代价可接受**：3-bit 权重内存 3.202→0.378 GB
+  （**-88%**），RSS 5.34→2.76 GB（-48%），步时 1.03× fp32；
+- 2-bit 进一步到 0.279 GB/2.48 GB 且同样快，但首步 loss 15.05 vs 3-bit 13.33，误差代价明显，
+  暂不推荐默认使用；
+- 产品化路径清晰：把该 AVX2/NEON 内核移进 `csrc`（dequant+GEMM 融合或独立 dequant），
+  并处理 lm_head：tied embedding 的 logits 可每步用同一内核解包（0.25B 元素 ~120 ms 量级，
+  需进一步实测）或保留 fp32 lm_head；
+- 原型验证了 **C 内核是必需的**：没有它 2.5× 慢，有了它几乎无感——这就是下一阶段进
+  `bitsandbytes` 正式内核的动机。
