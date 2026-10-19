@@ -197,3 +197,7 @@ csrc/*.exe
 # Windows 预编译发布产物（由 build_release_windows.ps1 生成，不提交）
 dist_windows/
 
+dist_release/
+dist_wheel_win/
+dist_sdist/
+release_out/
