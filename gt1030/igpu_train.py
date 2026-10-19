@@ -46,19 +46,26 @@ DLL = os.environ.get('CLBLAST_PATH') or (
     if os.name == 'nt' else 'libclblast.so')
 ROW, NO, YES = 101, 111, 112
 
-ctx = cl.create_some_context(interactive=False)
-queue = cl.CommandQueue(ctx)
-mf = cl.mem_flags
-bl = ctypes.CDLL(DLL)
-bl.CLBlastSgemm.restype = ctypes.c_int
-bl.CLBlastSgemm.argtypes = [
-    ctypes.c_int, ctypes.c_int, ctypes.c_int,
-    ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_float,
-    ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t,
-    ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_float,
-    ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t,
-    ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)]
-QP = ctypes.c_void_p(int(queue.int_ptr))
+CL_OK = True
+CL_ERROR = None
+try:
+    ctx = cl.create_some_context(interactive=False)
+    queue = cl.CommandQueue(ctx)
+    mf = cl.mem_flags
+    bl = ctypes.CDLL(DLL)
+    bl.CLBlastSgemm.restype = ctypes.c_int
+    bl.CLBlastSgemm.argtypes = [
+        ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_float,
+        ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t,
+        ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_float,
+        ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t,
+        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)]
+    QP = ctypes.c_void_p(int(queue.int_ptr))
+except Exception as _e:          # no OpenCL device or no CLBlast: CPU backend still works
+    CL_OK = False
+    CL_ERROR = str(_e)[:300]
+    ctx = queue = bl = mf = QP = None
 
 STATS = {'calls': 0, 'gemm_s': 0.0}
 _POOL: dict = {}
@@ -233,6 +240,80 @@ class IgpuLoRALinear(nn.Module):
         return y + (x @ self.lora_A.t()) @ self.lora_B.t() * self.scale
 
 
+class CpuLoRALinear(nn.Module):
+    """Pure-torch LoRA wrapper used when no iGPU is available (same math as the iGPU path)."""
+
+    def __init__(self, base: nn.Linear, r: int = 8, alpha: int = 16):
+        super().__init__()
+        self.in_features = base.in_features
+        self.out_features = base.out_features
+        self.weight = base.weight.detach()
+        self.bias = base.bias.detach() if base.bias is not None else None
+        self.lora_A = nn.Parameter(torch.empty(r, self.in_features))
+        self.lora_B = nn.Parameter(torch.zeros(self.out_features, r))
+        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+        self.scale = alpha / r
+
+    def forward(self, x):
+        y = torch.nn.functional.linear(x, self.weight, self.bias)
+        return y + (x @ self.lora_A.t()) @ self.lora_B.t() * self.scale
+
+
+class CpuLoRAConv1D(nn.Module):
+    """GPT2/NeoX style Conv1D wrapper for the CPU backend (weight stored (in,out))."""
+
+    def __init__(self, base, r: int = 8, alpha: int = 16):
+        super().__init__()
+        self.in_features = base.weight.shape[0]
+        self.out_features = base.weight.shape[1]
+        self.weight = base.weight.detach()
+        self.bias = base.bias.detach() if getattr(base, 'bias', None) is not None else None
+        self.lora_A = nn.Parameter(torch.empty(r, self.in_features))
+        self.lora_B = nn.Parameter(torch.zeros(self.out_features, r))
+        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+        self.scale = alpha / r
+
+    def forward(self, x):
+        y = torch.matmul(x, self.weight)
+        if self.bias is not None:
+            y = y + self.bias
+        return y + (x @ self.lora_A.t()) @ self.lora_B.t() * self.scale
+
+
+def patch_model_cpu(model: nn.Module, mode: str, r: int, skip_lm_head: bool) -> int:
+
+    count = 0
+    def walk(mod, prefix=''):
+        nonlocal count
+        for name, child in list(mod.named_children()):
+            full = prefix + name
+            if skip_lm_head and full in ('lm_head',):
+                continue
+            try:
+                from transformers.pytorch_utils import Conv1D
+            except Exception:
+                Conv1D = ()
+            if isinstance(child, nn.Linear):
+                new = child if mode == 'full' else CpuLoRALinear(child, r)
+                if mode == 'full':
+                    for p in child.parameters():
+                        p.requires_grad_(True)
+                else:
+                    setattr(mod, name, new)
+                count += 1
+            elif Conv1D and isinstance(child, Conv1D):
+                if mode == 'full':
+                    for p in child.parameters():
+                        p.requires_grad_(True)
+                else:
+                    setattr(mod, name, CpuLoRAConv1D(child, r))
+                count += 1
+            else:
+                walk(child, full + '.')
+    walk(model)
+    return count
+
+
 def patch_model(model: nn.Module, mode: str, r: int, skip_lm_head: bool) -> int:
     try:
         from transformers.pytorch_utils import Conv1D
@@ -377,6 +458,18 @@ def train(args) -> int:
     else:
         for p in model.parameters():
             p.requires_grad_(False)
+    backend = args.backend
+    if backend == 'auto':
+        backend = 'igpu' if CL_OK else 'cpu'
+    if backend == 'igpu' and not CL_OK:
+        print()
+        print('ERROR: iGPU backend requested but OpenCL/CLBlast is unavailable:')
+        print('  %s' % CL_ERROR)
+        print('  Retry with --backend cpu (pure torch) on machines without an OpenCL device,')
+        print('  or install an OpenCL ICD + libclblast and set CLBLAST_PATH.')
+        return 2
+    args.backend = backend
+    print('  backend:', backend + (' (OpenCL device %s)' % ctx.devices[0].name if backend == 'igpu' else ' (no OpenCL needed)'))
     skip_lm = bool(getattr(model.config, 'tie_word_embeddings', False))
     total = sum(p.numel() for p in model.parameters())      # before patching: base weights leave Parameters
     batch = make_data(args, model)
@@ -386,8 +479,11 @@ def train(args) -> int:
             base_loss = float(run_loss(model, task, batch))
         except Exception:
             base_loss = float('nan')
-    n = patch_model(model, args.mode, args.lora_r, skip_lm)
-    if args.mode == 'lora':
+    if backend == 'igpu':
+        n = patch_model(model, args.mode, args.lora_r, skip_lm)
+    else:
+        n = patch_model_cpu(model, args.mode, args.lora_r, skip_lm)
+    if backend == 'igpu' and args.mode == 'lora':
         # upload every frozen base weight once and drop the CPU copies (saves ~model-size host RAM)
         for m in model.modules():
             if isinstance(m, IgpuLoRALinear) and m.w_dev is None:
@@ -423,13 +519,11 @@ def train(args) -> int:
             if p.grad is not None:
                 grad_norm += float(p.grad.detach().pow(2).sum())
         grad_norm = math.sqrt(grad_norm)
-        if args.mode == 'full':
-            opt.step()
+        opt.step()
+        if backend == 'igpu' and args.mode == 'full':
             for m in model.modules():
                 if isinstance(m, (IgpuLinear, IgpuConv1D)):
                     m.refresh()
-        else:
-            opt.step()
         opt.zero_grad(set_to_none=True)
         dt = time.perf_counter() - t0
         times.append(dt)
@@ -474,6 +568,7 @@ def main() -> int:
     ap.add_argument('--model', required=True)
     ap.add_argument('--mode', choices=['lora', 'full'], default='lora')
     ap.add_argument('--task', choices=['auto', 'clm', 'mlm'], default='auto')
+    ap.add_argument('--backend', choices=['auto', 'igpu', 'cpu'], default='auto')
     ap.add_argument('--steps', type=int, default=5)
     ap.add_argument('--tokens', type=int, default=64)
     ap.add_argument('--batch', type=int, default=1)
@@ -488,7 +583,12 @@ def main() -> int:
     if args.check:
         args.steps = min(args.steps, 2)
         args.log_every = 1
-    print('device:', ctx.devices[0].name)
+    if CL_OK:
+        print('device:', ctx.devices[0].name)
+    else:
+        print('device: none (OpenCL unavailable -> CPU backend)')
+        if args.backend == 'igpu':
+            print('  (requested igpu but no OpenCL device; will fail with instructions)')
     rc = train(args)
     return rc
 

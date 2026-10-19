@@ -28,6 +28,7 @@ python gt1030/igpu_train.py --model <dir> --data corpus.txt --tokens 128 --steps
 |---|---|
 | `--model` | 本地目录或 HF repo id（自动经 `HF_ENDPOINT`，默认 hf-mirror 下载） |
 | `--mode lora\|full` | 冻结 base + LoRA（默认，省内存）或全参训练 |
+| `--backend auto\|igpu\|cpu` | `auto`：有 OpenCL 设备用核显、没有则自动退回纯 CPU；`cpu` 可强行跑 CPU 基线（任何 Linux/容器可用） |
 | `--task auto\|clm\|mlm` | 自动判断因果语言模型 / masked-LM；一般不用手写 |
 | `--steps` `--tokens` `--batch` `--lr` `--lora-r` | 训练规模 |
 | `--data file.txt` | 用 tokenizer 切窗训练真实文本；默认合成 batch |

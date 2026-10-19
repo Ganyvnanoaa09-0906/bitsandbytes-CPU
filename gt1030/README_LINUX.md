@@ -21,6 +21,21 @@ WSL2 的 GPU 直通面向 D3D12（DirectML）/CUDA，**不提供 iGPU 的 OpenCL
 - 想在 Linux 上跑核显训练 → 需要一台**真 Linux**（或双系统/裸盘安装）；
 - 在 WSL 里能做的：**编译与测试 bnb CPU 后端**（不需要 GPU）、跑 CPU 训练基线（装 CPU 版 torch）。
 
+## 一点五、EPYC/云容器（无核显）能干什么
+
+结论：**核显测试做不了**（EPYC 没有 iGPU），但 Linux 侧最该验证的两件事都能做，而且现在就有一条命令：
+
+```bash
+# 在 EPYC 容器里（装好 torch + transformers 后）
+bash gt1030/linux_container_check.sh
+```
+
+它做 4 件事：工具链检查 → bnb CPU 三产物构建 + 自检 → C 层 selftest → 通用训练套件
+`--backend cpu` 的 smoke（对拍 + loss 下降）。`--backend cpu` 是纯 torch 路径，不需要 OpenCL/CLBlast，
+所以在任何 Linux 机器上都能跑（本机 deepseek-1.3B CPU 后端实测 3.86 s/步，与 CPU 基线一致）。
+
+顺手能做的还有：AVX-512 EPYC 上的 bnb 产物端到端验证（此前已在豆包容器做过）。
+
 ## 二、WSL 上把 bnb CPU 后端跑起来（无需 sudo）
 
 ```bash
@@ -63,7 +78,9 @@ PYTHONPATH=$PWD python -c "import bitsandbytes; bitsandbytes.gdn_cpu.load_native
 
 ## 五、建议的推进顺序
 
-1. WSL：先跑 bnb CPU 后端 + CPU 训练基线（这条现在就能做）；
-2. 找一台真 Linux（有 AMD iGPU 更好）：装 Mesa OpenCL + CLBlast，`clinfo` 确认 gfx902；
-3. 用 `gt1030/igpu_train.py --check` 对拍，通过后再做 500 步与性能对比；
-4. 若目标是"Linux 上核显训练要快"，那必须先把设备常驻引擎修完——这是独立的一轮工作。
+1. EPYC 容器 / WSL：跑 `linux_container_check.sh`（bnb CPU 产物 + CPU 训练 smoke）——现在就能做；
+2. 想在 Linux 上测核显：需要 **AMD APU 真机**。最省事的是**同一台笔记本做 Ubuntu Live USB/双系统**
+   （Vega 6 + Mesa Clover；模型放 NTFS 分区挂载，不占额外磁盘）；
+3. 到真机后：`clinfo` 看到 gfx902 → 装 libclblast → `CLBLAST_PATH=... python3 gt1030/igpu_train.py --check`
+   → 通过后再谈 500 步与性能；
+4. 若目标是"Linux 上核显训练要快"，必须先修完设备常驻引擎（§7.122）——独立一轮工作。
