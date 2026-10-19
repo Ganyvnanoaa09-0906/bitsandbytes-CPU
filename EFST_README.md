@@ -7,6 +7,16 @@ EFST 用于 MoE 模型在 **纯 CPU / 低内存** 环境下的微调：
 - 可给选中专家内部注入 LoRA，进一步把可训练参数量压到 adapter 级别；
 - 不依赖具体模型实现，自动识别常见 `experts` / `moe` / `block_sparse_moe` 结构。
 
+## 安装后使用
+
+``bitsandbytes-cpu-fork`` 的 wheel 里已经带了 EFST，安装后可以直接：
+
+```python
+from bitsandbytes.efst import EFSTConfig, apply_efst
+```
+
+仓库根目录的 ``efst.py`` 保留为兼容入口（``from efst import ...`` 仍可用）。
+
 ## 快速开始
 
 ```python

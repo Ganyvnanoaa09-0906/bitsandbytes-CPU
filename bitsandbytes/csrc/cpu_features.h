@@ -14,6 +14,14 @@
 #if (defined(__x86_64__) || defined(__i386__)) && !defined(_MSC_VER)
 
 #include <cpuid.h>
+// clang's <cpuid.h> defines __cpuid/__cpuid_count as function-like macros. Windows
+// headers (intrin.h -> psdk_inc/intrin-impl.h, pulled in later via cpu_cache.h) declare
+// void __cpuid(int[4], int), which those macros then break ("too few arguments provided
+// to function-like macro invocation"). The inline functions below are already defined by
+// the time we get here, so the macros can be dropped again.
+#undef __cpuid
+// __cpuid_count is kept: cpu_cache.h calls it directly, and Windows' intrin-impl.h only
+// declares the 2-argument __cpuid function, which is what conflicted above.
 
 namespace bnb_cpu {
 

@@ -39,10 +39,10 @@ def _cpu_model() -> str:
             # the name actually lives and needs no subprocess.
             try:
                 import winreg
-                k = winreg.OpenKey(
-                    winreg.HKEY_LOCAL_MACHINE,
-                    r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
-                return winreg.QueryValueEx(k, "ProcessorNameString")[0].strip()
+                with winreg.OpenKey(
+                        winreg.HKEY_LOCAL_MACHINE,
+                        r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as k:
+                    return winreg.QueryValueEx(k, "ProcessorNameString")[0].strip()
             except Exception:
                 pass
             out = subprocess.run(

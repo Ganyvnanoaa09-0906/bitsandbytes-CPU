@@ -2,6 +2,7 @@ import ctypes as ct
 import functools
 import logging
 import os
+import platform
 from pathlib import Path
 import re
 from typing import Optional
@@ -385,6 +386,16 @@ def get_native_library() -> BNBNativeLibrary:
         generic_binary_path = PACKAGE_DIR / f"libbitsandbytes_cpu_generic{DYNAMIC_LIBRARY_SUFFIX}"
         if generic_binary_path.exists():
             binary_path = generic_binary_path
+        elif platform.machine().lower() in ("x86_64", "amd64", "i386", "i686"):
+            # The wheels ship an AVX2 x86-64 build and (Linux) a portable fallback. Loading
+            # the AVX2 library here would SIGILL on this CPU, so fail with an actionable
+            # message instead (the caller turns this into the mock library + warning).
+            raise RuntimeError(
+                f"This x86-64 CPU does not support AVX2/FMA/F16C and no portable x86-64 "
+                f"library is installed (expected {generic_binary_path.name}). Install the "
+                f"Linux manylinux wheel (which includes it) or build from source with "
+                f"build_linux.sh --generic."
+            )
 
     global LOADED_NATIVE_LIB
     LOADED_NATIVE_LIB = binary_path
@@ -419,6 +430,11 @@ try:
     lib = get_native_library()
 except Exception as e:
     if BNB_BACKEND in ("CPU", "XPU"):
+        logger.warning(
+            "bitsandbytes native library could not be loaded (%s); kernel calls will raise "
+            "until it is available. Run `python -m bitsandbytes` for diagnostics.",
+            e,
+        )
         lib = ErrorHandlerMockBNBNativeLibrary("XPU/CPU can run without native library.")
     else:
         error_msg = str(e)

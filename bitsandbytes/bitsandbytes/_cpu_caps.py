@@ -6,7 +6,8 @@ other would drag the whole native library in at import time, so the query lives 
 imports nothing but the standard library; torch is imported lazily, only when it is already
 present in the process.
 
-The AVX-512 backend is a separate artifact because it is NOT safe on AVX2-only CPUs:
+The AVX-512 backend is a separate artifact because it is NOT safe on AVX2-only CPUs
+(and it is compiled with AVX512-BF16, so it is also unsafe on AVX-512 CPUs without BF16):
 building it with `-mavx512f` is a translation-unit-wide switch, and GCC auto-vectorises
 ordinary kernels (dequantise, optimizer, rmsnorm) with zmm instructions. The library must
 therefore only be loaded after the CPU and OS are known to support AVX-512. On Linux the
@@ -19,7 +20,11 @@ from __future__ import annotations
 
 import os
 
-_AVX512_FLAGS = frozenset({"avx512f", "avx512bw", "avx512dq", "avx512vl"})
+# avx512_bf16 is required too: the AVX-512 artifact is compiled with
+# -mavx512bf16, so it contains bf16 instructions (auto-vectorised) even outside
+# the explicitly guarded bf16 kernels. CPUs with AVX-512 but no BF16
+# (Skylake-X, Cascade Lake) would SIGILL on them.
+_AVX512_FLAGS = frozenset({"avx512f", "avx512bw", "avx512dq", "avx512vl", "avx512_bf16"})
 
 
 def _env_flag(name: str) -> bool:
@@ -46,28 +51,26 @@ def _torch_capability() -> str | None:
         return None
 
 
-def _proc_cpuinfo_supports_avx2() -> bool:
+def _read_cpuinfo_flags(path: str = "/proc/cpuinfo") -> set[str] | None:
+    """First ``flags`` line of /proc-style cpuinfo, or None when unreadable (non-Linux)."""
     try:
-        with open("/proc/cpuinfo", "r", encoding="utf-8", errors="replace") as handle:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
             for line in handle:
                 if line.startswith("flags"):
-                    flags = set(line.split(":", 1)[1].split())
-                    return {"avx2", "fma", "f16c"} <= flags
+                    return set(line.split(":", 1)[1].split())
     except OSError:
-        return False
-    return False
+        return None
+    return None
 
 
-def _proc_cpuinfo_supports_avx512() -> bool:
-    try:
-        with open("/proc/cpuinfo", "r", encoding="utf-8", errors="replace") as handle:
-            for line in handle:
-                if line.startswith("flags"):
-                    flags = set(line.split(":", 1)[1].split())
-                    return _AVX512_FLAGS <= flags
-    except OSError:
-        return False
-    return False
+def _proc_cpuinfo_supports_avx2(path: str = "/proc/cpuinfo") -> bool:
+    flags = _read_cpuinfo_flags(path)
+    return flags is not None and {"avx2", "fma", "f16c"} <= flags
+
+
+def _proc_cpuinfo_supports_avx512(path: str = "/proc/cpuinfo") -> bool:
+    flags = _read_cpuinfo_flags(path)
+    return flags is not None and _AVX512_FLAGS <= flags
 
 
 def avx512_supported() -> bool:
@@ -81,10 +84,16 @@ def avx512_supported() -> bool:
         return False
     if _env_flag("BNB_CPU_FORCE_AVX512"):
         return True
+    flags = _read_cpuinfo_flags()
+    if flags is not None:
+        # /proc/cpuinfo knows about BF16, so it is the authoritative answer on Linux.
+        return _AVX512_FLAGS <= flags
+    # torch reports only the ISA level ("AVX512"), not BF16. Since the shipped AVX-512
+    # library contains bf16 instructions, an ISA-level "yes" alone is not safe there.
     capability = _torch_capability()
     if capability is not None:
-        return capability == "AVX512"
-    return _proc_cpuinfo_supports_avx512()
+        return False
+    return False
 
 
 def avx2_supported() -> bool:

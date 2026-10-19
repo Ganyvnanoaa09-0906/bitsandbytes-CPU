@@ -548,6 +548,8 @@ class DiskLoadBalancer:
         self._latent_store = None                 # LatentChunkStore（时间维 latent 分块）
         self._latent_keys: List[str] = []         # 已卸载的 latent chunk key 顺序
         self._latent_offloaded: int = 0
+        self._owned_cache_dirs: List[str] = []    # 本实例创建、cleanup 可安全删除的目录
+        self._cache_bytes: Dict[str, int] = {}    # cache_dir -> 已写入字节数
 
     # ------------------------------------------------------------------
     # 初始化
@@ -586,6 +588,18 @@ class DiskLoadBalancer:
         else:
             raise ValueError(f"Unknown mode: {self._cfg.mode}")
 
+        # Only directories we actually create here are ever removed by cleanup().
+        self._owned_cache_dirs = []
+        for p in self._paths:
+            os.makedirs(p, exist_ok=True)
+            try:
+                with open(os.path.join(p, ".bnb_flash_cache_marker"), "w", encoding="utf-8") as fh:
+                    fh.write("created by bitsandbytes disk_balancer; safe to delete\n")
+            except OSError:
+                pass
+            self._owned_cache_dirs.append(p)
+            self._cache_bytes.setdefault(p, 0)
+
         # 启动异步写盘线程
         self._writer_thread = threading.Thread(target=self._writer_loop, daemon=True)
         self._writer_thread.start()
@@ -613,7 +627,9 @@ class DiskLoadBalancer:
             if self._cfg.paths:
                 for cp in self._cfg.paths:
                     if os.path.splitdrive(cp)[0].upper() == d.mount.upper():
-                        d.cache_dir = cp
+                        # Never treat a user-provided directory as ours: cleanup() deletes
+                        # the cache directory. Use a dedicated subdirectory of it instead.
+                        d.cache_dir = os.path.join(cp, ".bnb_flash_cache")
                         break
             if not d.cache_dir:
                 d.cache_dir = os.path.join(self._script_dir, ".flash_cache", d.mount[0])
@@ -648,7 +664,7 @@ class DiskLoadBalancer:
             if self._cfg.paths:
                 for cp in self._cfg.paths:
                     if os.path.splitdrive(cp)[0].upper() == m:
-                        d.cache_dir = cp
+                        d.cache_dir = os.path.join(cp, ".bnb_flash_cache")
                         break
             if not d.cache_dir:
                 d.cache_dir = os.path.join(self._script_dir, ".flash_cache", m[0])
@@ -704,7 +720,15 @@ class DiskLoadBalancer:
                     # 摘除并报警，否则调用方拿回一个"已登记但文件不存在/未被占用"的参数，
                     # 冻结层前向会悄悄变垃圾）。
                     with self._lock:
-                        self._cold_index.pop(key, None)
+                        entry = self._cold_index.pop(key, None)
+                        if entry:
+                            cache_dir = os.path.dirname(entry[0])
+                            try:
+                                nbytes = int(entry[1]) * torch.empty(0, dtype=entry[2]).element_size()
+                            except (TypeError, ValueError):
+                                nbytes = 0
+                            self._cache_bytes[cache_dir] = max(
+                                0, self._cache_bytes.get(cache_dir, 0) - nbytes)
                     print(f"[disk_balancer] 写盘失败 {key}: {e} —— 已从索引摘除，该参数将被丢弃（无法读回）", flush=True)
                 finally:
                     if isinstance(payload, memoryview):
@@ -899,13 +923,33 @@ class DiskLoadBalancer:
             tier: "auto" / "ssd" / "hdd"
 
         Returns:
-            写入的磁盘路径。
+            写入的磁盘路径；配额不足时返回 ""（参数保留在内存，不迁移）。
+
+        注意：成功卸载后 ``tensor`` 的 storage 会被置空（``data = empty(0)``）。
+        调用方必须自己保存原始 shape，读回时用 ``get_cold_shape(key, shape)``。
         """
         if not self._started:
             return ""
 
         self._ensure_dirs()
-        path = os.path.join(self._pick_path(tier, tensor.numel()), f"{key}.bin")
+        cache_dir = self._pick_path(tier, tensor.numel())
+        if not cache_dir:
+            return ""
+        nbytes = int(tensor.numel()) * tensor.element_size()
+        quota = 0
+        for d in self._disks:
+            if d.cache_dir == cache_dir:
+                quota = d.max_cache_bytes
+                break
+        if quota and self._cache_bytes.get(cache_dir, 0) + nbytes > quota:
+            print(
+                f"[disk_balancer] 缓存配额不足（{cache_dir}: "
+                f"{self._cache_bytes.get(cache_dir, 0) / (1 << 20):.1f}MB / "
+                f"{quota / (1 << 20):.1f}MB），跳过卸载 {key}，参数保留在内存",
+                flush=True,
+            )
+            return ""
+        path = os.path.join(cache_dir, f"{key}.bin")
 
         # 记录元数据
         dtype = tensor.dtype
@@ -913,6 +957,7 @@ class DiskLoadBalancer:
 
         with self._lock:
             self._cold_index[key] = (path, numel, dtype)
+            self._cache_bytes[cache_dir] = self._cache_bytes.get(cache_dir, 0) + nbytes
 
         # 异步写盘（零拷贝：队列里放的是源 storage 的视图，不复制字节）
         self._write_queue.put((key, self._payload_memoryview(tensor), path))
@@ -945,10 +990,6 @@ class DiskLoadBalancer:
 
         # 若该 key 仍在异步写盘队列中（在途），先等写完，避免把"待写"误判为"不存在"。
         self.wait_writes()
-
-        if self._latent_store is not None:
-            self._latent_store.cleanup()
-            self._latent_keys.clear()
 
         if not os.path.exists(path):
             return None
@@ -1009,6 +1050,14 @@ class DiskLoadBalancer:
         """删除指定 key 的磁盘缓存。"""
         with self._lock:
             entry = self._cold_index.pop(key, None)
+            if entry:
+                cache_dir = os.path.dirname(entry[0])
+                try:
+                    nbytes = int(entry[1]) * torch.empty(0, dtype=entry[2]).element_size()
+                except (TypeError, ValueError):
+                    nbytes = 0
+                self._cache_bytes[cache_dir] = max(
+                    0, self._cache_bytes.get(cache_dir, 0) - nbytes)
         if entry and os.path.exists(entry[0]):
             try:
                 os.remove(entry[0])
@@ -1043,9 +1092,12 @@ class DiskLoadBalancer:
 
         with self._lock:
             if not self._cfg.keep_cache:
-                for d in self._disks:
-                    if d.cache_dir and os.path.isdir(d.cache_dir):
-                        shutil.rmtree(d.cache_dir, ignore_errors=True)
+                # Only remove directories this balancer created; a user-provided
+                # --flash_paths directory itself is never deleted.
+                for cache_dir in self._owned_cache_dirs:
+                    if cache_dir and os.path.isdir(cache_dir):
+                        shutil.rmtree(cache_dir, ignore_errors=True)
+                self._cache_bytes.clear()
             self._cold_index.clear()
 
         if not self._cfg.keep_cache:
