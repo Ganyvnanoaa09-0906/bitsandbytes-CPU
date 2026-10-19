@@ -253,15 +253,29 @@ if not isinstance(lib, ErrorHandlerMockBNBNativeLibrary):
     if has_avx512bf16():
         gemm_4bit_forward_kernel = None
         try:
-            from kernels import get_kernel
+            import importlib.util
 
-            gemm_4bit_forward_kernel = get_kernel(
-                "kernels-community/quantization-bitsandbytes", version=1
-            ).gemm_4bit_forward
+            if importlib.util.find_spec("kernels") is None:
+                # `kernels` is an OPTIONAL HuggingFace hub-kernel package. The fused native
+                # CPU kernel below is the default and needs no extra dependency, so a
+                # missing optional package is not a warning -- otherwise every CPU-only
+                # `import bitsandbytes` printed a scary line on AVX512-BF16 machines.
+                logger.debug(
+                    "optional package 'kernels' not installed; using the native CPU "
+                    "gemv_4bit kernel"
+                )
+            else:
+                from kernels import get_kernel
+
+                gemm_4bit_forward_kernel = get_kernel(
+                    "kernels-community/quantization-bitsandbytes", version=1
+                ).gemm_4bit_forward
         except Exception as exc:  # pragma: no cover - best effort fallback
             gemm_4bit_forward_kernel = None
             logger.warning(
-                "Failed to load CPU gemm_4bit_forward from kernels-community: %s. Please make sure you already `pip install kernels` and the kernels >= 0.11.1",
+                "Failed to load CPU gemm_4bit_forward from kernels-community: %s. "
+                "The optional 'kernels' package is installed but the hub kernel could not "
+                "be loaded; falling back to the native CPU kernel.",
                 exc,
             )
 
