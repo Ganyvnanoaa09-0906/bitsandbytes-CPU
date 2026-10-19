@@ -89,3 +89,6 @@ build_arm64/
 _master_*.log
 master_*.log
 ofbos_*.log
+gt1030/dist/
+gt1030/windows_pkg/.venv/
+gt1030/windows_pkg/__pycache__/
