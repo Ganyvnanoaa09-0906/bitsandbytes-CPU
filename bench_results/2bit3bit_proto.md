@@ -108,3 +108,22 @@ zig c++ -target x86_64-windows-gnu -O3 -mavx2 -mfma -shared q3bit_kernel.cpp -o 
   需进一步实测）或保留 fp32 lm_head；
 - 原型验证了 **C 内核是必需的**：没有它 2.5× 慢，有了它几乎无感——这就是下一阶段进
   `bitsandbytes` 正式内核的动机。
+
+## 6. tied lm_head（logits 路径）实测
+
+真实 LM 训练需要输出 logits：Qwen3.5-0.8B 的 lm_head 与 embedding tie，表是
+(248320, 1024) fp32 = **0.947 GB**。用 csrc 同款 AVX2 内核实测（seq=64，脚本
+`q3bit_lmhead_bench.py`）：
+
+| 方案 | lm_head 内存 | logits 时间 | 额外开销 | dequant 占比 |
+|---|---|---|---|---|
+| fp32 表 | 0.947 GB | 636.3 ms/步 | — | — |
+| 3-bit 表（每步全表解包） | **0.104 GB（-89.1%）** | 867.0 ms/步 | **+230.7 ms/步** | 187.7 ms |
+
+结论：
+- 3-bit lm_head 省 0.84 GB，代价约 +7.4%（相对 3.1s 训练步）；内存紧张时值得；
+- dequant 187.7ms 占了开销大头（约 81%），因为每步都要把整张表写回 fp32 再 GEMM；
+- 最优解是 **fused 3-bit dequant + GEMM**（在 GEMM 的 k 循环里就地解包，避免 1GB 写+读），
+  参考现有 `gemm_8bit` 的做法——下一步实现；在那之前，真实 LM 训练建议：
+  线性层+embedding 3-bit、**lm_head 保留 fp32**（总权重 0.378+0.947=1.325 GB，仍比 fp32
+  3.202 GB 少 59%，且没有 logits 的 230ms 额外开销）。
