@@ -62,3 +62,11 @@ AdamW8bit / 向量-标量叉验证 / 3-bit dequant / 2-bit dequant）
   要求 maxdiff < 1e-6。x86 AVX2、generic、aarch64 qemu 全部 7/7 PASS。
 
 aarch64 库的 NEON 类指令从 570 条增加到 **674 条**（新增 dequant NEON 路径的直接证据）。
+
+## 8. csrc fused 3-bit GEMM（第 8 项自检）
+
+`q3bit_gemm_cpu` / `cbq3bit_gemm_cpu`（`cpu_ops.cpp` + `pythonInterface.cpp`）：
+`C[M,N] = A[M,K] @ dequant_3bit(B)[N,K]^T`，按 B 行 tile 现场解包到 L2 缓冲，
+不物化 fp32 权重矩阵。自检第 8 项要求它与标量参考的相对误差 < 1e-4；x86 AVX2/generic、
+aarch64 qemu 全部 **8/8 PASS**。性能见 `bench_results/2bit3bit_proto.md` §7
+（lm_head 形状：比 fp32 matmul 快 14–22%，内存 -89%）。

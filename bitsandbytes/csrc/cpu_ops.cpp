@@ -4192,3 +4192,111 @@ void dequantize_2bit_cpu(const unsigned char* packed, const float* absmax, float
     dequantize_2bit_scalar_cpu(packed, absmax, out, n_blocks, block);
 #endif
 }
+
+// ---------------------------------------------------------------------------
+// Fused 3-bit dequant + GEMM (research prototype promoted to csrc).
+// C[M,N] = A[M,K] @ dequant(B)[N,K]^T. B is packed per row: nblocks blocks of
+// `block` elements (block % 8 == 0), each block block/8*3 bytes plus one fp32 absmax.
+// A B-row tile is dequantized into a small buffer (L2-resident) and the dot products run
+// from there, so the full fp32 table (e.g. 0.95 GB lm_head) is never materialized.
+// ---------------------------------------------------------------------------
+static inline void bnb_q3bit_dot(const float* a, const float* b, int K, float* out) {
+#if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
+    __m256 acc = _mm256_setzero_ps();
+    int k = 0;
+    for (; k + 8 <= K; k += 8) {
+        acc = _mm256_fmadd_ps(_mm256_loadu_ps(a + k), _mm256_loadu_ps(b + k), acc);
+    }
+    __m128 lo = _mm256_castps256_ps128(acc);
+    __m128 hi = _mm256_extractf128_ps(acc, 1);
+    lo = _mm_add_ps(lo, hi);
+    __m128 shuf = _mm_movehdup_ps(lo);
+    __m128 sums = _mm_add_ps(lo, shuf);
+    shuf = _mm_movehl_ps(shuf, sums);
+    sums = _mm_add_ss(sums, shuf);
+    float total = _mm_cvtss_f32(sums);
+    for (; k < K; ++k) total += a[k] * b[k];
+    *out = total;
+#else
+    float total = 0.0f;
+    for (int k = 0; k < K; ++k) total += a[k] * b[k];
+    *out = total;
+#endif
+}
+
+static void bnb_q3bit_gemm_worker(const float* A, int M, const unsigned char* packed,
+                                  const float* absmax, float* C, int N, int K, int block,
+                                  int ntile, int row_start, int row_end) {
+    const int nblocks = K / block;
+    const int row_stride = (block / 8) * 3;
+    std::vector<float> buf((size_t)ntile * K);
+    for (int n0 = row_start; n0 < row_end; n0 += ntile) {
+        const int nt = std::min(ntile, row_end - n0);
+        for (int t = 0; t < nt; ++t) {
+            const unsigned char* prow = packed + (size_t)(n0 + t) * nblocks * row_stride;
+            const float* amax_row = absmax + (size_t)(n0 + t) * nblocks;
+            float* dst = buf.data() + (size_t)t * K;
+            for (int b = 0; b < nblocks; ++b) {
+                dequantize_3bit_cpu(prow + (size_t)b * row_stride, amax_row + b,
+                                    dst + (size_t)b * block, 1, block);
+            }
+        }
+        for (int m = 0; m < M; ++m) {
+            const float* arow = A + (size_t)m * K;
+            float* crow = C + (size_t)m * N + n0;
+            for (int t = 0; t < nt; ++t) {
+                bnb_q3bit_dot(arow, buf.data() + (size_t)t * K, K, crow + t);
+            }
+        }
+    }
+}
+
+void q3bit_gemm_cpu(const float* A, int M, const unsigned char* packed, const float* absmax,
+                    float* C, int N, int K, int block, int nthreads, int ntile) {
+    if (!A || !packed || !absmax || !C || M <= 0 || N <= 0 || K <= 0 || block <= 0 ||
+        (block % 8) != 0 || (K % block) != 0) {
+        return;
+    }
+    if (ntile <= 0) ntile = 64;
+    if (nthreads <= 0) {
+        nthreads = (int)std::thread::hardware_concurrency();
+        if (nthreads <= 0) nthreads = 1;
+    }
+    std::vector<std::thread> threads;
+    threads.reserve((size_t)nthreads);
+    for (int th = 0; th < nthreads; ++th) {
+        const int row_start = (int)((long long)N * th / nthreads);
+        const int row_end = (int)((long long)N * (th + 1) / nthreads);
+        if (row_start >= row_end) continue;
+        threads.emplace_back(bnb_q3bit_gemm_worker, A, M, packed, absmax, C, N, K, block,
+                             ntile, row_start, row_end);
+    }
+    for (auto& th : threads) th.join();
+}
+
+void q3bit_gemm_ref_cpu(const float* A, int M, const unsigned char* packed,
+                        const float* absmax, float* C, int N, int K, int block) {
+    const int nblocks = K / block;
+    const int row_stride = (block / 8) * 3;
+    for (int n = 0; n < N; ++n) {
+        for (int m = 0; m < M; ++m) {
+            float sum = 0.0f;
+            for (int b = 0; b < nblocks; ++b) {
+                const unsigned char* prow = packed + (size_t)n * nblocks * row_stride +
+                                            (size_t)b * row_stride;
+                const float amax = absmax[(size_t)n * nblocks + b];
+                const float scale = amax / 3.5f;
+                for (int i = 0; i < block; i += 8) {
+                    const unsigned char* q = prow + (i / 8) * 3;
+                    unsigned v = (unsigned)q[0] | ((unsigned)q[1] << 8) | ((unsigned)q[2] << 16);
+                    for (int j = 0; j < 8; ++j) {
+                        int code = (int)((v >> (3 * j)) & 7);
+                        float bv = (float)code * scale - amax;
+                        sum += A[(size_t)m * K + b * block + i + j] * bv;
+                    }
+                }
+            }
+            C[(size_t)m * N + n] = sum;
+        }
+    }
+}

@@ -614,6 +614,15 @@ void dequantize_3bit_scalar_cpu(const unsigned char* packed, const float* absmax
                                 long long n_blocks, long long block);
 void dequantize_2bit_scalar_cpu(const unsigned char* packed, const float* absmax, float* out,
                                 long long n_blocks, long long block);
+
+// Fused 3-bit dequant + GEMM: C[M,N] = A[M,K] @ dequant_3bit(B)[N,K]^T, computed directly
+// from the packed table without materializing the fp32 weight matrix (lm_head / large-vocab
+// use; benchmarked faster than fp32 matmul on this CPU, see report 7.143).
+void q3bit_gemm_cpu(const float* A, int M, const unsigned char* packed, const float* absmax,
+                    float* C, int N, int K, int block, int nthreads, int ntile);
+// Scalar reference for tests.
+void q3bit_gemm_ref_cpu(const float* A, int M, const unsigned char* packed,
+                        const float* absmax, float* C, int N, int K, int block);
 #if defined(__cplusplus)
 }
 #endif

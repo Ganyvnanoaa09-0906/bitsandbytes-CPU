@@ -127,3 +127,29 @@ zig c++ -target x86_64-windows-gnu -O3 -mavx2 -mfma -shared q3bit_kernel.cpp -o 
   参考现有 `gemm_8bit` 的做法——下一步实现；在那之前，真实 LM 训练建议：
   线性层+embedding 3-bit、**lm_head 保留 fp32**（总权重 0.378+0.947=1.325 GB，仍比 fp32
   3.202 GB 少 59%，且没有 logits 的 230ms 额外开销）。
+
+## 7. fused 3-bit dequant+GEMM（第三轮：正式进 csrc）
+
+不再把整张 fp32 表写出来：`q3bit_gemm` 按 B 行 tile（默认 64 行 × K）现场解包到 L2 缓冲，
+再直接算 `C = A @ B^T`。
+
+**原型（独立 DLL，Qwen3.5-0.8B lm_head 形状 M=64,N=248320,K=1024）**：
+
+| 路径 | 时间 | 说明 |
+|---|---|---|
+| fp32 torch matmul | 579.4 ms | 读 0.947 GB fp32 表 |
+| 解包全表 + torch matmul | 825.8 ms | 旧方案（dequant 188ms + matmul） |
+| **fused 3-bit GEMM** | **498.2 ms（ntile=64）** | 读 0.104 GB packed 表，**比 fp32 快 14%** |
+
+**正式 csrc 版**（`cbq3bit_gemm_cpu`，N=131072 的等比缩小测试，WSL 原生构建）：
+
+| 路径 | 时间 | 相对 |
+|---|---|---|
+| torch fp32 matmul | 313.8 ms | 1.00× |
+| csrc fused GEMM | **257.7 ms（ntile=32）** | **1.22× 快**（外推 N=248320 ≈ 488ms） |
+
+reldiff vs 参考 4.29e-07（fp32 累加顺序差异）。自检第 8 项覆盖 fused GEMM vs 标量参考：
+x86 AVX2 原生 **8/8 PASS**、x86 generic **8/8 PASS**、aarch64 qemu **8/8 PASS**。
+
+结论：**lm_head 走 fused 3-bit GEMM 是严格双赢**（内存 -89%、前向速度 +14~22%）。限制：
+当前实现只做前向 / `C=A@B^T`；训练反向还需要 `dX = dY @ W` 的转置融合变体（下一轮）。

@@ -1032,4 +1032,19 @@ long long cbdequantize_2bit_cpu(
     return 0;
 }
 
+// Fused 3-bit dequant + GEMM (C[M,N] = A[M,K] @ dequant(B)[N,K]^T).
+long long cbq3bit_gemm_cpu(
+    const float* A, long long M, const unsigned char* packed, const float* absmax,
+    float* C, long long N, long long K, long long block, long long nthreads, long long ntile
+) {
+    if (!A || !packed || !absmax || !C || M <= 0 || N <= 0 || K <= 0 || block <= 0 ||
+        (block % 8) != 0 || (K % block) != 0 || M > 2147483647LL || N > 2147483647LL ||
+        K > 2147483647LL) {
+        return -1;
+    }
+    q3bit_gemm_cpu(A, (int)M, packed, absmax, C, (int)N, (int)K, (int)block,
+                   (int)nthreads, (int)ntile);
+    return 0;
+}
+
 }

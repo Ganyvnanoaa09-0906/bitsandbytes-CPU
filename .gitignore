@@ -94,3 +94,5 @@ gt1030/windows_pkg/.venv/
 gt1030/windows_pkg/__pycache__/
 q3bit_kernel.dll
 q3bit_kernel.so
+q3bit_gemm.dll
+q3bit_gemm.so

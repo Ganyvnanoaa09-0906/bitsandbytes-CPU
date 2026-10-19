@@ -10,7 +10,7 @@
 //         csrc/cpu_ops.cpp csrc/cpu_gdn.cpp csrc/pythonInterface.cpp \
 //         -o selftest_cpu && ./selftest_cpu
 //
-// 覆盖（**实际 7 项**）：
+// 覆盖（**实际 8 项**）：
 //   1) quantize_blockwise(8bit) 往返：量化→反量化 误差 < 0.6%
 //   2) gemm_8bit 线性前向：A @ dequant8(B) 与 A @ B 近似
 //   3) gemv_4bit(nf4) 推理：A @ dequant4(B) 输出有限且非全零
@@ -63,6 +63,10 @@ void dequantize_3bit_cpu(const unsigned char* packed, const float* absmax, float
                          long long n_blocks, long long block);
 void dequantize_2bit_cpu(const unsigned char* packed, const float* absmax, float* out,
                          long long n_blocks, long long block);
+void q3bit_gemm_cpu(const float* A, int M, const unsigned char* packed, const float* absmax,
+                    float* C, int N, int K, int block, int nthreads, int ntile);
+void q3bit_gemm_ref_cpu(const float* A, int M, const unsigned char* packed,
+                        const float* absmax, float* C, int N, int K, int block);
 void dequantize_3bit_scalar_cpu(const unsigned char* packed, const float* absmax, float* out,
                                 long long n_blocks, long long block);
 void dequantize_2bit_scalar_cpu(const unsigned char* packed, const float* absmax, float* out,
@@ -353,7 +357,61 @@ int main(void) {
         free(packed);
     }
 
-    printf("\n=== 汇总: %d 失败 / 7 项 ===\n", failures);
+    // ---- 8) fused 3-bit dequant + GEMM vs scalar reference ----
+    {
+        const int M = 4, N = 64, K = 256, bs = 64;
+        const int nblocks = K / bs;
+        float* A = (float*)malloc((size_t)M * K * sizeof(float));
+        float* B = (float*)malloc((size_t)N * K * sizeof(float));
+        float* absmax = (float*)malloc((size_t)N * nblocks * sizeof(float));
+        unsigned char* packed = (unsigned char*)malloc((size_t)N * nblocks * (bs / 8) * 3);
+        float* C_ref = (float*)malloc((size_t)M * N * sizeof(float));
+        float* C_impl = (float*)malloc((size_t)M * N * sizeof(float));
+        for (int i = 0; i < M * K; i++) A[i] = sinf(i * 0.013f) * 0.5f;
+        for (int i = 0; i < N * K; i++) B[i] = cosf(i * 0.007f) * 1.5f + 0.2f;
+        for (int n = 0; n < N; n++) {
+            for (int b = 0; b < nblocks; b++) {
+                const float* blk = B + (size_t)n * K + b * bs;
+                float amax = 0.0f;
+                for (int i = 0; i < bs; i++) {
+                    float a = fabsf(blk[i]);
+                    if (a > amax) amax = a;
+                }
+                absmax[(size_t)n * nblocks + b] = amax;
+                const float scale = amax / 3.5f;
+                for (int g = 0; g < bs; g += 8) {
+                    unsigned v = 0;
+                    for (int j = 0; j < 8; j++) {
+                        int code = 0;
+                        if (scale > 0.0f) {
+                            code = (int)lroundf(blk[g + j] / scale + 3.5f);
+                            if (code < 0) code = 0;
+                            if (code > 7) code = 7;
+                        }
+                        v |= (unsigned)code << (3 * j);
+                    }
+                    unsigned char* q = packed + ((size_t)n * nblocks + b) * (bs / 8) * 3 +
+                                       (g / 8) * 3;
+                    q[0] = (unsigned char)(v & 0xFF);
+                    q[1] = (unsigned char)((v >> 8) & 0xFF);
+                    q[2] = (unsigned char)((v >> 16) & 0xFF);
+                }
+            }
+        }
+        q3bit_gemm_ref_cpu(A, M, packed, absmax, C_ref, N, K, bs);
+        q3bit_gemm_cpu(A, M, packed, absmax, C_impl, N, K, bs, 4, 16);
+        double maxdiff = 0.0, maxabs = 0.0;
+        for (int i = 0; i < M * N; i++) {
+            double d = fabs((double)C_impl[i] - (double)C_ref[i]);
+            if (d > maxdiff) maxdiff = d;
+            if (fabs((double)C_ref[i]) > maxabs) maxabs = fabs((double)C_ref[i]);
+        }
+        double rel = maxdiff / (maxabs + 1e-9);
+        CHECK("fused 3-bit dequant+GEMM 与标量参考一致", rel < 1e-4, "rel=%.3e", rel);
+        free(A); free(B); free(absmax); free(packed); free(C_ref); free(C_impl);
+    }
+
+    printf("\n=== 汇总: %d 失败 / 8 项 ===\n", failures);
     if (failures == 0) {
         printf("[PASSED] bitsandbytes CPU 内核自检全部通过（可安全在 Linux/ARM 使用）\n");
         return 0;
