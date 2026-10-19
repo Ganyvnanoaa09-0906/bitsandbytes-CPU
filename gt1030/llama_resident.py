@@ -11,6 +11,13 @@ Modes:
   --validate-layer : one layer forward vs torch fp32 reference
   --validate-bwd   : one layer backward (dX + LoRA dA/dB) vs torch autograd
   --steps N        : full 24-layer model, cross-entropy loss, AdamW on LoRA+lm_head
+
+STATUS (2026-10-19): EXPERIMENTAL / WIP. The single-layer forward and backward modes are
+validated against torch fp32 (see docstring above), but the full multi-layer --steps path has
+an unresolved GPU-buffer anomaly (all layer outputs read back identical/zero, nondeterministic).
+Do not use it for real training; gt1030/igpu_train.py is the supported trainer. Also note this
+module creates an OpenCL context at import time, so importing it on a machine without an
+OpenCL ICD fails by design.
 """
 from __future__ import annotations
 

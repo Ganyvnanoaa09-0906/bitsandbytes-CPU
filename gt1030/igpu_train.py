@@ -341,32 +341,62 @@ def patch_model(model: nn.Module, mode: str, r: int, skip_lm_head: bool) -> int:
     return count
 
 
+def _hub_root() -> str:
+    """Hub cache root: BNB_HUB_CACHE wins; otherwise the historical Windows path, or ~/.cache."""
+    env = os.environ.get('BNB_HUB_CACHE')
+    if env:
+        return env
+    if os.name == 'nt':
+        return r'D:\deepsleep\hub_models'
+    return os.path.join(os.path.expanduser('~'), '.cache', 'bnb_hub_models')
+
+
+_WEIGHT_FILES = ('model.safetensors', 'model.safetensors.index.json', 'pytorch_model.bin')
+
+
 def resolve_model(spec: str) -> str:
-    """Local path or download from the Hub mirror into D:\\deepsleep\\hub_models."""
+    """Local path, or download the needed files from the Hub mirror into the cache root."""
     if os.path.isdir(spec):
         return spec
-    local = os.path.join(r'D:\deepsleep\hub_models', spec.replace('/', '__'))
-    if os.path.isdir(local) and os.path.exists(os.path.join(local, 'config.json')):
+    local = os.path.join(_hub_root(), spec.replace('/', '__'))
+    if os.path.isdir(local) and os.path.exists(os.path.join(local, 'config.json')) and any(
+            os.path.exists(os.path.join(local, f)) for f in _WEIGHT_FILES):
         return local
     os.makedirs(local, exist_ok=True)
     files = ['config.json', 'generation_config.json', 'model.safetensors',
              'model.safetensors.index.json', 'pytorch_model.bin', 'tokenizer.json',
              'tokenizer_config.json', 'vocab.json', 'merges.txt', 'special_tokens_map.json',
              'tokenizer.model']
+    failed = []
     for f in files:
         dst = os.path.join(local, f)
         if os.path.exists(dst):
             continue
         url = '%s/%s/resolve/main/%s' % (MIRROR, spec, f)
+        ok = False
         for attempt in range(3):
             try:
                 with urllib.request.urlopen(url, timeout=120) as resp, open(dst, 'wb') as out:
                     out.write(resp.read())
+                ok = True
                 break
             except Exception:
                 if os.path.exists(dst):
                     os.remove(dst)
                 time.sleep(2)
+        if not ok:
+            failed.append(f)
+    # Required files must exist: config.json always, and at least one weight shard/file.
+    missing = []
+    if not os.path.exists(os.path.join(local, 'config.json')):
+        missing.append('config.json')
+    if not any(os.path.exists(os.path.join(local, f)) for f in _WEIGHT_FILES):
+        missing.append('model weights (model.safetensors / pytorch_model.bin)')
+    if missing:
+        raise RuntimeError(
+            'cannot download model %r from %s: missing %s. Tried into %s; failed files: %s. '
+            'Check the model id / network, or pass a local directory.'
+            % (spec, MIRROR, ', '.join(missing), local, ', '.join(failed) or 'none'))
     return local
 
 
@@ -385,6 +415,11 @@ def make_data(args, model):
     vocab = getattr(cfg, 'vocab_size', None) or getattr(getattr(cfg, 'text_config', cfg), 'vocab_size', 32000)
     tok = _load_tokenizer(args.model_path) if (args.data or args.task == 'mlm') else None
     if args.data:
+        if tok is None:
+            raise RuntimeError(
+                '--data needs a tokenizer saved in the model directory (%s); none could be '
+                'loaded. Point --model at a local checkpoint that includes tokenizer files.'
+                % args.model_path)
         text = open(args.data, encoding='utf-8', errors='replace').read()
         toks = tok(text)['input_ids']
         if len(toks) < args.tokens + 2:
@@ -471,6 +506,8 @@ def train(args) -> int:
     args.backend = backend
     print('  backend:', backend + (' (OpenCL device %s)' % ctx.devices[0].name if backend == 'igpu' else ' (no OpenCL needed)'))
     skip_lm = bool(getattr(model.config, 'tie_word_embeddings', False))
+    # base_loss above needs eval(); training itself must run in train mode (dropout on).
+    model.train()
     total = sum(p.numel() for p in model.parameters())      # before patching: base weights leave Parameters
     batch = make_data(args, model)
     # CPU reference on the same batch, before patching: the iGPU first-step loss must match it
@@ -494,7 +531,11 @@ def train(args) -> int:
     _uniq = {id(p): p for p in model.parameters() if p.requires_grad}
     trainable = sum(p.numel() for p in _uniq.values())
     if args.resume:
-        state = torch.load(os.path.join(args.resume, 'trainable.pt'), map_location='cpu')
+        try:
+            state = torch.load(os.path.join(args.resume, 'trainable.pt'),
+                               map_location='cpu', weights_only=True)
+        except TypeError:  # very old torch without weights_only
+            state = torch.load(os.path.join(args.resume, 'trainable.pt'), map_location='cpu')
         missing, unexpected = model.load_state_dict(state, strict=False)
         print('  resumed %d tensors from %s (missing %d, unexpected %d)'
               % (len(state), args.resume, len(missing), len(unexpected)))
@@ -502,7 +543,9 @@ def train(args) -> int:
           % (model.config.architectures[0] if getattr(model.config, 'architectures', None) else '?',
              total / 1e6, trainable / 1e6, 100.0 * trainable / max(1, total), n,
              ' (lm_head kept on CPU: tied embeddings)' if skip_lm else ''))
-    params = [p for p in model.parameters() if p.requires_grad]
+    # De-duplicate: tied embeddings (and a tied lm_head) expose the same Parameter twice in
+    # model.parameters(); passing it twice makes AdamW apply two updates per step.
+    params = list({id(p): p for p in model.parameters() if p.requires_grad}.values())
     opt = torch.optim.AdamW(params, lr=args.lr)
     losses, times = [], []
     ok = True

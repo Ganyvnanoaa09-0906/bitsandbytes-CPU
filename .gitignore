@@ -86,3 +86,6 @@ dist_check/
 _cmsg*.txt
 _tmp.txt
 build_arm64/
+_master_*.log
+master_*.log
+ofbos_*.log
