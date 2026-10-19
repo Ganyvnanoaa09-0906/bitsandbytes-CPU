@@ -617,6 +617,22 @@ cfg = db.parse_flash_args(ap.parse_args(['--flash']))
 print(cfg.mode, cfg.memory_threshold, cfg.min_param_size)
 ```
 
+**WSL / Linux（2026-10 起支持）** -- WSL 不再整体禁用：缓存只落在发行版自己的 ext4
+（默认 `$XDG_CACHE_HOME/bnb_flash_cache` 或 `~/.cache/bnb_flash_cache`），9P 宿主盘
+（`/mnt/c`、`/mnt/d` …）、网络文件系统、只读挂载、tmpfs/ramfs 全部拒绝；显式
+`--flash_paths` 指到这些位置会直接 `ValueError` 而不是静默忽略。Linux 的 SSD/HDD
+识别读 `/sys/block/*/queue/rotational`，手动模式的 `sizes` 用挂载点做 key
+（`{"/": 2048, "/mnt/data": 4096}`）。
+
+**WSL ext4 实测** -- 256 MB 冷参数：写 251 ms（约 1.02 GB/s）、读回 105 ms（约 2.4 GB/s）；
+同一块盘走 9P 宿主盘写只有约 155 MB/s（慢 6.5 倍，且历史上有扰乱宿主 MFT 的风险，
+所以代码里根本不写宿主盘）。
+
+**`max_inflight_bytes`（背压）** -- 零拷贝队列持有源张量内存直到写完；超过上限时本次
+卸载放弃、参数留在内存，避免"写盘未完成 + 内存没释放"的假卸载。`write_queue_depth`
+限定队列长度，`fsync=True`（或 `BNB_FLASH_FSYNC=1`）每文件落盘后 fsync；
+`BNB_FLASH_FADV_DONTNEED=1` 写完后尽早丢弃页缓存（内存极紧时用）。
+
 **`DiskLoadBalancer(config)`** -- attach_model() then start(); update_step() once per training step checks RAM and migrates the cold parameters
 
 **`in a training loop`** -- the whole integration is three lines and one call per step

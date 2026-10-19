@@ -616,6 +616,24 @@ cfg = db.parse_flash_args(ap.parse_args(['--flash']))
 print(cfg.mode, cfg.memory_threshold, cfg.min_param_size)
 ```
 
+**WSL / Linux (supported since 2026-10)** -- WSL is no longer disabled outright: the cache
+lives on the distro's own ext4 (`$XDG_CACHE_HOME/bnb_flash_cache`, or
+`~/.cache/bnb_flash_cache`). 9P host drives (`/mnt/c`, `/mnt/d`, ...), network filesystems,
+read-only mounts and tmpfs/ramfs are refused; an explicit `--flash_paths` pointing there
+raises `ValueError` instead of being silently ignored. Linux SSD/HDD detection reads
+`/sys/block/*/queue/rotational`; manual-mode `sizes` is keyed by mount point
+(`{"/": 2048, "/mnt/data": 4096}`).
+
+**Measured on WSL ext4** -- a 256 MB cold tensor wrote in 251 ms (~1.02 GB/s) and read back
+in 105 ms (~2.4 GB/s). The same bytes over a 9P host drive measured ~155 MB/s (6.5x slower),
+and host drives are deliberately never used for offload (past MFT damage).
+
+**`max_inflight_bytes` (backpressure)** -- the zero-copy queue keeps source storages alive
+until written; above the cap the offload is skipped and the parameter stays in RAM, avoiding
+fake offloads. `write_queue_depth` bounds queue length; `fsync=True` (or
+`BNB_FLASH_FSYNC=1`) fsyncs each cache file; `BNB_FLASH_FADV_DONTNEED=1` drops written page
+cache early on memory-tight systems.
+
 **`DiskLoadBalancer(config)`** -- attach_model() then start(); update_step() once per training step checks RAM and migrates the cold parameters
 
 **`in a training loop`** -- the whole integration is three lines and one call per step

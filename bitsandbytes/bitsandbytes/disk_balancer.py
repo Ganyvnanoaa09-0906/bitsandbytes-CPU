@@ -9,6 +9,14 @@ Windows 上也会直接导入失败。已确认这段 docstring 内除这一处�
 也没有 `\u`/`\x` 这类加了 r 会改变含义的转义，所以加 r 前缀不改变任何现有语义。
 （是 Android/ARM64 上跑测试时暴露的: 本机 Python 3.11 只给警告，3.14 明确提示。）
 
+支持平台（2026-10 起）：
+- **Windows**：盘符检测（ctypes，无需额外依赖），缓存默认放在脚本同目录 `.flash_cache/`；
+- **Linux**：psutil + /proc/mounts，缓存默认放 `$XDG_CACHE_HOME/bnb_flash_cache`（或
+  `~/.cache/bnb_flash_cache`），按 `/sys/block/*/queue/rotational` 识别 SSD/HDD；
+- **WSL**：**支持**。只使用 WSL 发行版自己的 ext4（通常是 `/`），9P 宿主盘
+  （`/mnt/c`、`/mnt/d` …）、网络盘、只读挂载和 tmpfs/ramfs 一律拒绝（9P 上高负载
+  卸载曾扰乱宿主 MFT）。显式 `--flash_paths` 配到这些位置会直接报错而不是静默忽略。
+
 目标：
 - 对抗 Windows 虚拟内存在 AI 训练时频繁擦写导致硬盘活动时间 100% 的问题；
 - 异步写盘线程（queue.Queue），不阻塞训练循环；
@@ -64,7 +72,9 @@ from __future__ import annotations
 import ctypes
 import mmap
 import os
+import posixpath
 import queue
+import re
 import shutil
 import threading
 import time
@@ -234,25 +244,34 @@ def detect_disks() -> List[DiskInfo]:
     跨平台：Windows 用 ctypes（GetDriveTypeW），Linux/WSL 用 psutil.disk_partitions。
     """
     disks: List[DiskInfo] = []
-    if os.name != "nt":  # Linux / WSL / macOS：psutil 跨平台路径
+    if os.name != "nt":  # Linux / WSL / macOS：psutil 枚举 + /proc/mounts 安全判定
         import psutil as _ps
+        seen = set()
         for part in _ps.disk_partitions(all=False):
-            # 【防炸机】WSL 会把宿主 NTFS 经 9P 挂成 /mnt/c、/mnt/d——9P（网络文件
-            # 系统语义）在高负载下对 NTFS 做冷参数卸载会扰乱宿主 MFT（已实测炸机）。
-            # 必须排除 9p/fuse/宿主 NTFS 挂载，绝不对它们卸载冷参数。
+            # 先排除 WSL 宿主 NTFS / 9P / 网络挂载（历史炸机点）
             if _is_wsl_host_mount(part):
                 continue
+            mount = part.mountpoint
+            norm = os.path.normpath(mount)
+            if norm in seen:
+                continue
+            info = _mount_for_path(mount)
+            if info is None:
+                continue
+            mnt, fs, src, opts = info
+            ok, _reason = _fs_safety(fs, mnt, opts)
+            if not ok:
+                continue  # 9P / ntfs / 网络 / 只读 / 伪文件系统 / 内存盘
             try:
-                usg = _ps.disk_usage(part.mountpoint)
+                usg = _ps.disk_usage(mount)
             except Exception:
                 continue
-            mount = part.mountpoint
-            # Linux 不区分 removable/remote（psutil 的 fstype 判 ssd/hdd 不准确，
-            # 退化按 SSD 处理——Linux 上卸载保护磁盘寿命的策略以 SSD 为准）
-            drive_type = "ssd" if _fs_ssd_like(part.fstype) else "hdd"
+            if usg.total <= 0 or usg.free <= 0:
+                continue
+            seen.add(norm)
             disks.append(DiskInfo(
                 mount=mount,
-                drive_type=drive_type,
+                drive_type=_linux_drive_type(src or part.device),
                 total_bytes=usg.total,
                 free_bytes=usg.free,
             ))
@@ -348,6 +367,185 @@ def _in_wsl() -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Linux / WSL 文件系统安全（WSL 支持的核心）
+# ---------------------------------------------------------------------------
+# 9P / 网络 / 宿主盘：绝不允许做冷参数缓存（WSL 的 /mnt/c、/mnt/d 属于这一类，历史上
+# 在高负载下扰乱过宿主 MFT）。pseudo/RAM 文件系统则没有持久化/卸载意义。
+_UNSAFE_FS_PREFIXES = (
+    "9p", "9pfs", "drvfs", "fuseblk", "fuse.", "ntfs", "ntfs3", "cifs", "smb",
+    "nfs", "nfs4", "vfat", "exfat", "iso9660", "udf", "sshfs", "ceph", "glusterfs",
+    "afs", "lustre", "beegfs",
+)
+_PSEUDO_FS = frozenset((
+    "proc", "sysfs", "devtmpfs", "devpts", "cgroup", "cgroup2", "binfmt_misc",
+    "securityfs", "debugfs", "tracefs", "pstore", "configfs", "mqueue", "hugetlbfs",
+    "autofs", "efivarfs", "nsfs", "tracefs",
+))
+_RAM_FS = frozenset(("tmpfs", "ramfs"))
+_WSL_HOST_MOUNT_RE = re.compile(r"^/mnt/[A-Za-z](/|$)")
+
+
+def _read_mounts(mounts_path: str = "/proc/mounts") -> List[Tuple[str, str, str, str]]:
+    """[(mountpoint, fstype, source, opts)]，按 mountpoint 长度降序（最长前缀优先）。
+
+    Linux/WSL 上用 /proc/mounts 而不是只信 psutil：psutil 在 WSL 里可能看不到 9P 宿主盘，
+    而我们恰恰需要识别并拒绝它们。参数化路径是为了单测能喂假 mount 表。
+    """
+    rows: List[Tuple[str, str, str, str]] = []
+    try:
+        with open(mounts_path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                src, mnt, fs, opts = parts[0], parts[1], parts[2], parts[3]
+                mnt = mnt.replace("\\040", " ").replace("\\011", "\t")
+                rows.append((mnt, fs.lower(), src, opts))
+    except OSError:
+        return []
+    rows.sort(key=lambda r: len(r[0]), reverse=True)
+    return rows
+
+
+def _norm_mount_path(path: str) -> str:
+    """把路径规范成用于 /proc/mounts 前缀比较的形式。
+
+    在 Linux 上就是 abspath；在 Windows 上跑 Linux mount 表单测时，os.path.abspath("/mnt/x")
+    会变成 "D:\\mnt\\x"，所以纯 POSIX 路径改用 posixpath.normpath。
+    """
+    s = str(path)
+    if s.startswith("/") and os.name == "nt":
+        return posixpath.normpath(s)
+    return os.path.abspath(os.path.expanduser(s))
+
+
+def _mount_for_path(path: str, mounts_path: str = "/proc/mounts"):
+    """路径所在挂载行 (mountpoint, fstype, source, opts)；解析不到返回 None。"""
+    try:
+        ap = _norm_mount_path(path)
+    except Exception:
+        return None
+    for row in _read_mounts(mounts_path):
+        mnt = row[0]
+        if ap == mnt or ap.startswith(mnt.rstrip("/") + "/"):
+            return row
+    return None
+
+
+def _fs_safety(fs: str, mount: str, opts: str = "", is_wsl: Optional[bool] = None):
+    """(ok, reason)：该挂载能否承载冷参数缓存。"""
+    if is_wsl is None:
+        is_wsl = _in_wsl()
+    if fs.startswith(_UNSAFE_FS_PREFIXES):
+        return False, f"{fs} 是 9P/网络/宿主盘文件系统（挂载 {mount}）"
+    if fs in _PSEUDO_FS:
+        return False, f"{fs} 是伪文件系统（挂载 {mount}）"
+    if fs in _RAM_FS:
+        return False, f"{fs} 是内存盘，卸载到它没有意义（挂载 {mount}）"
+    if "ro" in opts.split(","):
+        return False, f"挂载 {mount} 是只读的"
+    if is_wsl and (_WSL_HOST_MOUNT_RE.match(mount) or mount.startswith("/mnt/wsl")):
+        return False, f"{mount} 是 WSL 宿主/虚拟挂载，不能写冷参数"
+    return True, ""
+
+
+def _cache_dir_verdict(path: str, mounts_path: str = "/proc/mounts"):
+    """(ok, reason)：路径能否作为 disk_balancer 的缓存目录。
+
+    比 _fs_safety 多两条：不能直接是 "/"（cleanup 会 rmtree 它），且不能落在 WSL 宿主盘。
+    """
+    try:
+        ap = _norm_mount_path(path)
+    except Exception:
+        return False, "路径无法解析"
+    if not ap.rstrip("/") or ap == os.sep:
+        return False, "缓存目录不能直接是根目录 /"
+    info = _mount_for_path(ap, mounts_path)
+    if info is None:
+        return False, "无法解析该路径的挂载信息（需要 Linux /proc/mounts）"
+    mnt, fs, _src, opts = info
+    ok, reason = _fs_safety(fs, mnt, opts)
+    if not ok:
+        return False, reason
+    if _in_wsl() and _WSL_HOST_MOUNT_RE.match(ap):
+        return False, f"{ap} 在 WSL 宿主盘 /mnt/[盘符] 下"
+    return True, f"{fs} @ {mnt}"
+
+
+def _cache_name_for_mount(mount: str) -> str:
+    """把挂载点变成安全的目录名："/" -> "root"，"/mnt/data" -> "mnt_data"。"""
+    name = str(mount).strip("/").replace("/", "_").replace(":", "").replace("\\", "_")
+    return name or "root"
+
+
+def _default_cache_base() -> str:
+    """Linux 默认缓存根：$XDG_CACHE_HOME/bnb_flash_cache 或 ~/.cache/bnb_flash_cache。
+
+    不用脚本所在目录做默认：WSL 里脚本常在 /mnt/d（9P），那是必须拒绝的位置。
+    """
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    if not xdg:
+        xdg = os.path.join(os.path.expanduser("~"), ".cache")
+    return os.path.join(xdg, "bnb_flash_cache")
+
+
+def _linux_drive_type(source: str) -> str:
+    """按 /sys/block/<dev>/queue/rotational 判断 SSD/HDD/NVMe（Linux 真实介质类型）。"""
+    name = os.path.basename(str(source or "").strip())
+    if not name:
+        return "ssd"
+    if name.startswith("nvme"):
+        return "nvme"
+    try:
+        with open(f"/sys/class/block/{name}/queue/rotational", "r", encoding="utf-8") as fh:
+            rotational = fh.read().strip() == "1"
+    except OSError:
+        return "ssd"
+    if rotational and _in_wsl():
+        # WSL 的虚拟盘（Hyper-V VHDX）永远报告 rotational=1，但宿主一般是 SSD；WSL 里
+        # 也只有一个可用路径，分错层没有意义，按 SSD 标更符合实际。
+        return "ssd"
+    return "hdd" if rotational else "ssd"
+
+
+def _unix_cache_candidates(mount: str, cfg_paths: List[str]) -> List[str]:
+    """按优先级给出某个挂载点上的缓存目录候选（都会再过 _cache_dir_verdict 检查）。"""
+    cands: List[str] = []
+    for cp in cfg_paths or []:
+        info = _mount_for_path(cp)
+        if info is not None and os.path.normpath(info[0]) == os.path.normpath(mount):
+            cands.append(os.path.join(os.path.abspath(os.path.expanduser(cp)),
+                                      ".bnb_flash_cache"))
+    if os.path.normpath(mount) != os.sep:
+        cands.append(os.path.join(mount, ".bnb_flash_cache"))
+    cands.append(os.path.join(_default_cache_base(), _cache_name_for_mount(mount)))
+    return cands
+
+
+def _writable_dir(path: str) -> bool:
+    try:
+        os.makedirs(path, exist_ok=True)
+        probe = os.path.join(path, f".wtest_{os.getpid()}")
+        with open(probe, "wb") as fh:
+            fh.write(b"x")
+        os.remove(probe)
+        return True
+    except OSError:
+        return False
+
+
+def _pick_unix_cache_dir(mount: str, cfg_paths: List[str]) -> Optional[str]:
+    """在某个挂载点上选一个安全且可写的缓存目录；没有就返回 None。"""
+    for cand in _unix_cache_candidates(mount, cfg_paths):
+        ok, reason = _cache_dir_verdict(cand)
+        if not ok:
+            continue
+        if _writable_dir(cand):
+            return cand
+    return None
+
+
 def _fs_ssd_like(fstype: str) -> bool:
     """粗略判断文件系统/挂载点是否更像 SSD（Linux 无设备级 SSD 检测，用 psutil
     disk_io_counters 无法区分 ssd/hdd，这里用 fstype 兜底：NVMe/常见 SSD 挂载）。
@@ -408,6 +606,10 @@ def get_disk_activity(disk: DiskInfo) -> float:
     """获取磁盘当前活动率（估算值，0.0~1.0）。
 
     通过两次采样间的 I/O 增量估算。
+
+    Linux 上还有两个可选环境变量：``BNB_FLASH_FADV_DONTNEED=1`` 让写完后尽早释放页缓存
+    （内存极紧时有用、下次读会慢）；``BNB_FLASH_FSYNC=1`` 等价于
+    ``DiskBalancerConfig(fsync=True)`` 的默认值（每个缓存文件落盘后 fsync）。
     """
     r, w, now = _get_disk_io(disk)
     if disk._io_counters is None:
@@ -437,9 +639,13 @@ class DiskBalancerConfig:
 
     Attributes:
         mode: "auto" 自动检测磁盘并分配；"manual" 手动指定。
-        sizes: 手动模式下每盘缓存大小，如 ``{"C:": 2048, "D:": 4096}``（MB）。
-        paths: 指定缓存路径列表，如 ``["D:\\cache", "E:\\cache"]``。
-            不指定则默认在脚本所在目录下创建 ``.flash_cache``。
+        sizes: 手动模式下每盘缓存大小（MB）。Windows 用盘符 ``{"C:": 2048}``；
+            Linux/WSL 用挂载点 ``{"/": 2048, "/mnt/data": 4096}``。
+        paths: 指定缓存路径列表，如 Windows ``["D:\\cache", "E:\\cache"]``，
+            Linux/WSL ``["/home/user/fastcache"]``（会落在其下 `.bnb_flash_cache/`）。
+            不指定则 Windows 默认在脚本所在目录 `.flash_cache/`，Linux/WSL 默认在
+            ``$XDG_CACHE_HOME/bnb_flash_cache``（或 ``~/.cache/bnb_flash_cache``）。
+            Linux/WSL 上 9P/网络/只读/内存盘路径会被拒绝并报错。
         speed_first: True=速度优先（不管硬盘寿命），False=保护硬盘优先。
         keep_cache: True=训练结束后保留缓存文件，False=默认删除。
         memory_threshold: 内存使用率阈值（0.0~1.0），超过此值触发冷参数卸载。
@@ -467,6 +673,12 @@ class DiskBalancerConfig:
     min_free_ratio: float = 0.05
     offload_prefix: str = ""            # 只卸载匹配前缀的冷参数（空=全部），如 "_cold_"
     offload_per_step: int = 0           # 每次 update_step 最多迁移几个（0=不限）
+    # 零拷贝写盘队列里每个待写参数都会继续占用源张量内存直到写完。不设上限时，
+    # 训练线程可以一次排进几十个大参数（几百 MB 内存没真正释放）。下面两个旋钮把
+    # "在飞字节"限制住，写盘线程消费后自动放行。
+    max_inflight_bytes: int = 0         # 0=自动（max(256MB, min(1GB, 5% 物理内存))）
+    write_queue_depth: int = 0          # 0=不限（内存由 max_inflight_bytes 兜底）
+    fsync: bool = False                 # True=每个缓存文件落盘后 fsync（更安全、更慢）
 
     def __post_init__(self):
         """校验关键配置，避免非法值导致静默禁用 / 负缓存 / None 崩。"""
@@ -489,6 +701,12 @@ class DiskBalancerConfig:
         if self.throttle_threshold is None or not (0.0 <= self.throttle_threshold <= 1.0):
             raise ValueError(
                 f"throttle_threshold 必须在 [0,1] 内，得到 {self.throttle_threshold}")
+        if self.max_inflight_bytes is None or self.max_inflight_bytes < 0:
+            raise ValueError(
+                f"max_inflight_bytes 必须是非负整数（0=自动），得到 {self.max_inflight_bytes}")
+        if self.write_queue_depth is None or self.write_queue_depth < 0:
+            raise ValueError(
+                f"write_queue_depth 必须是非负整数（0=不限），得到 {self.write_queue_depth}")
 
 
 # ---------------------------------------------------------------------------
@@ -511,6 +729,9 @@ class DiskLoadBalancer:
     - 检测所有磁盘，按 SSD→HDD 排序路径列表
     - 按容量自动分配缓存配额（保留 min_free_ratio 安全空间）
     - 单一磁盘时：优先不拖慢训练速度，其次是保护硬盘
+    - Linux/WSL：只选本机磁盘文件系统；没有任何安全位置时 `start()` 直接报错并说明原因
+    - 零拷贝写盘队列有在飞字节上限（`max_inflight_bytes`），超过时本次卸载放弃、
+      参数留在内存，避免"写盘没完成、内存也没真正释放"的假卸载
 
     用法::
 
@@ -529,19 +750,24 @@ class DiskLoadBalancer:
 
     def __init__(self, config: Optional[DiskBalancerConfig] = None):
         self._cfg = config or DiskBalancerConfig()
-        # 【WSL 环境整体禁用】在 WSL 里，宿主 NTFS 经 9P/drvfs 挂在 /mnt/c、/mnt/d 等。
-        # 9P（网络文件系统语义）在高负载下对 NTFS 卸载冷参数会扰乱宿主 MFT（已实测炸机）。
-        # 所以：当处于 WSL / 9P 宿主环境时，均衡负载整体跳过、忽略用户参数，不卸载任何冷参数。
-        self._9p_skip = _in_wsl()
+        # WSL 不再整体禁用：WSL 发行版自己的 ext4（/dev/sdX 挂 /）是安全的本机磁盘；
+        # 只拒绝 9P 宿主盘（/mnt/c、/mnt/d 等）。_disabled_reason 记录最终为什么没跑。
+        self._wsl = _in_wsl()
+        self._disabled_reason = ""
         self._disks: List[DiskInfo] = []
         self._paths: List[str] = []        # 排序后的缓存路径（SSD→HDD）
-        self._write_queue: queue.Queue = queue.Queue()
+        self._write_queue: queue.Queue = queue.Queue(
+            maxsize=self._cfg.write_queue_depth or 0)
         self._writer_thread: Optional[threading.Thread] = None
         self._model: Optional[torch.nn.Module] = None
         self._cold_index: Dict[str, Tuple[str, int, torch.dtype]] = {}  # name -> (path, numel, dtype)
         self._migrated_count: int = 0
         self._started = False
         self._lock = threading.Lock()
+        self._inflight_bytes = 0                  # 已入队、未写完的源张量字节数
+        self._inflight_cv = threading.Condition(self._lock)
+        self._max_inflight_bytes = 0              # start() 里算
+        self._write_bytes_total = 0               # 累计入队字节数（统计）
         self._script_dir: str = ""
         self._ssd_paths: List[str] = []
         self._hdd_paths: List[str] = []
@@ -566,27 +792,55 @@ class DiskLoadBalancer:
     def start(self, script_dir: Optional[str] = None) -> "DiskLoadBalancer":
         """初始化磁盘、创建缓存目录、启动异步写盘线程。
 
-        Args:
-            script_dir: 训练脚本所在目录。缓存路径默认在此目录下。
-        """
-        if getattr(self, "_9p_skip", False):
-            print("[disk_balancer] 检测到 WSL 9P/宿主 NTFS 挂载，均衡负载已整体禁用——"
-                  "为避免 9P 写宿主 NTFS 扰乱 MFT（会炸机），本次不卸载任何冷参数"
-                  "（用户 --flash 参数已忽略）。建议在纯 Linux 分区使用才对磁盘做均衡。")
-            return self
+        在 WSL / Linux 上只会选择本机磁盘文件系统（ext4/xfs/btrfs/...）；9P 宿主盘
+        （/mnt/c、/mnt/d）、网络盘、只读挂载和内存盘会被拒绝。没有任何安全位置时
+        本次实例自动禁用（不写任何文件），并在日志里说明原因。
 
+        Args:
+            script_dir: 训练脚本所在目录（Windows 默认缓存位置；Linux 用 ~/.cache）。
+        """
         if self._started:
             return self
 
         self._script_dir = script_dir or os.path.dirname(os.path.abspath(
             __import__("sys").argv[0] if __import__("sys").argv else __file__))
 
+        # 用户显式 --flash_paths 必须安全：Linux/WSL 上如果配到 9P 宿主盘/网络盘/根目录，
+        # 直接报错而不是悄悄忽略（否则用户以为缓存落在指定位置，实际没有）。
+        if os.name != "nt" and self._cfg.paths:
+            for cp in self._cfg.paths:
+                ok, reason = _cache_dir_verdict(cp)
+                if not ok:
+                    raise ValueError(
+                        f"disk_balancer: --flash_paths 中的 {cp!r} 不安全: {reason}。"
+                        f"请换成 ext4/xfs/btrfs 等本机磁盘上的目录（例如 $HOME 下）")
         if self._cfg.mode == "auto":
             self._start_auto()
         elif self._cfg.mode == "manual":
             self._start_manual()
         else:
             raise ValueError(f"Unknown mode: {self._cfg.mode}")
+
+        # 在任何写操作之前，把每个缓存目录再验一遍（防配置绕过；Linux 上同时保证
+        # 绝不会是 "/" 或 9P 宿主盘）。Windows 没有 /proc/mounts，跳过该检查。
+        if os.name != "nt":
+            for p in self._paths:
+                ok, reason = _cache_dir_verdict(p)
+                if not ok:
+                    raise RuntimeError(
+                        f"disk_balancer: 拒绝不安全缓存目录 {p}: {reason}。"
+                        f"请改用本机 Linux 文件系统上的路径（例如 $HOME）。")
+
+        # 在飞字节上限：零拷贝队列持有源张量内存，必须给训练线程一个背压。
+        if self._cfg.max_inflight_bytes:
+            self._max_inflight_bytes = int(self._cfg.max_inflight_bytes)
+        else:
+            try:
+                import psutil as _ps
+                total = int(_ps.virtual_memory().total)
+                self._max_inflight_bytes = max(256 << 20, min(1 << 30, total // 20))
+            except Exception:
+                self._max_inflight_bytes = 512 << 20
 
         # Only directories we actually create here are ever removed by cleanup().
         self._owned_cache_dirs = []
@@ -617,7 +871,31 @@ class DiskLoadBalancer:
     def _start_auto(self):
         all_disks = detect_disks()
         if not all_disks:
-            raise RuntimeError("disk_balancer: 未检测到任何可用磁盘")
+            hint = ("（WSL：只检测到 9P 宿主盘？把缓存目录放到 WSL 自己的 ext4 上，"
+                    "或确保 $HOME 可写）" if self._wsl else "")
+            raise RuntimeError(f"disk_balancer: 未检测到任何可用磁盘{hint}")
+
+        if os.name != "nt":
+            kept: List[DiskInfo] = []
+            for d in all_disks:
+                usable = int(d.free_bytes * (1.0 - self._cfg.min_free_ratio))
+                d.max_cache_bytes = min(usable, 4 * (1 << 30))
+                cache_dir = _pick_unix_cache_dir(d.mount, self._cfg.paths)
+                if cache_dir is None:
+                    continue
+                d.cache_dir = cache_dir
+                if d.drive_type in ("ssd", "nvme"):
+                    self._ssd_paths.append(cache_dir)
+                else:
+                    self._hdd_paths.append(cache_dir)
+                kept.append(d)
+            if not kept:
+                raise RuntimeError(
+                    "disk_balancer: 没有安全的 Linux 缓存目录可用"
+                    "（9P/网络/只读/内存盘都不能用；请把缓存放到 ext4/xfs/btrfs 等本机磁盘）")
+            self._disks = kept
+            self._paths = self._ssd_paths + self._hdd_paths
+            return
 
         # 按 SSD→HDD 排序路径
         for d in all_disks:
@@ -649,6 +927,33 @@ class DiskLoadBalancer:
 
         all_disks = detect_disks()
         disk_map = {d.mount: d for d in all_disks}
+
+        if os.name != "nt":
+            # Linux：sizes 的 key 是挂载点路径（"/"、"/mnt/data"），不是盘符。
+            norm_map = {os.path.normpath(k): v for k, v in disk_map.items()}
+            for mount_key, size_mb in self._cfg.sizes.items():
+                m = os.path.normpath(str(mount_key))
+                if m not in norm_map:
+                    raise ValueError(
+                        f"disk_balancer: 挂载点 {mount_key!r} 不在可用磁盘列表中: "
+                        f"{sorted(norm_map)}")
+                d = norm_map[m]
+                usable = int(d.free_bytes * (1.0 - self._cfg.min_free_ratio))
+                d.max_cache_bytes = min(int(size_mb) << 20, usable)
+                cache_dir = _pick_unix_cache_dir(d.mount, self._cfg.paths)
+                if cache_dir is None:
+                    raise RuntimeError(
+                        f"disk_balancer: 挂载点 {d.mount} 上没有安全可写的缓存目录")
+                d.cache_dir = cache_dir
+                if d.drive_type in ("ssd", "nvme"):
+                    self._ssd_paths.append(cache_dir)
+                else:
+                    self._hdd_paths.append(cache_dir)
+                self._disks.append(d)
+            if not self._disks:
+                raise RuntimeError("disk_balancer: manual 模式下没有有效的磁盘配置")
+            self._paths = self._ssd_paths + self._hdd_paths
+            return
 
         for mount, size_mb in self._cfg.sizes.items():
             m = mount.upper()
@@ -693,8 +998,13 @@ class DiskLoadBalancer:
             m = "SSD" if d.drive_type in ("ssd", "nvme") else "HDD"
             lines.append(f"  [{d.mount}] {m} 缓存 {d.max_cache_gb:.1f}GB @ {d.cache_dir}")
         lines.append(f"  路径优先级: {self._paths}")
+        if self._max_inflight_bytes:
+            lines.append(f"  在飞写盘上限: {self._max_inflight_bytes / (1 << 20):.0f} MB"
+                         f"（超过则本次卸载放弃，参数留在内存）")
         if self._cfg.speed_first:
             lines.append("  ⚠ 速度优先模式：不保护硬盘，不节流")
+        if self._wsl:
+            lines.append("  WSL：仅使用本机 ext4 等磁盘文件系统，9P 宿主盘 /mnt/[盘符] 绝不写入")
         print("\n".join(lines), flush=True)
 
     # ------------------------------------------------------------------
@@ -710,33 +1020,50 @@ class DiskLoadBalancer:
         """
         while True:
             try:
-                key, payload, path = self._write_queue.get()
-                try:
-                    os.makedirs(os.path.dirname(path), exist_ok=True)
-                    with open(path, "wb") as f:
-                        f.write(payload)
-                except Exception as e:
-                    # 写盘失败：不能静默丢数据 —— 从索引摘除该 key（内存已释放，必须显式
-                    # 摘除并报警，否则调用方拿回一个"已登记但文件不存在/未被占用"的参数，
-                    # 冻结层前向会悄悄变垃圾）。
-                    with self._lock:
-                        entry = self._cold_index.pop(key, None)
-                        if entry:
-                            cache_dir = os.path.dirname(entry[0])
-                            try:
-                                nbytes = int(entry[1]) * torch.empty(0, dtype=entry[2]).element_size()
-                            except (TypeError, ValueError):
-                                nbytes = 0
-                            self._cache_bytes[cache_dir] = max(
-                                0, self._cache_bytes.get(cache_dir, 0) - nbytes)
-                    print(f"[disk_balancer] 写盘失败 {key}: {e} —— 已从索引摘除，该参数将被丢弃（无法读回）", flush=True)
-                finally:
-                    if isinstance(payload, memoryview):
-                        payload.release()
-                    self._write_queue.task_done()
+                key, payload, path, nbytes = self._write_queue.get()
             except Exception:
-                # queue 关闭或线程退出
-                break
+                break  # queue 关闭或线程退出
+            try:
+                cache_dir = os.path.dirname(path)
+                self._wait_disk_idle(cache_dir)
+                os.makedirs(cache_dir, exist_ok=True)
+                with open(path, "wb") as f:
+                    f.write(payload)
+                    if self._cfg.fsync:
+                        f.flush()
+                        os.fsync(f.fileno())
+                # 内存紧张时可让内核尽快丢掉刚写的页缓存（下次读会从盘上来，慢一点）。
+                if os.name != "nt" and os.environ.get("BNB_FLASH_FADV_DONTNEED"):
+                    try:
+                        fd = os.open(path, os.O_RDONLY)
+                        try:
+                            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+                        finally:
+                            os.close(fd)
+                    except OSError:
+                        pass
+            except Exception as e:
+                # 写盘失败：不能静默丢数据 —— 从索引摘除该 key（内存已释放，必须显式
+                # 摘除并报警，否则调用方拿回一个"已登记但文件不存在/未被占用"的参数，
+                # 冻结层前向会悄悄变垃圾）。
+                with self._lock:
+                    entry = self._cold_index.pop(key, None)
+                    if entry:
+                        cache_dir = os.path.dirname(entry[0])
+                        try:
+                            nbytes_entry = int(entry[1]) * torch.empty(0, dtype=entry[2]).element_size()
+                        except (TypeError, ValueError):
+                            nbytes_entry = 0
+                        self._cache_bytes[cache_dir] = max(
+                            0, self._cache_bytes.get(cache_dir, 0) - nbytes_entry)
+                print(f"[disk_balancer] 写盘失败 {key}: {e} —— 已从索引摘除，该参数将被丢弃（无法读回）", flush=True)
+            finally:
+                if isinstance(payload, memoryview):
+                    payload.release()
+                with self._inflight_cv:
+                    self._inflight_bytes = max(0, self._inflight_bytes - nbytes)
+                    self._inflight_cv.notify_all()
+                self._write_queue.task_done()
 
     # ------------------------------------------------------------------
     # 冷参数检测与卸载
@@ -773,6 +1100,19 @@ class DiskLoadBalancer:
                 return self._ssd_paths[self._migrated_count % len(self._ssd_paths)]
         # 兜底：第一个路径
         return self._paths[0] if self._paths else ""
+
+    def _wait_disk_idle(self, cache_dir: str, timeout: float = 2.0) -> None:
+        """写盘前等磁盘活动率降下来，避免训练线程和卸载线程一起把盘打满。
+
+        speed_first=True 时完全跳过（该模式的卖点就是不管硬盘）。
+        """
+        if self._cfg.speed_first or not self._disks:
+            return
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._check_disk_activity(cache_dir):
+                return
+            time.sleep(0.02)
 
     def _check_disk_activity(self, cache_dir: str) -> bool:
         """检查磁盘是否过载。"""
@@ -815,7 +1155,7 @@ class DiskLoadBalancer:
     def maybe_offload_latent(self, key: str, latent: torch.Tensor,
                              t0: Optional[int] = None, t1: Optional[int] = None) -> Optional[torch.Tensor]:
         """内存接近阈值时自动把 latent 分块卸载；返回 None 表示已卸载，调用方应释放原张量。"""
-        if getattr(self, "_9p_skip", False) or self._latent_store is None or not self._started:
+        if not self._started or self._disabled_reason or self._latent_store is None:
             return latent
         if not self._mem_pressure():
             return latent
@@ -853,9 +1193,7 @@ class DiskLoadBalancer:
         Returns:
             本次迁移的参数数量。
         """
-        # 【9P 环境整体禁用】WSL 的 9P/宿主 NTFS 挂载下，卸载冷参数会扰宿主 MFT（炸机）。
-        # 直接跳过、忽略用户参数（不迁移任何冷参数），宁可不做也要安全。
-        if getattr(self, "_9p_skip", False):
+        if not self._started or self._disabled_reason:
             return 0
         if self._model is None:
             return 0
@@ -928,7 +1266,7 @@ class DiskLoadBalancer:
         注意：成功卸载后 ``tensor`` 的 storage 会被置空（``data = empty(0)``）。
         调用方必须自己保存原始 shape，读回时用 ``get_cold_shape(key, shape)``。
         """
-        if not self._started:
+        if not self._started or self._disabled_reason:
             return ""
 
         self._ensure_dirs()
@@ -936,6 +1274,22 @@ class DiskLoadBalancer:
         if not cache_dir:
             return ""
         nbytes = int(tensor.numel()) * tensor.element_size()
+
+        # min_free_ratio 要真正生效：写之前看该挂载的实时剩余空间（配置里的 DiskInfo
+        # 是 start() 时刻的快照，训练几小时后可能已经不准）。
+        try:
+            usg = shutil.disk_usage(cache_dir)
+            if usg.total > 0 and usg.free < usg.total * self._cfg.min_free_ratio:
+                print(
+                    f"[disk_balancer] 磁盘剩余空间不足（{cache_dir}: "
+                    f"{usg.free / (1 << 30):.1f}GB free < "
+                    f"{self._cfg.min_free_ratio * 100:.0f}%），跳过卸载 {key}",
+                    flush=True,
+                )
+                return ""
+        except OSError:
+            pass
+
         quota = 0
         for d in self._disks:
             if d.cache_dir == cache_dir:
@@ -949,18 +1303,55 @@ class DiskLoadBalancer:
                 flush=True,
             )
             return ""
-        path = os.path.join(cache_dir, f"{key}.bin")
 
-        # 记录元数据
+        # 背压：零拷贝队列持有源张量内存，写盘线程消费前内存并未真正释放。
+        # 超过在飞上限时短暂等待；等不到就放弃这次卸载（参数留在内存，行为安全）。
+        deadline = time.time() + 5.0
+        with self._inflight_cv:
+            while (self._max_inflight_bytes
+                   and self._inflight_bytes + nbytes > self._max_inflight_bytes):
+                remain = deadline - time.time()
+                if remain <= 0:
+                    break
+                self._inflight_cv.wait(min(remain, 0.1))
+            if (self._max_inflight_bytes
+                    and self._inflight_bytes + nbytes > self._max_inflight_bytes):
+                print(
+                    f"[disk_balancer] 在飞写盘队列已满（{self._inflight_bytes / (1 << 20):.0f}MB"
+                    f" / {self._max_inflight_bytes / (1 << 20):.0f}MB），"
+                    f"跳过卸载 {key}，参数保留在内存",
+                    flush=True,
+                )
+                return ""
+            self._inflight_bytes += nbytes
+
+        path = os.path.join(cache_dir, f"{key}.bin")
         dtype = tensor.dtype
         numel = tensor.numel()
-
         with self._lock:
             self._cold_index[key] = (path, numel, dtype)
             self._cache_bytes[cache_dir] = self._cache_bytes.get(cache_dir, 0) + nbytes
 
         # 异步写盘（零拷贝：队列里放的是源 storage 的视图，不复制字节）
-        self._write_queue.put((key, self._payload_memoryview(tensor), path))
+        payload = None
+        try:
+            payload = self._payload_memoryview(tensor)
+            self._write_queue.put((key, payload, path, nbytes), timeout=5)
+        except Exception as e:
+            with self._lock:
+                self._cold_index.pop(key, None)
+                self._cache_bytes[cache_dir] = max(
+                    0, self._cache_bytes.get(cache_dir, 0) - nbytes)
+            with self._inflight_cv:
+                self._inflight_bytes = max(0, self._inflight_bytes - nbytes)
+                self._inflight_cv.notify_all()
+            if isinstance(payload, memoryview):
+                payload.release()
+            print(f"[disk_balancer] 入队失败 {key}: {e}；参数保留在内存", flush=True)
+            return ""
+
+        with self._inflight_cv:
+            self._write_bytes_total += nbytes
 
         # 释放内存
         tensor.data = torch.empty(0, device=tensor.device, dtype=tensor.dtype)
@@ -993,6 +1384,17 @@ class DiskLoadBalancer:
 
         if not os.path.exists(path):
             return None
+
+        if os.name != "nt":
+            # 告诉内核这文件马上要顺序读，尽量提前拉起 I/O。
+            try:
+                fd = os.open(path, os.O_RDONLY)
+                try:
+                    os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_WILLNEED)
+                finally:
+                    os.close(fd)
+            except OSError:
+                pass
 
         try:
             with open(path, "rb") as f:
@@ -1084,6 +1486,8 @@ class DiskLoadBalancer:
         如果 keep_cache=True，只清空索引，保留磁盘文件。
         如果 keep_cache=False（默认），删除所有磁盘缓存文件。
         """
+        if not self._started:
+            return
         self.wait_writes()
 
         if self._latent_store is not None:
@@ -1117,6 +1521,12 @@ class DiskLoadBalancer:
             "memory_percent": mem.percent,
             "memory_available_mb": mem.available / (1 << 20),
             "queue_size": self._write_queue.qsize(),
+            "inflight_mb": self._inflight_bytes / (1 << 20),
+            "max_inflight_mb": self._max_inflight_bytes / (1 << 20),
+            "write_total_mb": self._write_bytes_total / (1 << 20),
+            "fsync": self._cfg.fsync,
+            "wsl": self._wsl,
+            "disabled_reason": self._disabled_reason,
             "latent_chunks": len(self._latent_keys),
             "latent_offloaded": self._latent_offloaded,
             "disks": [
@@ -1156,11 +1566,12 @@ def add_flash_args(parser) -> None:
     )
     parser.add_argument(
         "--flash_sizes", type=str, default=None,
-        help="手动模式每盘缓存大小(MB)，格式: C:2048,D:4096,E:8192",
+        help="手动模式每盘缓存大小(MB)。Windows: C:2048,D:4096；Linux/WSL: /:2048,/mnt/data:4096",
     )
     parser.add_argument(
         "--flash_paths", type=str, default=None,
-        help="缓存路径，逗号分隔: D:\\cache,E:\\cache",
+        help="缓存路径，逗号分隔。Windows: D:\\cache,E:\\cache；"
+             "Linux/WSL: /home/me/fastcache（9P/网络/只读/内存盘会被拒绝）",
     )
     parser.add_argument(
         "--flash_speed", action="store_true", default=False,

@@ -350,7 +350,7 @@ build_manual\build_manual.bat amd   # (in VS x64 Native Tools prompt)
 
 > `.gitattributes` 强制 C/C++ 源码与构建脚本用 LF 换行，clone 到 Windows/Linux 均可
 > 直接编译（CRLF 会让 MSVC 吞行、Linux `g++` 报 `bad interpreter`）。
-> `disk_balancer`（`--flash`）跨平台：Windows 用 ctypes，Linux/WSL 用 psutil。
+> `disk_balancer`（`--flash`）跨平台：Windows 用 ctypes；Linux 用 `/proc/mounts` + psutil + `/sys/block/*/queue/rotational`；**WSL 已支持**——缓存只落在 WSL 自己的 ext4（默认 `~/.cache/bnb_flash_cache`），9P 宿主盘 `/mnt/[盘符]`、网络盘、只读挂载、tmpfs 一律拒绝（显式 `--flash_paths` 指过去会直接报错）。零拷贝写盘队列有在飞字节上限（`max_inflight_bytes`），卸载不会把源张量内存偷偷留住。
 
 ### Prebuilt wheels (optional)
 
