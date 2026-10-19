@@ -54,11 +54,17 @@ python gt1030/igpu_train.py --model <dir> --data corpus.txt --tokens 128 --steps
 
 | 场景 | CPU（6 线程） | 核显路径 |
 |---|---|---|
-| deepseek-1.3B，seq=64，LoRA | ~4.2 s/步 | **~8.2 s/步**（其中核显 GEMM 3.8 s） |
+| deepseek-1.3B，seq=64，LoRA | ~4.2 s/步 | **~6.9 s/步**（其中核显 GEMM 3.2–5.3 s） |
 | 0.1M 参数 tiny 模型 | 0.02-0.05 s/步 | 0.03-0.09 s/步（延迟主导） |
 
 即：**能训、能对拍、能存**，但大模型上比 CPU 慢约 1.8×。真正要更快需要设备常驻引擎
 （`gt1030/llama_resident.py`，单层前向/反向已对拍通过、整模型仍在修），不在当前用户路径里。
+
+## 内存行为
+
+LoRA 模式下，冻结的 base 权重在**上传核显一次后即释放 CPU 副本**（1.3B fp32：设备 5.2 GB，CPU 侧
+只剩 embedding/norm/LM head 等 <1 GB），因此 15.4 GB 机器可训 1.3B LoRA；全参模式保留 CPU 权重
+（优化器需要），仅适合小模型。
 
 ## 已知限制
 
