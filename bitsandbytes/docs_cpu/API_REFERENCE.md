@@ -606,6 +606,17 @@ for i in range(plan["n_jobs"]):
 **`spawn_training_jobs(cmds, plan=None, echo=True)`** -- 用 planner 的 env 并行启动多个
 训练命令，自动给每个 job 的日志加 `[jobN]` 前缀，返回各 job 的 returncode。
 
+**`tune_threads(step_fn, candidates=None, warmup=1, iters=2)`** -- 在真实训练 step 上自动
+标定 `torch.set_num_threads`。静态建议按 GEMM 密集假设给（物理核数），但混合注意力模型在
+短序列下实测 **4 线程比 6 线程快 7~10%**（Qwen3.5-0.8B LoRA，R5-4500U）。返回
+`{"best", "timings", "speedup_vs_worst"}`，结束时会 `set_num_threads(best)`。
+
+```python
+import torch_cpu_kit as tck
+result = tck.tune_threads(lambda: train_step(model, batch))
+print(result["best"], result["timings"])
+```
+
 **`start_mem_monitor`** -- a log line every 20 s, on a daemon thread
 
 **`RAM below ~8 GB free`** -- detect() sets recommend_disk_balancer, and `help disks` is the answer

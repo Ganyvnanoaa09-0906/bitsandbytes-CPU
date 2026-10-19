@@ -600,6 +600,12 @@ breakdown.
 with the planner's env, prefixing each job's log lines with `[jobN]`, and returns the
 returncodes.
 
+**`tune_threads(step_fn, candidates=None, warmup=1, iters=2)`** -- calibrates
+`torch.set_num_threads` on the real training step. Static advice assumes GEMM-dense work
+(physical cores), but hybrid-attention models at short sequence length measured **4 threads
+beating 6 by 7-10%** (Qwen3.5-0.8B LoRA on R5-4500U). Returns
+`{"best", "timings", "speedup_vs_worst"}` and leaves torch at the best value.
+
 **`start_mem_monitor`** -- a log line every 20 s, on a daemon thread
 
 **`RAM below ~8 GB free`** -- detect() sets recommend_disk_balancer, and `help disks` is the answer

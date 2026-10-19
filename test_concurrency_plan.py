@@ -102,6 +102,27 @@ def test_spawn_training_jobs():
     print("[PASS] spawn_training_jobs ran 2 jobs with plan env, all rc=0")
 
 
+def test_tune_threads():
+    """tune_threads must probe candidates, pick one and leave torch at that value."""
+    import time
+    import torch
+    calls = {"n": 0}
+
+    def step_fn():
+        calls["n"] += 1
+        # small real torch work so thread count actually matters a little
+        a = torch.ones(256, 256)
+        return (a @ a).sum().item()
+
+    result = tck.tune_threads(step_fn, candidates=[1, 2], warmup=1, iters=1, verbose=False)
+    assert set(result["timings"]) == {1, 2}, result
+    assert result["best"] in (1, 2)
+    assert torch.get_num_threads() == result["best"]
+    assert calls["n"] >= 4
+    print("[PASS] tune_threads probes, picks and applies (best=%d, %.2f ms)"
+          % (result["best"], result["timings"][result["best"]]))
+
+
 def main():
     test_default_packing()
     test_single_job_uses_all_cores()
@@ -111,6 +132,7 @@ def main():
     test_memory_estimate()
     test_plan_for_training()
     test_spawn_training_jobs()
+    test_tune_threads()
     print("\nCONCURRENCY PLANNER TESTS PASSED")
 
 

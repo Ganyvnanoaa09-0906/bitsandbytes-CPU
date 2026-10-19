@@ -31,6 +31,7 @@ __all__ = [
     "plan_concurrency_for_training",
     "estimate_training_memory_gb",
     "spawn_training_jobs",
+    "tune_threads",
     "apply_env",
     "init",
     "report",
@@ -172,6 +173,9 @@ def init(
       **12 线程**最优（conv 6线程329→8线程489→12线程618 GFLOP/s，超线程被 conv
       的 im2col/分块吃满）；attention 小块反而 6 线程好，但整体 conv 主导；
     - ``None``：回退物理核数。
+
+    注意：这些是静态建议（GEMM 密集假设）。混合注意力 / 短序列用 ``tune_threads()``
+    在真实 step 上实测更准——6 核机器上实测 4 线程可能比 6 线程快 7~10%。
 
     返回调优报告文本（同 report() 的字符串，不是 dict）。
     """
@@ -712,6 +716,67 @@ def spawn_training_jobs(cmds, plan: Optional[dict] = None, cwd=None, echo: bool 
     for th in readers:
         th.join(timeout=2.0)
     return results
+
+
+def tune_threads(step_fn, candidates=None, warmup=1, iters=2, verbose=True):
+    """在真实训练 step 上自动挑 ``torch.set_num_threads`` 的最优值。
+
+    为什么需要：静态建议（物理核数 / 逻辑核×2/3）是按 GEMM 密集假设给的；混合注意力模型
+    （Qwen3.5 这类 GDN+全注意力）在短序列下有很多小算子和逐元素操作，实测 6 核机器上
+    **4 线程比 6 线程快 7~10%**（seq64: 2034 vs 2188ms；seq256: 6107 vs 6797ms）。
+    所以"压榨"之前先量一下。
+
+    Args:
+        step_fn: 无参可调用，执行一次真实训练 step（前向+反向+optimizer step 全部）；
+            会重复调用，训练参数会变化，但相对耗时通常足够稳定。想更干净可以传
+            "只做前向+反向、不 step 优化器"的版本。
+        candidates: 候选线程数列表；默认 ``[2,3,4,5,6,8]`` 里不超过 CPU 核数的。
+        warmup: 每个候选先跑几次热机（不计时）。
+        iters: 每个候选计时次数，取中位数。
+        verbose: 打印每个候选的耗时。
+
+    Returns:
+        dict: ``best``（最优线程数）、``timings``（{线程数: 毫秒}）、``speedup_vs_worst``。
+        结束时 ``torch.set_num_threads(best)``，方便直接继续训练。
+    """
+    import time as _time
+
+    import torch
+
+    import statistics as _st
+
+    cores = os.cpu_count() or 1
+    if candidates is None:
+        candidates = [n for n in (2, 3, 4, 5, 6, 8) if n <= max(1, cores)]
+    candidates = [int(n) for n in candidates if int(n) >= 1]
+    if not candidates:
+        candidates = [1]
+
+    timings = {}
+    for n in candidates:
+        torch.set_num_threads(n)
+        for _ in range(max(0, warmup)):
+            step_fn()
+        samples = []
+        for _ in range(max(1, iters)):
+            t0 = _time.perf_counter()
+            step_fn()
+            samples.append(_time.perf_counter() - t0)
+        timings[n] = _st.median(samples) * 1e3
+        if verbose:
+            print("[torch_cpu_kit] threads=%d -> %.1f ms/step" % (n, timings[n]))
+
+    best = min(timings, key=timings.get)
+    torch.set_num_threads(best)
+    worst = max(timings.values())
+    if verbose:
+        print("[torch_cpu_kit] best threads=%d (%.1f ms/step, %.1f%% faster than worst)"
+              % (best, timings[best], 100.0 * (1.0 - timings[best] / worst)))
+    return {
+        "best": best,
+        "timings": timings,
+        "speedup_vs_worst": (worst / timings[best]) if timings[best] else 1.0,
+    }
 
 
 if __name__ == "__main__":  # 自检：python torch_cpu_kit.py
