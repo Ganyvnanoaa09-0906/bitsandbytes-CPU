@@ -129,6 +129,7 @@ class OpenCLFP16:
         self.upsample = cl.Kernel(self.prog, 'upsample_nearest2x')
         self.layer_norm = cl.Kernel(self.prog, 'layer_norm_h')
         self.geglu = cl.Kernel(self.prog, 'geglu_h')
+        self.fused_attention = cl.Kernel(self.prog, 'fused_attention')
         self.bl = ctypes.CDLL(DLL)
         self.bl.CLBlastHgemm.restype = ctypes.c_int
         self.bl.CLBlastHgemm.argtypes = [
@@ -295,7 +296,7 @@ class OpenCLFP16:
         return out_buf, (M, N)
 
     def attention_h(self, q_in, kv_in, B: int, S: int, Skv: int, C: int, heads: int,
-                    wq, wk, wv, wo):
+                    wq, wk, wv, wo, fused=False):
         """Multi-head attention on the device.
 
         q_in: (B*S,C); kv_in: (B*Skv,C). wq/wk/wv/wo: fp16 (C,C) transposed-weight
@@ -316,36 +317,46 @@ class OpenCLFP16:
                          np.int32(Skv), np.int32(heads), np.int32(D), np.float32(1.0))
         self.split_heads(self.queue, (B * Skv * C,), None, v, vh, np.int32(C),
                          np.int32(Skv), np.int32(heads), np.int32(D), np.float32(1.0))
-        scores = self.empty_half(B * heads * S * Skv)
-        qp = ctypes.c_void_p(int(self.queue.int_ptr))
-        rc = self.bl.CLBlastHgemmStridedBatched(
-            ROW, NO, YES, S, Skv, D, HALF_ONE,
-            ctypes.c_void_p(int(qh.int_ptr)), 0, D, S * D,
-            ctypes.c_void_p(int(kh.int_ptr)), 0, D, Skv * D,
-            HALF_ZERO,
-            ctypes.c_void_p(int(scores.int_ptr)), 0, Skv, S * Skv,
-            B * heads, ctypes.byref(qp), None)
-        if rc != 0:
-            raise RuntimeError('score batched Hgemm rc=%d' % rc)
-        probs = self.empty_half(B * heads * S * Skv)
-        self.softmax_rows(self.queue, (B * heads * S * 256,), (256,), scores, probs,
-                          np.int32(B * heads * S), np.int32(Skv))
+        scores = probs = None
         attn = self.empty_half(B * heads * S * D)
-        rc = self.bl.CLBlastHgemmStridedBatched(
-            ROW, NO, NO, S, D, Skv, HALF_ONE,
-            ctypes.c_void_p(int(probs.int_ptr)), 0, Skv, S * Skv,
-            ctypes.c_void_p(int(vh.int_ptr)), 0, D, Skv * D,
-            HALF_ZERO,
-            ctypes.c_void_p(int(attn.int_ptr)), 0, D, S * D,
-            B * heads, ctypes.byref(qp), None)
-        if rc != 0:
-            raise RuntimeError('value batched Hgemm rc=%d' % rc)
+        if fused and S <= 4096 and Skv <= 4096:
+            # fused QK^T -> softmax -> PV: scores stay in local memory
+            ls = 256
+            self.fused_attention(self.queue, (B * heads * S * ls,), (ls,),
+                                 qh, kh, vh, attn, np.int32(S), np.int32(Skv),
+                                 np.int32(D), np.float32(1.0))
+            self.queue.finish()
+        else:
+            scores = self.empty_half(B * heads * S * Skv)
+            qp = ctypes.c_void_p(int(self.queue.int_ptr))
+            rc = self.bl.CLBlastHgemmStridedBatched(
+                ROW, NO, YES, S, Skv, D, HALF_ONE,
+                ctypes.c_void_p(int(qh.int_ptr)), 0, D, S * D,
+                ctypes.c_void_p(int(kh.int_ptr)), 0, D, Skv * D,
+                HALF_ZERO,
+                ctypes.c_void_p(int(scores.int_ptr)), 0, Skv, S * Skv,
+                B * heads, ctypes.byref(qp), None)
+            if rc != 0:
+                raise RuntimeError('score batched Hgemm rc=%d' % rc)
+            probs = self.empty_half(B * heads * S * Skv)
+            self.softmax_rows(self.queue, (B * heads * S * 256,), (256,), scores, probs,
+                              np.int32(B * heads * S), np.int32(Skv))
+            rc = self.bl.CLBlastHgemmStridedBatched(
+                ROW, NO, NO, S, D, Skv, HALF_ONE,
+                ctypes.c_void_p(int(probs.int_ptr)), 0, Skv, S * Skv,
+                ctypes.c_void_p(int(vh.int_ptr)), 0, D, Skv * D,
+                HALF_ZERO,
+                ctypes.c_void_p(int(attn.int_ptr)), 0, D, S * D,
+                B * heads, ctypes.byref(qp), None)
+            if rc != 0:
+                raise RuntimeError('value batched Hgemm rc=%d' % rc)
         merged = self.empty_half(B * S * C)
         self.merge_heads(self.queue, (B * S * C,), None, attn, merged, np.int32(C),
                          np.int32(S), np.int32(heads), np.int32(D))
         out, _ = self.linear_h(merged, wo, B * S, C, C)
         for b in (q, k, v, qh, kh, vh, scores, probs, attn, merged):
-            b.release()
+            if b is not None:
+                b.release()
         return out
 
 

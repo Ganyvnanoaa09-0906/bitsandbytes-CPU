@@ -125,3 +125,56 @@ __kernel void geglu_h(__global const half* x, __global half* y,
     float g = 0.5f * a * (1.0f + tanh(0.7978845608f * (a + 0.044715f * a * a * a)));
     y[i] = (half)(g * b);
 }
+
+
+// Fused QK^T -> softmax -> PV for one (batch*head, query-row) per workgroup.
+// q/k/v: (B*H, S, D) half; out: (B*H, S, D) half.  Skv must be <= 4096.
+#define MAXK 4096
+__kernel void fused_attention(__global const half* q, __global const half* k,
+                              __global const half* v, __global half* out,
+                              const int S, const int Skv, const int D, const float scale)
+{
+    int gid = get_group_id(0);
+    int bh = gid / S;
+    int qr = gid % S;
+    int lid = get_local_id(0);
+    int ls = get_local_size(0);
+    __local float scores[MAXK];
+    __local float red[256];
+    __global const half* qrow = q + (bh * S + qr) * D;
+    __global const half* kb = k + bh * Skv * D;
+    __global const half* vb = v + bh * Skv * D;
+    float m = -1e30f;
+    for (int j = lid; j < Skv; j += ls) {
+        float s = 0.f;
+        for (int d = 0; d < D; ++d) s += (float)qrow[d] * (float)kb[j * D + d];
+        s *= scale;
+        scores[j] = s;
+        m = fmax(m, s);
+    }
+    red[lid] = m;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int step = ls / 2; step > 0; step >>= 1) {
+        if (lid < step) red[lid] = fmax(red[lid], red[lid + step]);
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    m = red[0];
+    float sum = 0.f;
+    for (int j = lid; j < Skv; j += ls) {
+        float e = exp(scores[j] - m);
+        scores[j] = e;
+        sum += e;
+    }
+    red[lid] = sum;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int step = ls / 2; step > 0; step >>= 1) {
+        if (lid < step) red[lid] += red[lid + step];
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    float inv = 1.f / red[0];
+    for (int d = lid; d < D; d += ls) {
+        float acc = 0.f;
+        for (int j = 0; j < Skv; ++j) acc += scores[j] * (float)vb[j * D + d];
+        out[(bh * S + qr) * D + d] = (half)(acc * inv);
+    }
+}
