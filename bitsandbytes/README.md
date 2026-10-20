@@ -215,6 +215,12 @@ but fp16 resident im2col+Hgemm is **1.3-2x faster than the CPU conv** at SD1.5 s
 (538 vs 342 GFLOPS; 1280-channel 16x16 layer 17.3 vs 34.8 ms). The 256-resolution demo
 therefore uses DirectML, while the OpenCL engine is the planned production backend.
 
+The first fp16 device-resident OpenCL building blocks are in `gt1030/opencl_fp16_ops.py`
+(im2col + CLBlast Hgemm conv, fused GroupNorm+SiLU, add): parity 0.4-1.0% on SD1.5
+shapes and a Conv-GN-SiLU block 1.3-1.9x faster than CPU oneDNN; a full
+ResNetBlock2D is 0.99x/0.72x/0.70x/0.62x of CPU time (parity 0.4-1.0%). Attention
+and VAE blocks are the remaining pieces before an end-to-end fp16 UNet.
+
 ## 3-bit frozen base + LoRA (`bitsandbytes.q3bit`, experimental)
 
 A frozen weight can be stored as blockwise **3-bit** codes (≈11% of fp32 memory) and
