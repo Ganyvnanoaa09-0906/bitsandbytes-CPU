@@ -127,6 +127,8 @@ class OpenCLFP16:
         self.merge_heads = cl.Kernel(self.prog, 'merge_heads')
         self.softmax_rows = cl.Kernel(self.prog, 'softmax_rows')
         self.upsample = cl.Kernel(self.prog, 'upsample_nearest2x')
+        self.layer_norm = cl.Kernel(self.prog, 'layer_norm_h')
+        self.geglu = cl.Kernel(self.prog, 'geglu_h')
         self.bl = ctypes.CDLL(DLL)
         self.bl.CLBlastHgemm.restype = ctypes.c_int
         self.bl.CLBlastHgemm.argtypes = [
@@ -222,6 +224,42 @@ class OpenCLFP16:
                              np.int32(groups), np.float32(eps))
         self.queue.finish()
         return y
+
+    def layer_norm_buf(self, x_buf, rows: int, C: int, gamma_buf, beta_buf, eps=1e-6):
+        y = self.empty_half(rows * C)
+        self.layer_norm(self.queue, (rows * 256,), (256,), x_buf, y, gamma_buf, beta_buf,
+                        np.int32(C), np.float32(eps))
+        self.queue.finish()
+        return y
+
+    def geglu_buf(self, x_buf, rows: int, cols: int):
+        y = self.empty_half(rows * cols)
+        self.geglu(self.queue, (rows * cols,), None, x_buf, y,
+                   np.int32(rows), np.int32(cols))
+        self.queue.finish()
+        return y
+
+    def transformer_block_h(self, x, B: int, S: int, C: int, heads: int,
+                            ln1_g, ln1_b, wq, wk, wv, wo,
+                            ln2_g, ln2_b, w1, w2, eps=1e-6):
+        """UNet BasicTransformerBlock: LN->self-attn->res, LN->GEGLU FFN->res."""
+        rows = B * S
+        n1 = self.layer_norm_buf(x, rows, C, ln1_g, ln1_b, eps)
+        a = self.attention_h(n1, n1, B, S, S, C, heads, wq, wk, wv, wo)
+        n1.release()
+        x1 = self.add_buf(a, x, rows * C)
+        a.release()
+        n2 = self.layer_norm_buf(x1, rows, C, ln2_g, ln2_b, eps)
+        h, _ = self.linear_h(n2, w1, rows, C, 8 * C)
+        n2.release()
+        g = self.geglu_buf(h, rows, 4 * C)
+        h.release()
+        f, _ = self.linear_h(g, w2, rows, 4 * C, C)
+        g.release()
+        out = self.add_buf(f, x1, rows * C)
+        f.release()
+        x1.release()
+        return out
 
     def upsample2x_buf(self, x_buf, shape):
         """Nearest 2x upsample: (N,C,H,W) half -> (N,C,2H,2W) half."""

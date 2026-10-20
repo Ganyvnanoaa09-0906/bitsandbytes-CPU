@@ -75,3 +75,53 @@ __kernel void upsample_nearest2x(__global const half* src, __global half* dst,
     int n = i / (W2 * H2 * C);
     dst[i] = src[((n * C + c) * H + h / 2) * W + w / 2];
 }
+
+
+// layer norm over the last dimension (rows x C), fp16 in/out, fp32 reduction
+__kernel void layer_norm_h(__global const half* x, __global half* y,
+                           __global const half* gamma, __global const half* beta,
+                           const int C, const float eps)
+{
+    int r = get_group_id(0);
+    int lid = get_local_id(0);
+    int ls = get_local_size(0);
+    __local float lsum[256];
+    __local float lsq[256];
+    __global const half* row = x + r * C;
+    float s = 0.f, ss = 0.f;
+    for (int c = lid; c < C; c += ls) {
+        float v = (float)row[c];
+        s += v;
+        ss += v * v;
+    }
+    lsum[lid] = s;
+    lsq[lid] = ss;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int step = ls / 2; step > 0; step >>= 1) {
+        if (lid < step) {
+            lsum[lid] += lsum[lid + step];
+            lsq[lid] += lsq[lid + step];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    float mean = lsum[0] / (float)C;
+    float var = lsq[0] / (float)C - mean * mean;
+    float inv = rsqrt(var + eps);
+    __global half* out = y + r * C;
+    for (int c = lid; c < C; c += ls)
+        out[c] = (half)(((float)row[c] - mean) * inv * (float)gamma[c] + (float)beta[c]);
+}
+
+// GEGLU: x (rows, 2*cols) -> y (rows, cols) = gelu(x[:, :cols]) * x[:, cols:]
+__kernel void geglu_h(__global const half* x, __global half* y,
+                      const int rows, const int cols)
+{
+    int i = get_global_id(0);
+    if (i >= rows * cols) return;
+    int r = i / cols;
+    int c = i % cols;
+    float a = (float)x[r * 2 * cols + c];
+    float b = (float)x[r * 2 * cols + cols + c];
+    float g = 0.5f * a * (1.0f + tanh(0.7978845608f * (a + 0.044715f * a * a * a)));
+    y[i] = (half)(g * b);
+}
