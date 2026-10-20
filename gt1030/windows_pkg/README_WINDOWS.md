@@ -80,7 +80,13 @@ train.bat --model <dir> --optimizer muon --muon-lr 0.02 --ns-iters 3 --steps 20
 - `--save dir` 保存 `trainable.pt`（LoRA 只有 adapter）+ `optimizer.pt` + `train_info.json`；
 - `--resume dir` 从 `trainable.pt` 恢复继续训练。
 
-## 6. 常见问题
+## 6. 更新记录
+
+- **v0.1.2（2026-10-20）**：修复 causal-LM 训练目标的双重移位 bug —— `make_data` 手动移一位、
+  HuggingFace 内部又移一次，实际在训练"预测 t+2"。现在恢复标准的下一 token 预测；
+  这里如果用旧包训过模型，建议重新训练。
+
+## 7. 常见问题
 
 | 现象 | 处理 |
 |---|---|

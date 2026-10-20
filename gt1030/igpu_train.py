@@ -568,7 +568,10 @@ def make_data(args, model):
         labels[~mask_pos] = -100
         attn = torch.ones_like(input_ids)
         return {'input_ids': input_ids, 'labels': labels, 'attention_mask': attn}
-    return {'input_ids': ids[:, :-1], 'labels': ids[:, 1:]}
+    # Causal-LM labels must align with the inputs: HuggingFace's loss shifts the logits
+    # internally. Passing pre-shifted next tokens here shifts twice and trains t+2
+    # prediction -- a real bug found while validating the q3bit trainer (2026-10-20).
+    return {'input_ids': ids[:, :-1], 'labels': ids[:, :-1]}
 
 
 def run_loss(model, task, batch):

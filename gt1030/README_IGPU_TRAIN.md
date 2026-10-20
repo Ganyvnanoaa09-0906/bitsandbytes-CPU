@@ -54,6 +54,12 @@ python gt1030/igpu_train.py --model <dir> --backend igpu --optimizer muon --muon
   `--resume` 会恢复权重与优化器状态（恢复后 `--check` 跳过 base-model parity，因为参照已不适用）；
 - 没有 OpenCL 时 `--backend cpu` 用同一优化器，得到完全相同的训练循环语义。
 
+## 修复记录
+
+- 2026-10-20：修复 causal-LM 训练目标的**双重移位** bug。`make_data` 之前把 labels 手动移一位，
+  而 HuggingFace CausalLM 的 loss 内部也会移位，等价于在训练"预测 t+2"；现在 labels 与 inputs
+  对齐，恢复标准的下一 token 预测（Windows 一键包同步更新到 v0.1.2）。
+
 ## 自动正确性对拍（重要）
 
 每次训练开始前，脚本会：
