@@ -178,3 +178,81 @@ __kernel void fused_attention(__global const half* q, __global const half* k,
         out[(bh * S + qr) * D + d] = (half)(acc * inv);
     }
 }
+
+
+__kernel void add_bias_h(__global half* x, __global const half* bias,
+                         const int total, const int C, const int HW)
+{
+    int i = get_global_id(0);
+    if (i >= total) return;
+    int ch = (i / HW) % C;
+    x[i] = (half)((float)x[i] + (float)bias[ch]);
+}
+
+// grouped norm without activation (VAE attention's GroupNorm)
+__kernel void group_norm_h(__global const half* x, __global half* y,
+                           __global const half* gamma, __global const half* beta,
+                           const int N, const int C, const int H, const int W,
+                           const int G, const float eps)
+{
+    int group = get_group_id(0);
+    int n = group / G;
+    int g = group % G;
+    int cg = C / G;
+    int hw = H * W;
+    int count = cg * hw;
+    __local float lsum[256];
+    __local float lsq[256];
+    int lid = get_local_id(0);
+    int ls = get_local_size(0);
+    float s = 0.f, ss = 0.f;
+    for (int i = lid; i < count; i += ls) {
+        int off = n * C * hw + g * cg * hw + i;
+        float v = (float)x[off];
+        s += v;
+        ss += v * v;
+    }
+    lsum[lid] = s;
+    lsq[lid] = ss;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int step = ls / 2; step > 0; step >>= 1) {
+        if (lid < step) {
+            lsum[lid] += lsum[lid + step];
+            lsq[lid] += lsq[lid + step];
+        }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    float mean = lsum[0] / (float)count;
+    float var = lsq[0] / (float)count - mean * mean;
+    float inv = rsqrt(var + eps);
+    for (int i = lid; i < count; i += ls) {
+        int c = i / hw;
+        int q = i - c * hw;
+        int off = n * C * hw + (g * cg + c) * hw + q;
+        y[off] = (half)(((float)x[off] - mean) * inv * (float)gamma[g * cg + c]
+                        + (float)beta[g * cg + c]);
+    }
+}
+
+// NCHW (N,C,H,W) -> (N*H*W, C) and back, for VAE attention
+__kernel void nchw_to_seq(__global const half* x, __global half* y,
+                          const int N, const int C, const int HW)
+{
+    int i = get_global_id(0);
+    if (i >= N * C * HW) return;
+    int hw = i % HW;
+    int c = (i / HW) % C;
+    int n = i / (HW * C);
+    y[(n * HW + hw) * C + c] = x[i];
+}
+
+__kernel void seq_to_nchw(__global const half* x, __global half* y,
+                          const int N, const int C, const int HW)
+{
+    int i = get_global_id(0);
+    if (i >= N * C * HW) return;
+    int hw = i % HW;
+    int c = (i / HW) % C;
+    int n = i / (HW * C);
+    y[i] = x[(n * HW + hw) * C + c];
+}

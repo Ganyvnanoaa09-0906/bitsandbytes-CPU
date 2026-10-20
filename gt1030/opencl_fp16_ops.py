@@ -130,6 +130,10 @@ class OpenCLFP16:
         self.layer_norm = cl.Kernel(self.prog, 'layer_norm_h')
         self.geglu = cl.Kernel(self.prog, 'geglu_h')
         self.fused_attention = cl.Kernel(self.prog, 'fused_attention')
+        self.add_bias = cl.Kernel(self.prog, 'add_bias_h')
+        self.group_norm = cl.Kernel(self.prog, 'group_norm_h')
+        self.nchw_to_seq = cl.Kernel(self.prog, 'nchw_to_seq')
+        self.seq_to_nchw = cl.Kernel(self.prog, 'seq_to_nchw')
         self.bl = ctypes.CDLL(DLL)
         self.bl.CLBlastHgemm.restype = ctypes.c_int
         self.bl.CLBlastHgemm.argtypes = [
@@ -271,6 +275,37 @@ class OpenCLFP16:
         self.queue.finish()
         return y, (N, C, 2 * H, 2 * W)
 
+    def add_bias_buf(self, x_buf, bias_buf, total: int, C: int, HW: int):
+        self.add_bias(self.queue, (total,), None, x_buf, bias_buf,
+                      np.int32(total), np.int32(C), np.int32(HW))
+        self.queue.finish()
+
+    def group_norm_buf(self, x_buf, shape, gamma_buf, beta_buf, groups=32, eps=1e-6):
+        N, C, H, W = shape
+        y = self.empty_half(N * C * H * W)
+        ls = 256
+        self.group_norm(self.queue, (N * groups * ls,), (ls,), x_buf, y, gamma_buf, beta_buf,
+                        np.int32(N), np.int32(C), np.int32(H), np.int32(W),
+                        np.int32(groups), np.float32(eps))
+        self.queue.finish()
+        return y
+
+    def nchw_to_seq_buf(self, x_buf, shape):
+        N, C, H, W = shape
+        y = self.empty_half(N * C * H * W)
+        self.nchw_to_seq(self.queue, (N * C * H * W,), None, x_buf, y,
+                         np.int32(N), np.int32(C), np.int32(H * W))
+        self.queue.finish()
+        return y
+
+    def seq_to_nchw_buf(self, x_buf, shape):
+        N, C, H, W = shape
+        y = self.empty_half(N * C * H * W)
+        self.seq_to_nchw(self.queue, (N * C * H * W,), None, x_buf, y,
+                         np.int32(N), np.int32(C), np.int32(H * W))
+        self.queue.finish()
+        return y
+
     def add_buf(self, a_buf, b_buf, numel: int):
         y = self.empty_half(numel)
         self.add(self.queue, (numel,), None, a_buf, b_buf, y, np.int32(numel))
@@ -295,8 +330,13 @@ class OpenCLFP16:
         self.queue.finish()
         return out_buf, (M, N)
 
+    def linear_bias_h(self, x_buf, w_t_buf, bias_buf, M: int, K: int, N: int):
+        out, shape = self.linear_h(x_buf, w_t_buf, M, K, N)
+        self.add_bias_buf(out, bias_buf, M * N, N, 1)
+        return out, shape
+
     def attention_h(self, q_in, kv_in, B: int, S: int, Skv: int, C: int, heads: int,
-                    wq, wk, wv, wo, fused=False):
+                    wq, wk, wv, wo, fused=False, bq=None, bk=None, bv=None, bo=None):
         """Multi-head attention on the device.
 
         q_in: (B*S,C); kv_in: (B*Skv,C). wq/wk/wv/wo: fp16 (C,C) transposed-weight
@@ -305,9 +345,12 @@ class OpenCLFP16:
         """
         D = C // heads
         scale = 1.0 / np.sqrt(float(D))
-        q, _ = self.linear_h(q_in, wq, B * S, C, C)
-        k, _ = self.linear_h(kv_in, wk, B * Skv, C, C)
-        v, _ = self.linear_h(kv_in, wv, B * Skv, C, C)
+        q, _ = (self.linear_bias_h(q_in, wq, bq, B * S, C, C) if bq is not None
+                else self.linear_h(q_in, wq, B * S, C, C))
+        k, _ = (self.linear_bias_h(kv_in, wk, bk, B * Skv, C, C) if bk is not None
+                else self.linear_h(kv_in, wk, B * Skv, C, C))
+        v, _ = (self.linear_bias_h(kv_in, wv, bv, B * Skv, C, C) if bv is not None
+                else self.linear_h(kv_in, wv, B * Skv, C, C))
         qh = self.empty_half(B * heads * S * D)
         kh = self.empty_half(B * heads * Skv * D)
         vh = self.empty_half(B * heads * Skv * D)
@@ -353,7 +396,8 @@ class OpenCLFP16:
         merged = self.empty_half(B * S * C)
         self.merge_heads(self.queue, (B * S * C,), None, attn, merged, np.int32(C),
                          np.int32(S), np.int32(heads), np.int32(D))
-        out, _ = self.linear_h(merged, wo, B * S, C, C)
+        out, _ = (self.linear_bias_h(merged, wo, bo, B * S, C, C) if bo is not None
+                  else self.linear_h(merged, wo, B * S, C, C))
         for b in (q, k, v, qh, kh, vh, scores, probs, attn, merged):
             if b is not None:
                 b.release()

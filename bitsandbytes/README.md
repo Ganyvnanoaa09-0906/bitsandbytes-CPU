@@ -221,7 +221,9 @@ GEGLU, multi-head attention, nearest-2x upsample, add). Clean measurements on th
 Vega 6 (no CPU contention), parity 0.02-1.1% relL2:
   ResNetBlock2D 0.61-0.77x, VAE up-block 0.40x, FFN 0.16-0.23x, attention 0.42-0.99x,
   full Transformer block 0.51-0.71x of CPU time -- i.e. 1.3-6x faster for most blocks.
-The remaining step is assembling the full 256px UNet/VAE graph (fp16 weights ~1.7 GB,
+The **VAE decoder is now end-to-end on the iGPU** (`gt1030/opencl_vae.py`): fp16 parity
+2.7-3.7% vs CPU, 1.81 s vs 2.07 s at 256 (0.87x), 7.93 s vs 8.34 s at 512 (0.95x, warm).
+The remaining step is assembling the full 256px UNet graph (fp16 weights ~1.7 GB,
 under the 5,090 MB single-allocation limit; 512px needs activation tiling).
 
 ## 3-bit frozen base + LoRA (`bitsandbytes.q3bit`, experimental)
