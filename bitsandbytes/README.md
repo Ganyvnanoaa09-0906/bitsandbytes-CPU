@@ -193,6 +193,25 @@ Qwen3.5-0.8B (752 M, 100% trainable, fp32 + AdamW8bit, seq 64, batch 1): **peak 
 10.7 GB weights+grads+8-bit state before activations), and above that use LoRA / EFST /
 q3bit, or add activation checkpointing (not yet wired into the generic trainer).
 
+## iGPU image inference (experimental)
+
+The OpenCL kit is GEMM-oriented (`nn.Linear`/`Conv1D`); diffusion UNets are conv2d-heavy and
+need an im2col+dGEMM conv engine before the OpenCL path can run them. As a proof of concept,
+`gt1030/igpu_image_ort.py` runs an ONNX-exported SD1.5 through ONNX Runtime's
+**DmlExecutionProvider** on the integrated GPU (local `_sd15_combined`, 256x256, DDIM):
+
+| path | 8 steps | per step |
+|---|---|---|
+| CPU diffusers (Torch 2.13, 6 threads) | 25.29 s | 3.16 s |
+| **iGPU ONNX Runtime DirectML** | **13.05 s** | **1.63 s** |
+
+≈**1.9x** faster at 256x256; 512x512 currently fails inside the UNet on the DML EP (activation
+memory / operator coverage) while the same ONNX runs on `CPUExecutionProvider`. Export once with
+`optimum-cli export onnx --task stable-diffusion --opset 17`. A diffusers + `torch_directml`
+variant (`igpu_image_infer.py`) is kept as a comparison; it needs legacy attention and still hits
+DML `chunk`/reshape issues. Long-term the OpenCL backend gets a conv engine; DirectML is the
+256-resolution demo path.
+
 ## 3-bit frozen base + LoRA (`bitsandbytes.q3bit`, experimental)
 
 A frozen weight can be stored as blockwise **3-bit** codes (≈11% of fp32 memory) and
