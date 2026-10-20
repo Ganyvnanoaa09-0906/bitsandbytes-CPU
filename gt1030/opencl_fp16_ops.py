@@ -20,7 +20,7 @@ import numpy as np
 import pyopencl as cl
 
 DLL = r'D:\work\clblast_build\CLBlast-master\build\clblast.dll'
-ROW, NO = 101, 111          # CLBlast layout/transpose enums (documented constants)
+ROW, NO, YES = 101, 111, 112          # CLBlast layout/transpose enums (documented constants)
 HALF_ONE, HALF_ZERO = 0x3C00, 0x0000
 mf = cl.mem_flags
 
@@ -106,6 +106,10 @@ __kernel void group_norm_silu_h(
 """
 
 
+ATTENTION = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              'kernels_attention.cl'), encoding='utf-8').read()
+
+
 class OpenCLFP16:
     """Singleton-ish runtime: one context/queue, compiled kernels, CLBlast handle."""
 
@@ -114,10 +118,14 @@ class OpenCLFP16:
     def __init__(self):
         self.ctx = cl.create_some_context(interactive=False)
         self.queue = cl.CommandQueue(self.ctx)
-        self.prog = cl.Program(self.ctx, IM2COL + GROUPNORM).build(options=['-cl-mad-enable'])
+        self.prog = cl.Program(self.ctx, IM2COL + GROUPNORM + ATTENTION).build(
+            options=['-cl-mad-enable'])
         self.im2col = cl.Kernel(self.prog, 'im2col_h')
         self.group_norm_silu = cl.Kernel(self.prog, 'group_norm_silu_h')
         self.add = cl.Kernel(self.prog, 'add_h')
+        self.split_heads = cl.Kernel(self.prog, 'split_heads')
+        self.merge_heads = cl.Kernel(self.prog, 'merge_heads')
+        self.softmax_rows = cl.Kernel(self.prog, 'softmax_rows')
         self.bl = ctypes.CDLL(DLL)
         self.bl.CLBlastHgemm.restype = ctypes.c_int
         self.bl.CLBlastHgemm.argtypes = [
@@ -127,6 +135,15 @@ class OpenCLFP16:
             ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_uint16,
             ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t,
             ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)]
+        self.bl.CLBlastHgemmStridedBatched.restype = ctypes.c_int
+        self.bl.CLBlastHgemmStridedBatched.argtypes = [
+            ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_uint16,
+            ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
+            ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
+            ctypes.c_uint16,
+            ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
+            ctypes.c_size_t, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)]
         self.device_name = cl.get_platforms()[0].get_devices()[0].name
         self.max_alloc = cl.get_platforms()[0].get_devices()[0].max_mem_alloc_size
 
@@ -210,6 +227,78 @@ class OpenCLFP16:
         self.add(self.queue, (numel,), None, a_buf, b_buf, y, np.int32(numel))
         self.queue.finish()
         return y
+
+    # -- linear / attention ---------------------------------------------------
+    def linear_h(self, x_buf, w_t_buf, M: int, K: int, N: int, out_buf=None):
+        """y (M,N) = x (M,K) @ w_t (K,N), all fp16 device buffers."""
+        if out_buf is None:
+            out_buf = self.empty_half(M * N)
+        qp = ctypes.c_void_p(int(self.queue.int_ptr))
+        rc = self.bl.CLBlastHgemm(
+            ROW, NO, NO, M, N, K, HALF_ONE,
+            ctypes.c_void_p(int(x_buf.int_ptr)), 0, K,
+            ctypes.c_void_p(int(w_t_buf.int_ptr)), 0, N,
+            HALF_ZERO,
+            ctypes.c_void_p(int(out_buf.int_ptr)), 0, N,
+            ctypes.byref(qp), None)
+        if rc != 0:
+            raise RuntimeError('linear Hgemm rc=%d' % rc)
+        self.queue.finish()
+        return out_buf, (M, N)
+
+    def attention_h(self, q_in, kv_in, B: int, S: int, Skv: int, C: int, heads: int,
+                    wq, wk, wv, wo):
+        """Multi-head attention on the device.
+
+        q_in: (B*S,C); kv_in: (B*Skv,C). wq/wk/wv/wo: fp16 (C,C) transposed-weight
+        buffers (in_features, out_features). Returns the (B*S,C) output buffer.
+        Cross-attention is just Skv != S.
+        """
+        D = C // heads
+        scale = 1.0 / np.sqrt(float(D))
+        q, _ = self.linear_h(q_in, wq, B * S, C, C)
+        k, _ = self.linear_h(kv_in, wk, B * Skv, C, C)
+        v, _ = self.linear_h(kv_in, wv, B * Skv, C, C)
+        qh = self.empty_half(B * heads * S * D)
+        kh = self.empty_half(B * heads * Skv * D)
+        vh = self.empty_half(B * heads * Skv * D)
+        self.split_heads(self.queue, (B * S * C,), None, q, qh, np.int32(C),
+                         np.int32(S), np.int32(heads), np.int32(D), np.float32(scale))
+        self.split_heads(self.queue, (B * Skv * C,), None, k, kh, np.int32(C),
+                         np.int32(Skv), np.int32(heads), np.int32(D), np.float32(1.0))
+        self.split_heads(self.queue, (B * Skv * C,), None, v, vh, np.int32(C),
+                         np.int32(Skv), np.int32(heads), np.int32(D), np.float32(1.0))
+        scores = self.empty_half(B * heads * S * Skv)
+        qp = ctypes.c_void_p(int(self.queue.int_ptr))
+        rc = self.bl.CLBlastHgemmStridedBatched(
+            ROW, NO, YES, S, Skv, D, HALF_ONE,
+            ctypes.c_void_p(int(qh.int_ptr)), 0, D, S * D,
+            ctypes.c_void_p(int(kh.int_ptr)), 0, D, Skv * D,
+            HALF_ZERO,
+            ctypes.c_void_p(int(scores.int_ptr)), 0, Skv, S * Skv,
+            B * heads, ctypes.byref(qp), None)
+        if rc != 0:
+            raise RuntimeError('score batched Hgemm rc=%d' % rc)
+        probs = self.empty_half(B * heads * S * Skv)
+        self.softmax_rows(self.queue, (B * heads * S,), None, scores, probs,
+                          np.int32(B * heads * S), np.int32(Skv))
+        attn = self.empty_half(B * heads * S * D)
+        rc = self.bl.CLBlastHgemmStridedBatched(
+            ROW, NO, NO, S, D, Skv, HALF_ONE,
+            ctypes.c_void_p(int(probs.int_ptr)), 0, Skv, S * Skv,
+            ctypes.c_void_p(int(vh.int_ptr)), 0, D, Skv * D,
+            HALF_ZERO,
+            ctypes.c_void_p(int(attn.int_ptr)), 0, D, S * D,
+            B * heads, ctypes.byref(qp), None)
+        if rc != 0:
+            raise RuntimeError('value batched Hgemm rc=%d' % rc)
+        merged = self.empty_half(B * S * C)
+        self.merge_heads(self.queue, (B * S * C,), None, attn, merged, np.int32(C),
+                         np.int32(S), np.int32(heads), np.int32(D))
+        out, _ = self.linear_h(merged, wo, B * S, C, C)
+        for b in (q, k, v, qh, kh, vh, scores, probs, attn, merged):
+            b.release()
+        return out
 
 
 def demo():
