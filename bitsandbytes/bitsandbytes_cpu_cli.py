@@ -312,15 +312,15 @@ SECTIONS = [
              "#   what runs today is the verified scalar path",
              "# the optimizer is a few percent of a real training step at 30M params,",
              "#   so the wall-clock cost is small while the state saving is 7.8x",
-             "# the pure-torch fallback (Windows wheel) is slower still",
+             "# older Windows wheels run the pure-torch fallback (dev9+ is native)",
          ], PY),
         ("traps",
          "the failure modes seen while building this, each one silent at first", [
              "# 1. torch.optim.AdamW is NOT replaced: this is a separate class, and",
              "#    AdamW4bit requires fp32 params (the kernel's dtype 0).",
              "# 2. blocksize is compiled in at 256; passing another value raises.",
-             "# 3. if the shared library does not export",
-             "#    coptimizer_update_4bit_blockwise_cpu (the Windows wheel does not),",
+             "# 3. older Windows wheels (< dev9) do not export",
+             "#    coptimizer_update_4bit_blockwise_cpu (pre-dev9 Windows wheels),",
              "#    this class transparently uses a pure-torch implementation with the",
              "#    same numbers and the same 1.031 B/param state, just slower.",
              "# 4. quantised state is not a drop-in for exact reproducibility runs:",
@@ -549,7 +549,7 @@ SECTIONS = [
              "A = torch.randn(4, 128)",
              "out = q3bit.gemm_3bit(A, packed, absmax)",
              "ref = A @ q3bit.dequantize_3bit(packed, absmax, w.shape).t()",
-             "assert (out - ref).abs().max().item() < 1e-5",
+             "assert (out - ref).abs().max().item() < 1e-4   # native kernel rounds at the ULP",
          ], PY),
         ("QuantLinear3bit.from_linear(linear, lora_r=8)",
          "frozen 3-bit base + trainable LoRA; only lora_A/lora_B require grad", [
@@ -565,8 +565,8 @@ SECTIONS = [
         ("convert_linears_3bit(model, lora_r=8)",
          "replaces every nn.Linear in place and returns the count; lm_head stays fp32", []),
         ("experimental / portability",
-         "the Windows wheel predates the 2/3-bit C kernels, so it runs the pure-torch "
-         "fallback; the Linux wheels use the native kernels", []),
+         "since dev9 the Windows wheel ships a CI-built MSVC DLL; older wheels use the pure-torch "
+         "fallback, while the dev9 Windows and Linux wheels use the native kernels", []),
     ]),
     ("layers", "Reference: bitsandbytes.nn", [
         ("Linear4bit(input_features, output_features, bias=True, compute_dtype=None,\n"

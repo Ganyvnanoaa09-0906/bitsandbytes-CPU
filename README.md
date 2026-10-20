@@ -10,7 +10,7 @@ The fast path is pure CPU (fp32 + oneDNN + fused bnb kernels); the experimental 
 pay off in narrow workloads (see the technical report for the measured pros and cons).
 
 **PyPI: [`bitsandbytes-cpu-fork`](https://pypi.org/project/bitsandbytes-cpu-fork/) · current
-release `0.50.2.dev8`.**
+release `0.50.2.dev9`.**
 
 ## Install
 
@@ -125,6 +125,7 @@ bash arm64_selftest.sh
 | `0.50.2.dev6` | manylinux_2_17 wheel is now **OpenMP** (devtoolset-8 + bundled libgomp, 3–4× optimizer speedup on old glibc); csrc 2/3-bit dequant + fused GEMM kernels + 9-item C self-test; EFST fused tensor-expert routing fix; GCC 8 `<cpuid.h>` portability fix |
 | `0.50.2.dev7` | documentation release: READMEs rewritten for the CPU fork (install/wheels/platform matrix, features, measured performance, limitations, tests, full changelog) |
 | `0.50.2.dev8` | restored `AdamW4bit` (1.031 B of state/param, scalar kernel + torch fallback) + new `bitsandbytes.q3bit` API (blockwise 3-bit quant/dequant/fused GEMM, `QuantLinear3bit` frozen 3-bit base + LoRA, `convert_linears_3bit`) |
+| `0.50.2.dev9` | Windows native kernels (CI-built MSVC DLL now exports the 4-bit optimizer + 2/3-bit symbols), q3bit real-model validation on Qwen3-1.7B, iGPU causal-LM double-shift fix (package v0.1.2) |
 
 ## Known limitations
 

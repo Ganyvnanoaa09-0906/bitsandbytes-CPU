@@ -5,7 +5,7 @@
 > toolkit and no driver** — just an AVX2 x86-64 CPU (or ARM64 NEON), the CPU build of PyTorch,
 > and 12–16 GB of RAM.
 
-**Version: `0.50.2.dev8`** · import name is unchanged (`import bitsandbytes as bnb`) · MIT.
+**Version: `0.50.2.dev9`** · import name is unchanged (`import bitsandbytes as bnb`) · MIT.
 
 What the CPU backend provides: 8-bit blockwise optimizers (≈2.3 bytes of state per parameter
 instead of 8; the 4-bit optimizer ≈1.03), 4/8-bit layers that run on CPU tensors, the fused
@@ -171,7 +171,7 @@ Also: `estimate_training_memory_gb()`, `spawn_training_jobs(cmds, plan)` (logs p
 | Area | What it does |
 |---|---|
 | 8-bit optimizers | AdamW/Adam/AdEMAMix/LAMB/LARS/Lion + paged variants, blockwise 8-bit state with single-pass dequant→update→requant kernels (AVX2/NEON) |
-| 4-bit optimizer | `AdamW4bit`: ≈1.03 bytes of state per parameter (restored in dev8; scalar kernel + torch fallback) |
+| 4-bit optimizer | `AdamW4bit`: ≈1.03 bytes of state per parameter (scalar kernel; native on Linux and, since dev9, Windows) |
 | Quantisation | blockwise 8-bit, NF4/FP4 4-bit quantize/dequantize; 4-bit GEMV inference kernel |
 | `gemm_8bit` | `out = A @ dequant8(B)` with weights kept uint8 (¼ DRAM traffic), no fp32 temporary (`bnb.functional.fused_dequant_linear_8bit`) |
 | GDN | fused Gated DeltaNet forward + chunk-checkpointed backward (`gdn_fwd_cpu` / `gdn_bwd_cpu`), plus `patch_transformers()` / `patch_fla()` |
@@ -225,6 +225,7 @@ R5-4500U (6C/6T, AVX2, 15.4 GB) / i5-10400 (6C/12T, AVX2, 12 GB), no NVIDIA GPU.
 | Concurrency packing (synthetic jobs) | 6 jobs × 1 thread **5619 tok/s** vs 1 job × 6 threads **3843 tok/s** (+46%) |
 | Real model (Qwen3.5-0.8B LoRA, seq 64) | 4 threads beat 6 by **7–10%** — measure with `tune_threads()` |
 | Fused lm_head 3-bit GEMM (research) | 14–22% faster than fp32 matmul, 89% less weight memory |
+| 3-bit frozen base + LoRA (Qwen3-1.7B, CPU) | 80 steps: eval loss 4.34 → **4.03**; RSS **2.9 GB vs 8.7 GB** fp32; step 7.7 s vs 5.5 s (native Windows) |
 | AdamW4bit step (1M params) | 28.6 ms vs 3.3 ms for the AVX2 8-bit kernel; state 1.031 vs 2.062 B/param |
 
 Not every workload is faster than fp32: 4-bit/8-bit kernels trade compute for memory traffic,
@@ -236,9 +237,10 @@ the full trade-off tables, including negative results.
 ## Platform limitations
 
 - **CPU only.** CUDA/ROCm/XPU kernels are not built; a GPU is never required or used.
-- **Windows wheel** ships a prebuilt DLL. That DLL predates the dev5/dev6 2/3-bit
-  kernels and the restored 4-bit optimizer kernel, so those run the pure-torch
-  fallback there (same numbers, lower speed).
+- **Windows wheel**: from dev9 on it ships the MSVC DLL built by CI from the current
+  `csrc`, which exports the 2/3-bit dequant/GEMM and 4-bit optimizer kernels; they run
+  natively on Windows (verified: dequant maxdiff 1.2e-6, 4-bit native vs torch 1.2e-7).
+  Wheels older than dev9 fall back to pure torch for those symbols.
 - **manylinux_2_17 wheel**: the AVX-512 library inside it is single-threaded (the parallel
   build is only for the native `manylinux_2_39` wheel). On AVX-512 machines set
   `BNB_CPU_DISABLE_AVX512=1` to run the AVX2 OpenMP path.
@@ -303,6 +305,7 @@ The long-form docs live in the repository (`bitsandbytes/docs_cpu/`, Chinese and
 | `0.50.2.dev6` | manylinux_2_17 wheel is now **OpenMP** (devtoolset-8, bundled libgomp → 3–4× optimizer-kernel speedup on old glibc); csrc 2/3-bit dequant + fused GEMM kernels with 9-item C self-test; EFST fused tensor-expert routing fix; GCC 8 `<cpuid.h>` portability fix |
 | `0.50.2.dev7` | documentation release: README rewritten for the CPU fork (install/wheels/platform matrix, feature table, measured performance, limitations, tests, full dev1→dev7 changelog, EFST/disk-balancer/toolbox examples) |
 | `0.50.2.dev8` | **restored `AdamW4bit`** (the kernel was dropped when dev4 vendored upstream; now scalar C kernel + torch fallback, 1.031 B/param); **new `bitsandbytes.q3bit` API** — `quantize_3bit`/`dequantize_3bit`/`gemm_3bit`/`gemm_3bit_transposed`, `QuantLinear3bit` (frozen 3-bit base + LoRA), `convert_linears_3bit`, native kernels on Linux with identical pure-torch fallback; CLI reference now includes 4bitopt/q3bit and all 43 examples execute in CI-style verification |
+| `0.50.2.dev9` | **Windows native kernels**: CI now compiles the MSVC DLL from the current csrc and the export list includes the 4-bit optimizer and 2/3-bit symbols (they were silently missing before); **q3bit real-model validation** on Qwen3-1.7B (frozen 3-bit base + LoRA, eval 4.34→4.03 over 80 steps, RSS −67%, native step 7.7 s vs fp32 5.5 s); fixed the causal-LM **double-shift** label bug in the iGPU training kit (Windows package v0.1.2) |
 
 ## License and attribution
 
