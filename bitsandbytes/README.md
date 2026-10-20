@@ -184,6 +184,15 @@ The library never loads a CUDA/ROCm/XPU library: `bnb.cuda`/`bnb.optim` CPU path
 
 ---
 
+## Full fine-tuning vs LoRA
+
+`--mode full` (and `bnb.optim.*` directly) fine-tunes **every parameter**; measured on
+Qwen3.5-0.8B (752 M, 100% trainable, fp32 + AdamW8bit, seq 64, batch 1): **peak RSS
+10.4 GB, 8.8 s/step**, versus LoRA (5.4 M trainable) at **5.9 GB / 2.65 s/step**. On a
+15.4 GB machine ~0.8 B full fine-tuning is comfortable; ~1 B is tight (estimator:
+10.7 GB weights+grads+8-bit state before activations), and above that use LoRA / EFST /
+q3bit, or add activation checkpointing (not yet wired into the generic trainer).
+
 ## 3-bit frozen base + LoRA (`bitsandbytes.q3bit`, experimental)
 
 A frozen weight can be stored as blockwise **3-bit** codes (≈11% of fp32 memory) and
@@ -226,6 +235,7 @@ R5-4500U (6C/6T, AVX2, 15.4 GB) / i5-10400 (6C/12T, AVX2, 12 GB), no NVIDIA GPU.
 | Real model (Qwen3.5-0.8B LoRA, seq 64) | 4 threads beat 6 by **7–10%** — measure with `tune_threads()` |
 | Fused lm_head 3-bit GEMM (research) | 14–22% faster than fp32 matmul, 89% less weight memory |
 | 3-bit frozen base + LoRA (Qwen3-1.7B, CPU) | 80 steps: eval loss 4.34 → **4.03**; RSS **2.9 GB vs 8.7 GB** fp32; step 7.7 s vs 5.5 s (native Windows) |
+| Full-parameter fine-tune (Qwen3.5-0.8B, 752 M, fp32 + AdamW8bit, CPU) | **10.4 GB peak RSS**, 8.8 s/step; LoRA on the same model: 5.9 GB, 2.65 s/step |
 | AdamW4bit step (1M params) | 28.6 ms vs 3.3 ms for the AVX2 8-bit kernel; state 1.031 vs 2.062 B/param |
 
 Not every workload is faster than fp32: 4-bit/8-bit kernels trade compute for memory traffic,
