@@ -31,18 +31,35 @@ __kernel void merge_heads(__global const half* src, __global half* dst,
 __kernel void softmax_rows(__global const half* src, __global half* dst,
                            const int rows, const int cols)
 {
-    int r = get_global_id(0);
+    int r = get_group_id(0);
+    int lid = get_local_id(0);
+    int ls = get_local_size(0);
     if (r >= rows) return;
+    __local float lmax[256];
+    __local float lsum[256];
     __global const half* row = src + r * cols;
     float m = -1e30f;
-    for (int c = 0; c < cols; ++c) m = fmax(m, (float)row[c]);
+    for (int c = lid; c < cols; c += ls) m = fmax(m, (float)row[c]);
+    lmax[lid] = m;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int step = ls / 2; step > 0; step >>= 1) {
+        if (lid < step) lmax[lid] = fmax(lmax[lid], lmax[lid + step]);
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    m = lmax[0];
     float s = 0.f;
-    for (int c = 0; c < cols; ++c) s += exp((float)row[c] - m);
-    float inv = 1.f / s;
+    for (int c = lid; c < cols; c += ls) s += exp((float)row[c] - m);
+    lsum[lid] = s;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int step = ls / 2; step > 0; step >>= 1) {
+        if (lid < step) lsum[lid] += lsum[lid + step];
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    float inv = 1.f / lsum[0];
     __global half* out = dst + r * cols;
-    for (int c = 0; c < cols; ++c) out[c] = (half)(exp((float)row[c] - m) * inv);
+    for (int c = lid; c < cols; c += ls)
+        out[c] = (half)(exp((float)row[c] - m) * inv);
 }
-
 
 // nearest-neighbour 2x upsample, NCHW fp16
 __kernel void upsample_nearest2x(__global const half* src, __global half* dst,

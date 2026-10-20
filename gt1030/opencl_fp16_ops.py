@@ -290,7 +290,7 @@ class OpenCLFP16:
         if rc != 0:
             raise RuntimeError('score batched Hgemm rc=%d' % rc)
         probs = self.empty_half(B * heads * S * Skv)
-        self.softmax_rows(self.queue, (B * heads * S,), None, scores, probs,
+        self.softmax_rows(self.queue, (B * heads * S * 256,), (256,), scores, probs,
                           np.int32(B * heads * S), np.int32(Skv))
         attn = self.empty_half(B * heads * S * D)
         rc = self.bl.CLBlastHgemmStridedBatched(
