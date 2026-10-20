@@ -126,6 +126,7 @@ class OpenCLFP16:
         self.split_heads = cl.Kernel(self.prog, 'split_heads')
         self.merge_heads = cl.Kernel(self.prog, 'merge_heads')
         self.softmax_rows = cl.Kernel(self.prog, 'softmax_rows')
+        self.upsample = cl.Kernel(self.prog, 'upsample_nearest2x')
         self.bl = ctypes.CDLL(DLL)
         self.bl.CLBlastHgemm.restype = ctypes.c_int
         self.bl.CLBlastHgemm.argtypes = [
@@ -221,6 +222,15 @@ class OpenCLFP16:
                              np.int32(groups), np.float32(eps))
         self.queue.finish()
         return y
+
+    def upsample2x_buf(self, x_buf, shape):
+        """Nearest 2x upsample: (N,C,H,W) half -> (N,C,2H,2W) half."""
+        N, C, H, W = shape
+        y = self.empty_half(N * C * 4 * H * W)
+        self.upsample(self.queue, (N * C * 4 * H * W,), None, x_buf, y,
+                      np.int32(N), np.int32(C), np.int32(H), np.int32(W))
+        self.queue.finish()
+        return y, (N, C, 2 * H, 2 * W)
 
     def add_buf(self, a_buf, b_buf, numel: int):
         y = self.empty_half(numel)
