@@ -209,8 +209,11 @@ need an im2col+dGEMM conv engine before the OpenCL path can run them. As a proof
 memory / operator coverage) while the same ONNX runs on `CPUExecutionProvider`. Export once with
 `optimum-cli export onnx --task stable-diffusion --opset 17`. A diffusers + `torch_directml`
 variant (`igpu_image_infer.py`) is kept as a comparison; it needs legacy attention and still hits
-DML `chunk`/reshape issues. Long-term the OpenCL backend gets a conv engine; DirectML is the
-256-resolution demo path.
+DML `chunk`/reshape issues. Long-term the OpenCL backend gets an **fp16 device-resident conv engine**: measured probes
+show per-op OpenCL conv is 2-3x slower than CPU oneDNN and fp32 resident only reaches parity,
+but fp16 resident im2col+Hgemm is **1.3-2x faster than the CPU conv** at SD1.5 shapes
+(538 vs 342 GFLOPS; 1280-channel 16x16 layer 17.3 vs 34.8 ms). The 256-resolution demo
+therefore uses DirectML, while the OpenCL engine is the planned production backend.
 
 ## 3-bit frozen base + LoRA (`bitsandbytes.q3bit`, experimental)
 
