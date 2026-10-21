@@ -42,10 +42,10 @@ def cpu_layer(xt, wqkv, wo, w1, w3, w2):
 
 def main():
     rng = np.random.default_rng(0)
-    n = 2
-    layers = [FM.Layer(rng, i) for i in range(n)]
+    n = 3
     x = (rng.standard_normal((M, MD)).astype(np.float32) * 0.1).astype(np.float16)
     xdev = FM.upload(x)
+    layers = [FM.Layer(rng, i) for i in range(n)]
     with torch.no_grad():
         cur = xdev
         for li, lay in enumerate(layers):
