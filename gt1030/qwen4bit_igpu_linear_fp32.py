@@ -18,7 +18,7 @@ import bitsandbytes.functional as BF
 from bitsandbytes.nn import Linear4bit
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU\gt1030')
-from opencl_fp16_ops import OpenCLFP16, ROW, NO, YES  # noqa: E402
+from opencl_fp16_ops import OpenCLFP16, ROW, NO, YES, HALF_ONE, HALF_ZERO  # noqa: E402
 
 KERNEL = r"""
 __kernel void dequant_nf4_f32(__global const uchar* packed,
@@ -32,6 +32,22 @@ __kernel void dequant_nf4_f32(__global const uchar* packed,
     uchar b = packed[i >> 1];
     int nib = (i & 1) ? (b & 0xF) : (b >> 4);
     out[i] = map[nib] * absmax[i / blocksize];
+}
+"""
+
+KERNEL_H = r"""
+#pragma OPENCL EXTENSION cl_khr_fp16 : enable
+__kernel void dequant_nf4_h(__global const uchar* packed,
+                            __global const float* absmax,
+                            __global const float* map,
+                            __global half* out,
+                            const int n, const int blocksize)
+{
+    int i = get_global_id(0);
+    if (i >= n) return;
+    uchar b = packed[i >> 1];
+    int nib = (i & 1) ? (b & 0xF) : (b >> 4);
+    out[i] = (half)(map[nib] * absmax[i / blocksize]);
 }
 """
 
@@ -49,6 +65,8 @@ class _RT:
         self.rt = OpenCLFP16.get()
         self.prog = cl.Program(self.rt.ctx, KERNEL).build(options=['-cl-mad-enable'])
         self.kern = cl.Kernel(self.prog, 'dequant_nf4_f32')
+        self.prog_h = cl.Program(self.rt.ctx, KERNEL_H).build(options=['-cl-mad-enable'])
+        self.kern_h = cl.Kernel(self.prog_h, 'dequant_nf4_h')
         self.bl = self.rt.bl
         self.bl.CLBlastSgemm.restype = ctypes.c_int
         self.bl.CLBlastSgemm.argtypes = [
@@ -69,9 +87,18 @@ class _RT:
         self.acap = 0
         self.cscratch = None
         self.ccap = 0
+        self.hwbuf = None
+        self.hwcap = 0
+        self.hxbuf = None
+        self.hxcap = 0
+        self.hobuf = None
+        self.hocap = 0
 
     def f32(self, numel):
         return cl.Buffer(self.rt.ctx, cl.mem_flags.READ_WRITE, max(4, numel * 4))
+
+    def half(self, numel):
+        return cl.Buffer(self.rt.ctx, cl.mem_flags.READ_WRITE, max(2, numel * 2))
 
     def upload(self, arr):
         arr = np.ascontiguousarray(arr)
@@ -90,9 +117,10 @@ def _set_submodule(model, name, new):
 
 
 class GPU4BitLinearF32(torch.nn.Module):
-    def __init__(self, lin: Linear4bit):
+    def __init__(self, lin: Linear4bit, mode: str = 'fp32'):
         super().__init__()
         self.r = _RT.get()
+        self.mode = mode
         self.in_features = lin.in_features
         self.out_features = lin.out_features
         qs = lin.weight.quant_state
@@ -135,6 +163,41 @@ class GPU4BitLinearF32(torch.nn.Module):
             r.ccap = nc
         cl.enqueue_copy(r.rt.queue, r.ascratch, self.absmax_host, is_blocking=True)
         cl.enqueue_copy(r.rt.queue, r.cscratch, self.code_host, is_blocking=True)
+        if self.mode == 'fp16':
+            if r.hwcap < self.n:
+                if r.hwbuf is not None:
+                    r.hwbuf.release()
+                r.hwbuf = r.half(self.n)
+                r.hwcap = self.n
+            r.kern_h(r.rt.queue, (self.n,), None, self.packed, r.ascratch, r.cscratch,
+                     r.hwbuf, np.int32(self.n), np.int32(self.blocksize))
+            if r.hxcap < rows * K:
+                if r.hxbuf is not None:
+                    r.hxbuf.release()
+                r.hxbuf = r.half(rows * K)
+                r.hxcap = rows * K
+            if r.hocap < rows * N:
+                if r.hobuf is not None:
+                    r.hobuf.release()
+                r.hobuf = r.half(rows * N)
+                r.hocap = rows * N
+            x_np = np.ascontiguousarray(
+                x.detach().reshape(rows, K).numpy().astype(np.float16))
+            cl.enqueue_copy(r.rt.queue, r.hxbuf, x_np, is_blocking=True)
+            r.rt.queue.finish()
+            rc = r.bl.CLBlastHgemm(
+                ROW, NO, YES, rows, N, K, HALF_ONE,
+                ctypes.c_void_p(int(r.hxbuf.int_ptr)), 0, K,
+                ctypes.c_void_p(int(r.hwbuf.int_ptr)), 0, K,
+                HALF_ZERO,
+                ctypes.c_void_p(int(r.hobuf.int_ptr)), 0, N,
+                ctypes.byref(r.qp), None)
+            if rc != 0:
+                raise RuntimeError('Hgemm rc=%d' % rc)
+            out16 = np.empty((rows, N), dtype=np.float16)
+            cl.enqueue_copy(r.rt.queue, out16, r.hobuf, is_blocking=True)
+            r.rt.queue.finish()
+            return torch.from_numpy(out16.astype(np.float32)).reshape(*org[:-1], N)
         r.kern(r.rt.queue, (self.n,), None, self.packed, r.ascratch, r.cscratch,
                r.wbuf, np.int32(self.n), np.int32(self.blocksize))
         if r.xcap < rows * K:
@@ -165,12 +228,15 @@ class GPU4BitLinearF32(torch.nn.Module):
         return torch.from_numpy(out).reshape(*org[:-1], N)
 
 
-def to_igpu_f32(model, verbose=True):
+def to_igpu_f32(model, mode_fn=None, verbose=True):
     n = 0
+    modes = {'fp32': 0, 'fp16': 0}
     for name, mod in list(model.named_modules()):
         if isinstance(mod, Linear4bit):
-            _set_submodule(model, name, GPU4BitLinearF32(mod))
+            mode = 'fp32' if mode_fn is None else mode_fn(name)
+            _set_submodule(model, name, GPU4BitLinearF32(mod, mode=mode))
+            modes[mode] += 1
             n += 1
     if verbose:
-        print('wrapped %d linears for fp32 iGPU hybrid' % n, flush=True)
+        print('wrapped %d linears for iGPU hybrid %s' % (n, modes), flush=True)
     return n
