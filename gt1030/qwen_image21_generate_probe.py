@@ -39,16 +39,30 @@ def main():
     ap.add_argument('--out', default='')
     ap.add_argument('--prompt-embeds', default='')
     ap.add_argument('--igpu', action='store_true')
+    ap.add_argument('--fused', action='store_true')
     args = ap.parse_args()
-    torch.set_num_threads(6)
+    # 4 threads wins end-to-end on this 4500U for every resolution tested (512^2 4-thread:
+    # 84.6 s/step vs 86.6 with 6; direct async microbench favored 6 but generation-level
+    # thermal/bandwidth behavior does not).
+    torch.set_num_threads(4)
+    # CPU fused 4-bit GEMM wins for small M; keep the conservative default at 256^2+.
+    try:
+        import bitsandbytes.backends.cpu.ops as _cops
+        _cops._GEMM_4BIT_FUSED_MAX_M = 128 if args.size <= 128 else 64
+    except Exception:
+        pass
     torch.manual_seed(args.seed)
 
     print('1) loading 4-bit transformer...', flush=True)
     transformer = load_transformer()
     if args.igpu:
-        from qwen4bit_igpu_linear_fp32 import to_igpu_f32
         t0 = time.perf_counter()
-        to_igpu_f32(transformer)
+        if args.fused:
+            from qwen4bit_igpu_fused import to_igpu_fused
+            to_igpu_fused(transformer)
+        else:
+            from qwen4bit_igpu_linear_fp32 import to_igpu_f32
+            to_igpu_f32(transformer)
         print('   iGPU linears ready | %.1f s' % (time.perf_counter() - t0), flush=True)
 
     from diffusers import FlowMatchEulerDiscreteScheduler
@@ -111,6 +125,8 @@ def main():
     mean = torch.tensor(vae.config.latents_mean).view(1, channels, 1, 1, 1)
     std = torch.tensor(vae.config.latents_std).view(1, channels, 1, 1, 1)
     z = z * std + mean
+    if args.size >= 512:
+        torch.set_num_threads(6)  # 512^2 VAE: 22.5s vs 24.2s at 4 threads
     t0 = time.perf_counter()
     with torch.no_grad():
         image = vae.decode(z, return_dict=False)[0][:, :, 0]
@@ -121,7 +137,7 @@ def main():
     arr = (image[0].permute(1, 2, 0).numpy() * 255).astype(np.uint8)
     from PIL import Image
     out = args.out or os.path.join(r'D:\work\research\bench_results',
-                                   'qwen_image21_%s_%d_%dsteps.png' % ('igpu' if args.igpu else 'cpu', args.size, args.steps))
+                                   'qwen_image21_%s_%d_%dsteps.png' % ('fused' if getattr(args,'fused',False) else ('igpu' if args.igpu else 'cpu'), args.size, args.steps))
     Image.fromarray(arr).save(out)
     print('saved', out)
 

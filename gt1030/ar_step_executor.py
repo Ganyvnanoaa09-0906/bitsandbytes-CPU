@@ -81,12 +81,19 @@ def _up(role: str, np_fp16, nbytes: int) -> cl.Buffer:
     return dev
 
 
-def gemm_nn(a16, b16, m, n, k):
-    """C_row(m,n) = A_row(m,k) @ B_row(k,n), fp16 host arrays -> fp16 host array."""
+def gemm_nn(a16, b16, m, n, k, b_dev=None):
+    """C_row(m,n) = A_row(m,k) @ B_row(k,n), fp16 host arrays -> fp16 host array.
+
+    b_dev: optional persistent device buffer for B (weights). When given, B is not
+    re-uploaded per call; only A changes per call.
+    """
     a16 = np.ascontiguousarray(a16)
-    b16 = np.ascontiguousarray(b16)
     ab = _up('a', a16, m * k * 2)
-    bb = _up('b', b16, k * n * 2)
+    if b_dev is None:
+        b16 = np.ascontiguousarray(b16)
+        bb = _up('b', b16, k * n * 2)
+    else:
+        bb = b_dev
     cb = _buf('c', m * n * 2)
     t0 = time.perf_counter()
     rc = bl.CLBlastHgemm(
@@ -98,6 +105,7 @@ def gemm_nn(a16, b16, m, n, k):
     out = np.empty((m, n), dtype=np.float16)
     # blocking read: waits for the whole queue up to here, no explicit finish needed
     cl.enqueue_copy(queue, out, cb, is_blocking=True)
+    STATS['d2h'] += time.perf_counter() - t0
     STATS['gemm'] += time.perf_counter() - t0
     STATS['calls'] += 1
     if rc != 0:
@@ -116,12 +124,19 @@ class IgpuLinear(nn.Module):
         nn.init.normal_(w, std=0.02)
         self.weight = nn.Parameter(w)
         self.bias = None
-        self._dev = None   # (W (in,out) fp16, Wt (out,in) fp16) as numpy arrays on host, uploaded per call
+        self._dev = None
+        self._w_dev = None
+        self._wt_dev = None
 
     def refresh(self):
         w = self.weight.detach().numpy().astype(np.float16)      # (out,in)
         self._wt = np.ascontiguousarray(w)                        # (out,in) = W^T for dX
         self._w = np.ascontiguousarray(w.T)                       # (in,out)
+        if self._w_dev is None:
+            self._w_dev = cl.Buffer(ctx, mf.READ_ONLY, self._w.nbytes)
+            self._wt_dev = cl.Buffer(ctx, mf.READ_ONLY, self._wt.nbytes)
+        cl.enqueue_copy(queue, self._w_dev, self._w)
+        cl.enqueue_copy(queue, self._wt_dev, self._wt)
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         if self._dev is None:
@@ -135,7 +150,7 @@ class _IgpuLinearFn(torch.autograd.Function):
         orig_shape = x.shape
         x2 = x.reshape(-1, mod.in_features).detach().float().numpy().astype(np.float16)
         m = x2.shape[0]
-        out16 = gemm_nn(np.ascontiguousarray(x2), mod._w, m, mod.out_features, mod.in_features)
+        out16 = gemm_nn(np.ascontiguousarray(x2), mod._w, m, mod.out_features, mod.in_features, b_dev=mod._w_dev)
         ctx.x16 = x2
         ctx.mod = mod
         ctx.m = m
@@ -148,7 +163,7 @@ class _IgpuLinearFn(torch.autograd.Function):
         g = np.ascontiguousarray(g)
         mod = ctx.mod
         # dX = dY @ W  (dY (m,out) @ W (out,in) where W = mod._wt (out,in))
-        dx16 = gemm_nn(g, mod._wt, ctx.m, mod.in_features, mod.out_features)
+        dx16 = gemm_nn(g, mod._wt, ctx.m, mod.in_features, mod.out_features, b_dev=mod._wt_dev)
         # dW = X^T @ dY : (in,m) @ (m,out)
         xt = np.ascontiguousarray(ctx.x16.T)
         dw16 = gemm_nn(xt, g, mod.in_features, mod.out_features, ctx.m)   # (in,out)

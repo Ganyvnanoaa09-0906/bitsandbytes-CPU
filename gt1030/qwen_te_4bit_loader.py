@@ -50,7 +50,7 @@ def set_submodule(model, name, new):
 
 
 def load_text_encoder(verbose=True):
-    torch.set_num_threads(6)
+    torch.set_num_threads(4)
     cfg = AutoConfig.from_pretrained(TE_DIR, local_files_only=True)
     with init_empty_weights():
         te = Qwen3VLForConditionalGeneration(cfg)

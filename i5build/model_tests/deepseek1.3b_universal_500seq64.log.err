@@ -1,0 +1,76 @@
+[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+Loading weights:   0%|          | 0/219 [00:00<?, ?it/s]Loading weights:   0%|          | 1/219 [00:00<00:47,  4.63it/s]Loading weights:  14%|█▍        | 31/219 [00:00<00:01, 117.19it/s]Loading weights:  22%|██▏       | 49/219 [00:00<00:01, 134.19it/s]Loading weights:  31%|███       | 67/219 [00:00<00:01, 148.58it/s]Loading weights:  39%|███▉      | 85/219 [00:00<00:00, 147.89it/s]Loading weights:  47%|████▋     | 102/219 [00:00<00:00, 150.49it/s]Loading weights:  54%|█████▍    | 118/219 [00:00<00:00, 148.56it/s]Loading weights:  61%|██████    | 134/219 [00:00<00:00, 147.16it/s]Loading weights:  68%|██████▊   | 150/219 [00:01<00:00, 143.78it/s]Loading weights:  75%|███████▌  | 165/219 [00:01<00:00, 141.74it/s]Loading weights:  82%|████████▏ | 180/219 [00:01<00:00, 119.88it/s]Loading weights:  88%|████████▊ | 193/219 [00:01<00:00, 105.99it/s]Loading weights:  94%|█████████▎| 205/219 [00:01<00:00, 96.54it/s] Loading weights:  99%|█████████▊| 216/219 [00:01<00:00, 89.70it/s]Loading weights: 100%|██████████| 219/219 [00:01<00:00, 117.68it/s]
+Traceback (most recent call last):
+  File "D:\work\bitsandbytes-CPU\gt1030\igpu_train.py", line 420, in <module>
+    if step % args.log_every == 0 or step == args.steps - 1:
+         ~~~^~~
+  File "D:\work\bitsandbytes-CPU\gt1030\igpu_train.py", line 416, in main
+    print('  parity CPU %.5f vs iGPU %.5f -> |diff| %.2e' % (base_loss, losses[0], parity),
+   ^^^^^^^^^^^
+  File "D:\work\bitsandbytes-CPU\gt1030\igpu_train.py", line 352, in train
+    if model is None:
+              ^^^^^^^^
+  File "C:\Users\Gan\AppData\Local\Programs\Python\Python311\Lib\site-packages\torch\nn\modules\module.py", line 1778, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gan\AppData\Local\Programs\Python\Python311\Lib\site-packages\torch\nn\modules\module.py", line 1789, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gan\AppData\Local\Programs\Python\Python311\Lib\site-packages\transformers\utils\generic.py", line 939, in wrapper
+    output = func(self, *args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gan\AppData\Local\Programs\Python\Python311\Lib\site-packages\transformers\models\llama\modeling_llama.py", line 467, in forward
+    outputs: BaseModelOutputWithPast = self.model(
+                                       ^^^^^^^^^^^
+  File "C:\Users\Gan\AppData\Local\Programs\Python\Python311\Lib\site-packages\torch\nn\modules\module.py", line 1778, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gan\AppData\Local\Programs\Python\Python311\Lib\site-packages\torch\nn\modules\module.py", line 1789, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gan\AppData\Local\Programs\Python\Python311\Lib\site-packages\transformers\utils\generic.py", line 1068, in wrapper
+    output = func(self, *args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gan\AppData\Local\Programs\Python\Python311\Lib\site-packages\transformers\utils\output_capturing.py", line 262, in wrapper
+    outputs = func(self, *args, **kwargs)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gan\AppData\Local\Programs\Python\Python311\Lib\site-packages\transformers\models\llama\modeling_llama.py", line 403, in forward
+    hidden_states = decoder_layer(
+                    ^^^^^^^^^^^^^^
+  File "C:\Users\Gan\AppData\Local\Programs\Python\Python311\Lib\site-packages\transformers\modeling_layers.py", line 114, in __call__
+    return super().__call__(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gan\AppData\Local\Programs\Python\Python311\Lib\site-packages\torch\nn\modules\module.py", line 1778, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gan\AppData\Local\Programs\Python\Python311\Lib\site-packages\torch\nn\modules\module.py", line 1789, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gan\AppData\Local\Programs\Python\Python311\Lib\site-packages\transformers\models\llama\modeling_llama.py", line 322, in forward
+    hidden_states = self.mlp(hidden_states)
+                    ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gan\AppData\Local\Programs\Python\Python311\Lib\site-packages\torch\nn\modules\module.py", line 1778, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gan\AppData\Local\Programs\Python\Python311\Lib\site-packages\torch\nn\modules\module.py", line 1789, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gan\AppData\Local\Programs\Python\Python311\Lib\site-packages\transformers\models\llama\modeling_llama.py", line 175, in forward
+    down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+                                           ^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gan\AppData\Local\Programs\Python\Python311\Lib\site-packages\torch\nn\modules\module.py", line 1778, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gan\AppData\Local\Programs\Python\Python311\Lib\site-packages\torch\nn\modules\module.py", line 1789, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\work\bitsandbytes-CPU\gt1030\igpu_train.py", line 224, in forward
+    y = IgpuFn.apply(x, self.base_weight, self.w_dev, False, 0)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Gan\AppData\Local\Programs\Python\Python311\Lib\site-packages\torch\autograd\function.py", line 625, in apply
+    return super().apply(*args, **kwargs)  # type: ignore[misc]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\work\bitsandbytes-CPU\gt1030\igpu_train.py", line 108, in forward
+    out = np.empty(tuple(orig[:-1]) + (n,), dtype=np.float32)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+numpy._core._exceptions._ArrayMemoryError: Unable to allocate 1.34 MiB for an array with shape (1, 64, 5504) and data type float32
