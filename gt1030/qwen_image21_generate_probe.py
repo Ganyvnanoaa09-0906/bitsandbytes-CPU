@@ -38,12 +38,18 @@ def main():
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--out', default='')
     ap.add_argument('--prompt-embeds', default='')
+    ap.add_argument('--igpu', action='store_true')
     args = ap.parse_args()
     torch.set_num_threads(6)
     torch.manual_seed(args.seed)
 
     print('1) loading 4-bit transformer...', flush=True)
     transformer = load_transformer()
+    if args.igpu:
+        from qwen4bit_igpu_linear_fp32 import to_igpu_f32
+        t0 = time.perf_counter()
+        to_igpu_f32(transformer)
+        print('   iGPU linears ready | %.1f s' % (time.perf_counter() - t0), flush=True)
 
     from diffusers import FlowMatchEulerDiscreteScheduler
     from diffusers.models import AutoencoderKLQwenImage21
@@ -115,7 +121,7 @@ def main():
     arr = (image[0].permute(1, 2, 0).numpy() * 255).astype(np.uint8)
     from PIL import Image
     out = args.out or os.path.join(r'D:\work\research\bench_results',
-                                   'qwen_image21_prompt_%d_%dsteps.png' % (args.size, args.steps))
+                                   'qwen_image21_%s_%d_%dsteps.png' % ('igpu' if args.igpu else 'cpu', args.size, args.steps))
     Image.fromarray(arr).save(out)
     print('saved', out)
 

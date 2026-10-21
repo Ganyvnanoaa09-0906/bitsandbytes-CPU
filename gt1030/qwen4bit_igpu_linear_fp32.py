@@ -65,9 +65,20 @@ class _RT:
         self.xcap = 0
         self.obuf = None
         self.ocap = 0
+        self.ascratch = None
+        self.acap = 0
+        self.cscratch = None
+        self.ccap = 0
 
     def f32(self, numel):
         return cl.Buffer(self.rt.ctx, cl.mem_flags.READ_WRITE, max(4, numel * 4))
+
+    def upload(self, arr):
+        arr = np.ascontiguousarray(arr)
+        buf = cl.Buffer(self.rt.ctx, cl.mem_flags.READ_WRITE, max(4, arr.nbytes))
+        cl.enqueue_copy(self.rt.queue, buf, arr, is_blocking=True)
+        self.rt.queue.finish()
+        return buf
 
 
 def _set_submodule(model, name, new):
@@ -87,38 +98,70 @@ class GPU4BitLinearF32(torch.nn.Module):
         qs = lin.weight.quant_state
         self.n = self.out_features * self.in_features
         self.blocksize = qs.blocksize
-        self.packed = self.r.rt.to_gpu(np.ascontiguousarray(lin.weight.data.reshape(-1).numpy()))
+        self.packed = self.r.upload(lin.weight.data.reshape(-1).numpy())
         absmax = BF.dequantize_blockwise(qs.absmax, qs.state2).float() + qs.offset
-        self.absmax = self.r.rt.to_gpu(np.ascontiguousarray(absmax.numpy().astype(np.float32)))
-        self.code = self.r.rt.to_gpu(np.ascontiguousarray(qs.code.float().numpy().astype(np.float32)))
+        self.absmax_host = np.ascontiguousarray(absmax.numpy().astype(np.float32))
+        self.code_host = np.ascontiguousarray(qs.code.float().numpy().astype(np.float32))
+        self.absmax = None
+        self.code = None
+
+    def prepare(self):
+        if self.absmax is None:
+            self.absmax = self.r.upload(self.absmax_host)
+        if self.code is None:
+            self.code = self.r.upload(self.code_host)
 
     def forward(self, x: torch.Tensor):
         r = self.r
         org = x.shape
         rows = int(np.prod(org[:-1])) if len(org) > 1 else 1
         K, N = self.in_features, self.out_features
-        # per-call buffers: no shared runtime state across 232 modules
-        wbuf = r.f32(self.n)
-        xbuf = r.f32(rows * K)
-        obuf = r.f32(rows * N)
-        r.kern(r.rt.queue, (self.n,), None, self.packed, self.absmax, self.code,
-               wbuf, np.int32(self.n), np.int32(self.blocksize))
+        if r.wcap < self.n:
+            if r.wbuf is not None:
+                r.wbuf.release()
+            r.wbuf = r.f32(self.n)
+            r.wcap = self.n
+        na = self.absmax_host.size
+        if r.acap < na:
+            if r.ascratch is not None:
+                r.ascratch.release()
+            r.ascratch = r.f32(na)
+            r.acap = na
+        nc = self.code_host.size
+        if r.ccap < nc:
+            if r.cscratch is not None:
+                r.cscratch.release()
+            r.cscratch = r.f32(nc)
+            r.ccap = nc
+        cl.enqueue_copy(r.rt.queue, r.ascratch, self.absmax_host, is_blocking=True)
+        cl.enqueue_copy(r.rt.queue, r.cscratch, self.code_host, is_blocking=True)
+        r.kern(r.rt.queue, (self.n,), None, self.packed, r.ascratch, r.cscratch,
+               r.wbuf, np.int32(self.n), np.int32(self.blocksize))
+        if r.xcap < rows * K:
+            if r.xbuf is not None:
+                r.xbuf.release()
+            r.xbuf = r.f32(rows * K)
+            r.xcap = rows * K
+        if r.ocap < rows * N:
+            if r.obuf is not None:
+                r.obuf.release()
+            r.obuf = r.f32(rows * N)
+            r.ocap = rows * N
         x_np = np.ascontiguousarray(x.detach().reshape(rows, K).numpy().astype(np.float32))
-        cl.enqueue_copy(r.rt.queue, xbuf, x_np, is_blocking=True)
+        cl.enqueue_copy(r.rt.queue, r.xbuf, x_np, is_blocking=True)
         r.rt.queue.finish()
         rc = r.bl.CLBlastSgemm(
             ROW, NO, YES, rows, N, K, 1.0,
-            ctypes.c_void_p(int(xbuf.int_ptr)), 0, K,
-            ctypes.c_void_p(int(wbuf.int_ptr)), 0, K,
+            ctypes.c_void_p(int(r.xbuf.int_ptr)), 0, K,
+            ctypes.c_void_p(int(r.wbuf.int_ptr)), 0, K,
             0.0,
-            ctypes.c_void_p(int(obuf.int_ptr)), 0, N,
+            ctypes.c_void_p(int(r.obuf.int_ptr)), 0, N,
             ctypes.byref(r.qp), None)
         if rc != 0:
             raise RuntimeError('Sgemm rc=%d' % rc)
         out = np.empty((rows, N), dtype=np.float32)
-        cl.enqueue_copy(r.rt.queue, out, obuf, is_blocking=True)
+        cl.enqueue_copy(r.rt.queue, out, r.obuf, is_blocking=True)
         r.rt.queue.finish()
-        wbuf.release(); xbuf.release(); obuf.release()
         return torch.from_numpy(out).reshape(*org[:-1], N)
 
 
