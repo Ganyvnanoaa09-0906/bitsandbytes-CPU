@@ -89,5 +89,23 @@ with torch.no_grad():
                         torch.from_numpy(h['W1'].astype(np.float32)),
                         torch.from_numpy(h['W3'].astype(np.float32)),
                         torch.from_numpy(h['W2'].astype(np.float32)))
-err = float(np.abs(out.astype(np.float32) - ref.numpy()).max())
+# per-layer error growth: compare every checkpoint slice with the CPU chain
+refs = []
+cur_ref = torch.from_numpy(x.astype(np.float32))
+errs = []
+for i in range(N):
+    h = hosts[i]
+    cpu = cpu_layer(cur_ref, torch.from_numpy(h['WQKV'].astype(np.float32)),
+                    torch.from_numpy(h['WO'].astype(np.float32)),
+                    torch.from_numpy(h['W1'].astype(np.float32)),
+                    torch.from_numpy(h['W3'].astype(np.float32)),
+                    torch.from_numpy(h['W2'].astype(np.float32)))
+    got = np.empty((M, MD), dtype=np.float16)
+    A.cl.enqueue_copy(A.queue, got, ckpt, src_offset=(i + 1) * ROW)
+    A.queue.finish()
+    e = float(np.abs(got.astype(np.float32) - cpu.numpy()).max())
+    errs.append(e)
+    print('layer %2d maxerr %.4e rel %.4e' % (i, e, e / (float(np.abs(cpu.numpy()).max()) + 1e-9)), flush=True)
+    cur_ref = cpu
+err = errs[-1]
 print('N=%d fwd %.2fs bwd %.2fs final maxerr %.3e' % (N, t_fwd, t_bwd, err), flush=True)
