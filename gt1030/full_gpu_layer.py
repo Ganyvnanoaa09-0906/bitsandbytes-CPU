@@ -156,7 +156,7 @@ def main() -> int:
         'dy_mlp': hbuf(M, FF), 'da': hbuf(M, FF), 'db': hbuf(M, FF),
         'dWqkv': hbuf(MD, WROW), 'dWo': hbuf(MD, MD),
         'dW1': hbuf(MD, FF), 'dW3': hbuf(MD, FF), 'dW2': hbuf(FF, MD),
-        'dx1_mlp': hbuf(M, MD), 'dx_attn': hbuf(M, MD),
+        'dx1_mlp': hbuf(M, MD), 'dx_attn': hbuf(M, MD), 'dx': hbuf(M, MD),
     }
 
     def forward():
@@ -226,6 +226,8 @@ def main() -> int:
                            b['ss'], b['s'], np.int32(M), np.int32(MD))
         K['rms_bwd_apply'](A.queue, (M * MD,), (256,), b['x'], b['dh1'], b['wnorm'],
                            b['ss'], b['s'], b['dx_attn'], np.int32(M), np.int32(MD))
+        K['add_vec'](A.queue, (M * MD,), (256,), b['dattn'], b['dx_attn'], b['dx'],
+                     np.int32(M * MD))
 
     def opt():
         for grad, wdict, dims in ((b['dWqkv'], WQKV, (MD, WROW)), (b['dWo'], WO, (MD, MD)),
@@ -270,6 +272,57 @@ def main() -> int:
     err = float(np.abs(out.astype(np.float32) - x2r.numpy()).max())
     print('integrated layer forward: max abs err %.3e (relative %.3e)'
           % (err, err / (float(np.abs(x2r.numpy()).max()) + 1e-9)))
+    # ---- gradient check: one layer backward vs torch autograd ----
+    def torch_layer(x_np, wqkv_np, wo_np, w1_np, w3_np, w2_np, wn_np, dout_np):
+        xt = torch.from_numpy(x_np.astype(np.float32)).requires_grad_(True)
+        wq = torch.from_numpy(wqkv_np.astype(np.float32)).requires_grad_(True)
+        wot = torch.from_numpy(wo_np.astype(np.float32)).requires_grad_(True)
+        w1t = torch.from_numpy(w1_np.astype(np.float32)).requires_grad_(True)
+        w3t = torch.from_numpy(w3_np.astype(np.float32)).requires_grad_(True)
+        w2t = torch.from_numpy(w2_np.astype(np.float32)).requires_grad_(True)
+        wn = torch.from_numpy(wn_np.astype(np.float32))
+        h1r = xt * torch.rsqrt(xt.pow(2).mean(-1, keepdim=True) + 1e-6) * wn
+        qkvr = h1r @ wq
+        orow = torch.zeros(M, MD)
+        for bi in range(B):
+            for hh in range(NH):
+                rows = slice(bi * T, (bi + 1) * T)
+                q = qkvr[rows, hh * HD:(hh + 1) * HD]
+                kw = hh // 2
+                k = qkvr[rows, MD + kw * HD:MD + (kw + 1) * HD]
+                v = qkvr[rows, MD + NKV * HD + kw * HD:MD + NKV * HD + (kw + 1) * HD]
+                s = (q @ k.T) * scale
+                mask = torch.tril(torch.ones(T, T, dtype=torch.bool))
+                s = s.masked_fill(~mask, float('-inf'))
+                orow[rows, hh * HD:(hh + 1) * HD] = torch.softmax(s, -1) @ v
+        x1r = xt + orow @ wot
+        h2r = x1r * torch.rsqrt(x1r.pow(2).mean(-1, keepdim=True) + 1e-6) * wn
+        x2r = x1r + (torch.nn.functional.silu(h2r @ w1t) * (h2r @ w3t)) @ w2t
+        (x2r * torch.from_numpy(dout_np.astype(np.float32))).sum().backward()
+        return dict(dx=xt.grad, dWqkv=wq.grad, dWo=wot.grad, dW1=w1t.grad,
+                    dW3=w3t.grad, dW2=w2t.grad)
+
+    def download(buf_, shape):
+        out_ = np.empty(shape, dtype=np.float16)
+        cl.enqueue_copy(A.queue, out_, buf_)
+        A.queue.finish()
+        return out_.astype(np.float32)
+
+    ref_g = torch_layer(x, WQKV['host'], WO['host'], W1['host'], W3['host'],
+                        W2['host'], wnorm, dout)
+    # run a fresh backward for the check (do not let the check's forward alter weights)
+    forward(); backward(); A.queue.finish()
+    gpu_g = {'dx': download(b['dx'], (M, MD)),
+             'dWqkv': download(b['dWqkv'], (MD, WROW)),
+             'dWo': download(b['dWo'], (MD, MD)),
+             'dW1': download(b['dW1'], (MD, FF)),
+             'dW3': download(b['dW3'], (MD, FF)),
+             'dW2': download(b['dW2'], (FF, MD))}
+    print('gradient check (max abs / rel vs torch fp32):')
+    for k, v in gpu_g.items():
+        r = ref_g[k].detach().numpy()
+        denom = float(np.abs(r).max()) + 1e-12
+        print('  %-6s abs %.3e  rel %.3e' % (k, np.abs(v - r).max(), np.abs(v - r).max() / denom))
 
     def phase(fn, n=6):
         ts = []
