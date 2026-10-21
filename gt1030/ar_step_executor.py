@@ -55,7 +55,7 @@ bl.CLBlastHgemm.argtypes = [
     ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)]
 QP = ctypes.c_void_p(int(queue.int_ptr))
 
-STATS = {'h2d': 0.0, 'gemm': 0.0, 'd2h': 0.0, 'calls': 0}
+STATS = {'h2d': 0.0, 'w_up': 0.0, 'a_up': 0.0, 'gemm': 0.0, 'd2h': 0.0, 'calls': 0}
 
 # Buffer pools keyed by (role, nbytes). The naive version created a cl.Buffer and called
 # queue.finish three times per GEMM -- measured at 9-11 ms per call where the kernel alone is
@@ -73,11 +73,36 @@ def _buf(role: str, nbytes: int) -> cl.Buffer:
     return b
 
 
+def _pinned_stage(role: str, nbytes: int) -> cl.Buffer:
+    """Pinned (ALLOC_HOST_PTR) staging buffer, keyed by role. Caller must not reuse
+    the same role concurrently with an outstanding device copy."""
+    key = ('stage', role, nbytes)
+    b = _POOL.get(key)
+    if b is None:
+        b = cl.Buffer(ctx, mf.ALLOC_HOST_PTR | mf.READ_WRITE, nbytes)
+        _POOL[key] = b
+    return b
+
+
+def _pinned_upload(role: str, arr, nbytes: int) -> cl.Buffer:
+    """Upload a host numpy array through pinned memory: map -> memcpy -> unmap -> D2D copy."""
+    stage = _pinned_stage(role, nbytes)
+    mapped, _ev = cl.enqueue_map_buffer(
+        queue, stage, cl.map_flags.WRITE, 0, arr.shape, arr.dtype, order='C', is_blocking=True)
+    np.copyto(mapped, arr)
+    mapped.base.release()
+    dev = _buf(role, nbytes)
+    cl.enqueue_copy(queue, dev, stage)
+    return dev
+
+
 def _up(role: str, np_fp16, nbytes: int) -> cl.Buffer:
     t0 = time.perf_counter()
     dev = _buf(role, nbytes)
     cl.enqueue_copy(queue, dev, np_fp16)
-    STATS['h2d'] += time.perf_counter() - t0
+    dt = time.perf_counter() - t0
+    STATS['h2d'] += dt
+    STATS['a_up'] += dt
     return dev
 
 
@@ -135,8 +160,14 @@ class IgpuLinear(nn.Module):
         if self._w_dev is None:
             self._w_dev = cl.Buffer(ctx, mf.READ_ONLY, self._w.nbytes)
             self._wt_dev = cl.Buffer(ctx, mf.READ_ONLY, self._wt.nbytes)
+            self._w_stage = cl.Buffer(ctx, mf.ALLOC_HOST_PTR | mf.READ_WRITE, self._w.nbytes)
+            self._wt_stage = cl.Buffer(ctx, mf.ALLOC_HOST_PTR | mf.READ_WRITE, self._wt.nbytes)
+        t0 = time.perf_counter()
         cl.enqueue_copy(queue, self._w_dev, self._w)
         cl.enqueue_copy(queue, self._wt_dev, self._wt)
+        dt = time.perf_counter() - t0
+        STATS['h2d'] += dt
+        STATS['w_up'] += dt
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         if self._dev is None:
@@ -365,9 +396,9 @@ def main() -> int:
     for s in range(STEPS):
         for k in STATS:
             STATS[k] = 0.0 if k != 'calls' else 0
+        t0 = time.perf_counter()
         for lin in ig.igpu_linears():      # sync fp32 masters -> fp16 device copies (once per step)
             lin.refresh()
-        t0 = time.perf_counter()
         opt.zero_grad()
         l = loss_of(ig(inp), tgt)
         l.backward()
@@ -381,8 +412,9 @@ def main() -> int:
     flops = 364e9
     print()
     print('whole-step time (median of %d, 2 warmup): %.3f s' % (STEPS - 2, med))
-    print('  breakdown last step: H2D %.1f ms  GEMM %.1f ms  D2H %.1f ms  (%d GEMM calls)'
-          % (STATS['h2d'] * 1e3, STATS['gemm'] * 1e3, STATS['d2h'] * 1e3, STATS['calls']))
+    print('  breakdown last step: H2D %.1f ms (weights %.1f, activations %.1f)  GEMM+D2H %.1f ms  (%d GEMM calls)'
+          % (STATS['h2d'] * 1e3, STATS['w_up'] * 1e3, STATS['a_up'] * 1e3,
+             STATS['gemm'] * 1e3, STATS['calls']))
     print('effective throughput: %.0f GFLOPS  (GT 1030 reference 0.594 s -> fraction %.2fx)'
           % (flops / med / 1e9, 0.594 / med))
     print('CPU baseline last loss %.4f vs reference %.4f' % (losses[-1], ref_losses[-1]))
