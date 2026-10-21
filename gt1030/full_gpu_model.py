@@ -38,7 +38,11 @@ def buf(nb):
 
 
 def upload(a):
-    return cl.Buffer(A.ctx, A.mf.READ_WRITE | A.mf.COPY_HOST_PTR, hostbuf=a)
+    # Explicit copy instead of COPY_HOST_PTR: allocating many COPY_HOST_PTR buffers
+    # was measured to corrupt previously computed buffers on this driver.
+    b = cl.Buffer(A.ctx, A.mf.READ_WRITE, a.nbytes)
+    cl.enqueue_copy(A.queue, b, a)
+    return b
 
 
 class Layer:
