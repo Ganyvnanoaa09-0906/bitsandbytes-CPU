@@ -92,6 +92,14 @@ print()
 print('SGEMM GEMM calls/step: %d' % sum(c for *_x, c in schedule))
 print('SGEMM FLOPs/step    : %.1f GFLOP' % (step_flops / 1e9))
 print('SGEMM GEMM phase    : %.3f s  (effective %.0f GFLOPS)' % (total, step_flops / total / 1e9))
+fwd_labels = [x for x in schedule if x[0].startswith('fwd')]
+bwd_labels = [x for x in schedule if x[0].startswith('bwd')]
+attn_labels = [x for x in schedule if 'attn' in x[0]]
+def subtotal(labels):
+    return sum(per_shape[(m,n,k)]*c for _l,m,n,k,c in labels)
+print('SGEMM fwd  : %.3f s' % subtotal(fwd_labels))
+print('SGEMM bwd  : %.3f s' % subtotal(bwd_labels))
+print('SGEMM attn : %.3f s' % subtotal(attn_labels))
 print('fraction of 0.594 s : %.2fx' % (0.594 / total))
 print('whole-step rough    : %.2f s (GEMM + ~0.1-0.3s CPU phase + overhead)' % (total + 0.2))
 print('vs CPU 3.56s        : %.2fx' % (3.56 / (total + 0.2)))
