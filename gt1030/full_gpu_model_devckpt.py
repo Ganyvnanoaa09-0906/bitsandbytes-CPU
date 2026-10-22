@@ -21,6 +21,17 @@ from gt1030.debug_full_gpu_model import cpu_layer  # noqa: E402
 
 M, MD, FF, WROW = FM.M, FM.MD, FM.FF, FM.WROW
 A = L.A
+import os as _os
+_ov = _os.environ.get('AR_OVERRIDE', '')
+if _ov:
+    _pairs = [(k.strip(), int(v)) for k, v in (x.split('=') for x in _ov.split(','))]
+    _names = (__import__('ctypes').c_char_p * len(_pairs))(*[k.encode() for k, _ in _pairs])
+    _vals = (__import__('ctypes').c_size_t * len(_pairs))(*[v for _, v in _pairs])
+    _bl = __import__('ctypes').CDLL(r'D:\work\clblast_build\CLBlast-master\build\clblast.dll')
+    _bl.CLBlastOverrideParameters.restype = __import__('ctypes').c_int
+    _bl.CLBlastOverrideParameters.argtypes = [__import__('ctypes').c_void_p, __import__('ctypes').c_char_p, __import__('ctypes').c_int, __import__('ctypes').c_size_t, __import__('ctypes').POINTER(__import__('ctypes').c_char_p), __import__('ctypes').POINTER(__import__('ctypes').c_size_t)]
+    _rc = _bl.CLBlastOverrideParameters(__import__('ctypes').c_void_p(int(A.ctx.devices[0].int_ptr)), b'Xgemm', 16, len(_pairs), _names, _vals)
+    print('override rc=%d' % _rc, flush=True)
 rng = np.random.default_rng(0)
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 10
 
@@ -75,6 +86,30 @@ for i in reversed(range(N)):
     A.cl.enqueue_copy(A.queue, grad_buf, dx, byte_count=ROW)
 A.queue.finish()
 t_bwd = time.perf_counter() - t1
+
+# --- warm steady pass (CLBlast first-call tuning excluded) ---
+A.cl.enqueue_copy(A.queue, grad_buf, dout)
+A.queue.finish()
+t2 = time.perf_counter()
+for i in range(N):
+    bind(hosts[i])
+    A.cl.enqueue_copy(A.queue, input_buf, ckpt, byte_count=ROW, src_offset=i * ROW, dst_offset=0)
+    out = scratch.forward(input_buf)
+    A.cl.enqueue_copy(A.queue, ckpt, out, byte_count=ROW, src_offset=0, dst_offset=(i + 1) * ROW)
+A.queue.finish()
+t_fwd2 = time.perf_counter() - t2
+A.cl.enqueue_copy(A.queue, grad_buf, dout)
+A.queue.finish()
+t3 = time.perf_counter()
+for i in reversed(range(N)):
+    bind(hosts[i])
+    A.cl.enqueue_copy(A.queue, input_buf, ckpt, byte_count=ROW, src_offset=i * ROW, dst_offset=0)
+    scratch.forward(input_buf)
+    dx = scratch.backward(grad_buf)
+    A.cl.enqueue_copy(A.queue, grad_buf, dx, byte_count=ROW)
+A.queue.finish()
+t_bwd2 = time.perf_counter() - t3
+print('N=%d steady fwd %.3fs bwd %.3fs total %.3fs' % (N, t_fwd2, t_bwd2, t_fwd2+t_bwd2), flush=True)
 
 # final output vs CPU chain
 out = np.empty((M, MD), dtype=np.float16)

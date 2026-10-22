@@ -105,6 +105,23 @@ def hgemm_tn(a, b, c, m, n, k, beta=0.0):
 
 
 def main() -> int:
+    import os
+    _ov = os.environ.get('AR_OVERRIDE', '')
+    if _ov:
+        pairs = []
+        for item in _ov.split(','):
+            k, v = item.split('=')
+            pairs.append((k.strip(), int(v)))
+        names = (ctypes.c_char_p * len(pairs))(*[k.encode() for k, _ in pairs])
+        vals = (ctypes.c_size_t * len(pairs))(*[v for _, v in pairs])
+        A.bl.CLBlastOverrideParameters.restype = ctypes.c_int
+        A.bl.CLBlastOverrideParameters.argtypes = [
+            ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int,
+            ctypes.c_size_t, ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_size_t)]
+        rc = A.bl.CLBlastOverrideParameters(ctypes.c_void_p(int(A.ctx.devices[0].int_ptr)),
+                                           b'Xgemm', 16, len(pairs), names, vals)
+        print('override rc=%d %s' % (rc, _ov), flush=True)
+
     rng = np.random.default_rng(0)
     prog = cl.Program(A.ctx, A.KERNELS + V2.KERNELS + EXTRA_KERNELS).build(
         options=['-cl-mad-enable', '-cl-fast-relaxed-math'])

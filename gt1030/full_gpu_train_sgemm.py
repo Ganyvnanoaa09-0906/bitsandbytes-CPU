@@ -184,7 +184,7 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
 
     losses_gpu, losses_cpu = [], []
     per_step = []
-    tm = {'cpu_ref': 0.0, 'head': 0.0, 'opt': 0.0, 'dev_opt': 0.0, 'norm_host': 0.0, 'emb_head': 0.0, 'upload': 0.0, 'fwd': 0.0, 'bwd': 0.0, 'fwd_enq': 0.0, 'fwd_wait': 0.0, 'bwd_enq': 0.0, 'bwd_wait': 0.0}
+    tm = {'cpu_ref': 0.0, 'head': 0.0, 'opt': 0.0, 'dev_opt': 0.0, 'norm_host': 0.0, 'emb_head': 0.0, 'upload': 0.0, 'fwd': 0.0, 'bwd': 0.0, 'fwd_sync': 0.0, 'bwd_sync': 0.0, 'fwd_enq': 0.0, 'fwd_wait': 0.0, 'bwd_enq': 0.0, 'bwd_wait': 0.0}
     t0 = time.perf_counter()
     for step in range(1, int(__import__('os').environ.get('STEPS', '50')) + 1):
         tstep = time.perf_counter()
@@ -228,6 +228,9 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
                 print('layer0 maxerr %.3e rel %.3e' % (
                     float(np.abs(h0 - cref.numpy()).max()),
                     float(np.abs(h0 - cref.numpy()).max()/(np.abs(cref.numpy()).max()+1e-9))), flush=True)
+        if __import__('os').environ.get('PHASE_SYNC') == '1':
+            A.queue.finish()
+            tm['fwd_sync'] += time.perf_counter() - tf
         tm['fwd'] += time.perf_counter() - tf
         tf2 = time.perf_counter()
         hidden = np.empty((ROWS, MD), dtype=np.float32)
@@ -286,6 +289,9 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
                     adamw(hosts[i][lname], g, states[i][lname], t=step)
             tm['norm_host'] += time.perf_counter() - tn
             tm['opt'] += time.perf_counter() - top
+        if __import__('os').environ.get('PHASE_SYNC') == '1':
+            A.queue.finish()
+            tm['bwd_sync'] += time.perf_counter() - tb
         tm['bwd'] += time.perf_counter() - tb
         tb2 = time.perf_counter()
         # embedding grad: dx at input buffer
@@ -322,6 +328,7 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
         tm['emb_head']/len(losses_gpu)*1e3,
         (tot - tm['cpu_ref'] - tm['head'] - tm['opt'] - tm['emb_head'])/len(losses_gpu)*1e3, tot/len(losses_gpu)*1e3))
     print('upload_weights %.1f ms/step' % (tm['upload']/len(losses_gpu)*1e3))
+    print('phase_sync fwd %.1f bwd %.1f ms/step' % (tm['fwd_sync']/len(losses_gpu)*1e3, tm['bwd_sync']/len(losses_gpu)*1e3))
     print('fwd %.1f ms/step bwd %.1f ms/step' % (tm['fwd']/len(losses_gpu)*1e3, tm['bwd']/len(losses_gpu)*1e3))
     print('enq/wait ms/step: fwd_enq %.1f fwd_wait %.1f bwd_enq %.1f bwd_wait %.1f' % (tm['fwd_enq']/len(losses_gpu)*1e3, tm['fwd_wait']/len(losses_gpu)*1e3, tm['bwd_enq']/len(losses_gpu)*1e3, tm['bwd_wait']/len(losses_gpu)*1e3))
     print('RSS start %.0f MB end %.0f MB' % (rss0, psutil.Process().memory_info().rss / 1e6))
