@@ -25,11 +25,24 @@ B, T, NH, NKV, HD, BH = L.B, L.T, L.NH, L.NKV, L.HD, L.BH
 scale = L.scale
 A = L.A
 
-prog = cl.Program(A.ctx, A.KERNELS.replace('half','float') + L.V2.KERNELS.replace('half','float') + L.EXTRA_KERNELS.replace('half','float')).build(
+RMS_DW = r"""
+__kernel void rms_dw(__global const float* x, __global const float* dh,
+                     __global const float* ss, __global float* dw, int rows, int d) {
+    int i = get_global_id(0);
+    if (i >= d) return;
+    float acc = 0.f;
+    for (int r = 0; r < rows; ++r) {
+        float sig = sqrt(ss[r] + 1e-6f);
+        acc += dh[r*d + i] * x[r*d + i] / sig;
+    }
+    dw[i] = acc;
+}
+"""
+prog = cl.Program(A.ctx, A.KERNELS.replace('half','float') + L.V2.KERNELS.replace('half','float') + L.EXTRA_KERNELS.replace('half','float') + RMS_DW).build(
     options=['-cl-mad-enable', '-cl-fast-relaxed-math'])
 NAMES = ('split_q', 'split_kv', 'softmax_causal', 'softmax_bwd_causal', 'merge_o',
          'split_dout', 'merge_dqkv', 'rms_stats', 'rms_apply', 'rms_bwd_stats',
-         'rms_bwd_apply', 'silu_gate', 'silu_bwd', 'add_vec', 'adamw_single')
+         'rms_bwd_apply', 'silu_gate', 'silu_bwd', 'add_vec', 'adamw_single', 'rms_dw')
 K = {n: cl.Kernel(prog, n) for n in NAMES}
 
 
@@ -93,7 +106,10 @@ class Layer:
         self.W3 = self._w(rng, (MD, FF))
         self.W2 = self._w(rng, (FF, MD))
         self.b = {
-            'x': None, 'dout': None, 'wnorm': upload(np.ones(MD, dtype=np.float32)),
+            'x': None, 'dout': None,
+            'wnorm1': upload(np.ones(MD, dtype=np.float32)),
+            'wnorm2': upload(np.ones(MD, dtype=np.float32)),
+            'dw1': buf(MD * 4), 'dw2': buf(MD * 4),
             'wqkv': self.WQKV['dev'], 'wo': self.WO['dev'],
             'w1': self.W1['dev'], 'w3': self.W3['dev'], 'w2': self.W2['dev'],
             'h1': buf(M * MD * 4), 'qkv': buf(M * WROW * 4),
@@ -125,7 +141,7 @@ class Layer:
         b = self.b
         b['x'] = x_in
         K['rms_stats'](A.queue, (M,), (64,), b['x'], b['ss'], np.int32(M), np.int32(MD))
-        K['rms_apply'](A.queue, (M * MD,), (256,), b['x'], b['wnorm'], b['ss'], b['h1'],
+        K['rms_apply'](A.queue, (M * MD,), (256,), b['x'], b['wnorm1'], b['ss'], b['h1'],
                        np.int32(M), np.int32(MD))
         hgemm_nn(b['h1'], b['wqkv'], b['qkv'], M, WROW, MD)
         K['split_q'](A.queue, (BH * T * HD,), (256,), b['qkv'], b['Q'],
@@ -143,7 +159,7 @@ class Layer:
         hgemm_nn(b['o_tok'], b['wo'], b['attn'], M, MD, MD)
         K['add_vec'](A.queue, (M * MD,), (256,), b['x'], b['attn'], b['x1'], np.int32(M * MD))
         K['rms_stats'](A.queue, (M,), (64,), b['x1'], b['ss'], np.int32(M), np.int32(MD))
-        K['rms_apply'](A.queue, (M * MD,), (256,), b['x1'], b['wnorm'], b['ss'], b['h2'],
+        K['rms_apply'](A.queue, (M * MD,), (256,), b['x1'], b['wnorm2'], b['ss'], b['h2'],
                        np.int32(M), np.int32(MD))
         hgemm_nn(b['h2'], b['w1'], b['a'], M, FF, MD)
         hgemm_nn(b['h2'], b['w3'], b['bb'], M, FF, MD)
@@ -163,9 +179,10 @@ class Layer:
         hgemm_tn(b['h2'], b['db'], b['dW3'], MD, FF, M)
         hgemm_nt(b['da'], b['w1'], b['dh2'], M, MD, FF)
         hgemm_nt(b['db'], b['w3'], b['dh2'], M, MD, FF, beta=1.0)
-        K['rms_bwd_stats'](A.queue, (M,), (64,), b['x1'], b['dh2'], b['wnorm'],
+        K['rms_bwd_stats'](A.queue, (M,), (64,), b['x1'], b['dh2'], b['wnorm2'],
                            b['ss'], b['s'], np.int32(M), np.int32(MD))
-        K['rms_bwd_apply'](A.queue, (M * MD,), (256,), b['x1'], b['dh2'], b['wnorm'],
+        K['rms_dw'](A.queue, (MD,), (64,), b['x1'], b['dh2'], b['ss'], b['dw2'], np.int32(M), np.int32(MD))
+        K['rms_bwd_apply'](A.queue, (M * MD,), (256,), b['x1'], b['dh2'], b['wnorm2'],
                            b['ss'], b['s'], b['dx1_mlp'], np.int32(M), np.int32(MD))
         K['add_vec'](A.queue, (M * MD,), (256,), b['dout'], b['dx1_mlp'], b['dattn'],
                      np.int32(M * MD))
@@ -187,9 +204,10 @@ class Layer:
                         np.int32(T), np.int32(HD), np.int32(NH), np.int32(NKV), np.int32(B))
         hgemm_tn(b['h1'], b['dqkv'], b['dWqkv'], MD, WROW, M)
         hgemm_nt(b['dqkv'], b['wqkv'], b['dh1'], M, MD, WROW)
-        K['rms_bwd_stats'](A.queue, (M,), (64,), b['x'], b['dh1'], b['wnorm'],
+        K['rms_bwd_stats'](A.queue, (M,), (64,), b['x'], b['dh1'], b['wnorm1'],
                            b['ss'], b['s'], np.int32(M), np.int32(MD))
-        K['rms_bwd_apply'](A.queue, (M * MD,), (256,), b['x'], b['dh1'], b['wnorm'],
+        K['rms_dw'](A.queue, (MD,), (64,), b['x'], b['dh1'], b['ss'], b['dw1'], np.int32(M), np.int32(MD))
+        K['rms_bwd_apply'](A.queue, (M * MD,), (256,), b['x'], b['dh1'], b['wnorm1'],
                            b['ss'], b['s'], b['dx_attn'], np.int32(M), np.int32(MD))
         K['add_vec'](A.queue, (M * MD,), (256,), b['dattn'], b['dx_attn'], b['dx'],
                      np.int32(M * MD))

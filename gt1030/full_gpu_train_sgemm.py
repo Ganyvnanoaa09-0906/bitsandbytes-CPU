@@ -76,11 +76,6 @@ def main():
     rng = np.random.default_rng(0)
     torch.manual_seed(0)
     ref = CpuRef()
-    # The device layer currently uses one shared ones vector for both RMSNorm weights
-    # (it does not yet upload per-layer norm weights). Freeze the CPU reference's layer
-    # norms to ones so the 50-step comparison isolates the GEMM/optimizer path.
-    for b in ref.layers:
-        b.ln1.requires_grad_(False); b.ln2.requires_grad_(False)
     # host fp16 transformer weights (float32 copies for CPU reference are the same values)
     hosts = []
     with torch.no_grad():
@@ -93,6 +88,8 @@ def main():
                 W1=np.ascontiguousarray(b.w1.weight.T.detach().numpy().astype(np.float32)),
                 W3=np.ascontiguousarray(b.w3.weight.T.detach().numpy().astype(np.float32)),
                 W2=np.ascontiguousarray(b.w2.weight.T.detach().numpy().astype(np.float32)),
+                LN1=np.ascontiguousarray(b.ln1.detach().numpy().astype(np.float32)),
+                LN2=np.ascontiguousarray(b.ln2.detach().numpy().astype(np.float32)),
             ))
         emb = ref.emb.weight.detach().numpy().astype(np.float32)
         norm = ref.norm.detach().numpy().astype(np.float32)
@@ -123,6 +120,8 @@ def main():
             A.cl.enqueue_copy(A.queue, dev.__dict__[k]['dev'], h[k])
         dev.b['wqkv'] = dev.WQKV['dev']; dev.b['wo'] = dev.WO['dev']
         dev.b['w1'] = dev.W1['dev']; dev.b['w3'] = dev.W3['dev']; dev.b['w2'] = dev.W2['dev']
+        A.cl.enqueue_copy(A.queue, dev.b['wnorm1'], h['LN1'])
+        A.cl.enqueue_copy(A.queue, dev.b['wnorm2'], h['LN2'])
 
     def adamw(param, grad, state, lr=1e-4, b1=0.9, b2=0.999, eps=1e-8, wd=0.0, t=1):
         m, v = state
@@ -196,6 +195,11 @@ def main():
                 A.cl.enqueue_copy(A.queue, g, dev.b[dn])
                 A.queue.finish()
                 adamw(hosts[i][k], g, states[i][k], t=step)
+            for lname, dbuf in (('LN1', 'dw1'), ('LN2', 'dw2')):
+                g = np.empty_like(hosts[i][lname])
+                A.cl.enqueue_copy(A.queue, g, dev.b[dbuf])
+                A.queue.finish()
+                adamw(hosts[i][lname], g, states[i][lname], t=step)
         # embedding grad: dx at input buffer
         dxin = np.empty((ROWS, MD), dtype=np.float32)
         A.cl.enqueue_copy(A.queue, dxin, grad_buf)
