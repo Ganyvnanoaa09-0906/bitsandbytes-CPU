@@ -105,6 +105,7 @@ __kernel void adamw_h(__global float* master, __global float* mom, __global floa
         layout.append(d)
     master_host = np.concatenate([h[k].reshape(-1) for h in hosts for k in keys])
     master_buf = FM.buf(total * 4); mom_buf = FM.buf(total * 4); vel_buf = FM.buf(total * 4)
+    GRAD_ARENA = FM.buf(total * 2)
     A.cl.enqueue_copy(A.queue, master_buf, master_host)
     A.cl.enqueue_copy(A.queue, mom_buf, np.zeros(total, dtype=np.float32))
     A.cl.enqueue_copy(A.queue, vel_buf, np.zeros(total, dtype=np.float32))
@@ -126,6 +127,24 @@ __kernel void h2f(__global const half* src, __global float* dst, int n) {
     int i = get_global_id(0); if (i >= n) return; dst[i] = (float)src[i];
 }
 """
+    HV_KERNEL = r"""
+__kernel void adamw_hv(__global float* master, __global float* mom, __global float* vel,
+                       __global const half* grad, int off, int n,
+                       float lr, float b1, float b2, float eps, float wd, float bc1, float bc2) {
+    int i = (int)get_global_id(0) * 4;
+    if (i >= n) return;
+    int j = off + i;
+    float4 g = convert_float4(vload4(0, grad + i));
+    float4 m = b1 * vload4(0, mom + j) + (1.f - b1) * g;
+    float4 v = b2 * vload4(0, vel + j) + (1.f - b2) * g * g;
+    float4 w = vload4(0, master + j);
+    vstore4(m, 0, mom + j); vstore4(v, 0, vel + j);
+    w -= lr * (m / bc1) / (sqrt(v / bc2) + eps) + lr * wd * w;
+    vstore4(w, 0, master + j);
+}
+"""
+    prog_hv = cl.Program(A.ctx, HV_KERNEL).build(options=['-cl-mad-enable'])
+    K_HV = cl.Kernel(prog_hv, 'adamw_hv')
     prog_h = cl.Program(A.ctx, H2F_KERNEL).build(options=['-cl-mad-enable'])
     K_H2F = cl.Kernel(prog_h, 'h2f')
     prog_f = cl.Program(A.ctx, FOPT_KERNEL).build(options=['-cl-mad-enable'])
@@ -146,6 +165,7 @@ __kernel void h2f(__global const half* src, __global float* dst, int n) {
     A.cl.enqueue_copy(A.queue, _W_BEFORE, dev.WQKV['dev'])
     A.queue.finish()
     losses_gpu, losses_cpu = [], []
+    _opt_ms = 0.0
     wall0 = time.perf_counter()
     for step in range(1, steps + 1):
         tstep = time.perf_counter()
@@ -196,14 +216,21 @@ __kernel void h2f(__global const half* src, __global float* dst, int n) {
             dev.forward(input_buf)
             dx = dev.backward(grad_buf)
             A.cl.enqueue_copy(A.queue, grad_buf, dx, byte_count=ROWB)
-            bc1 = 1.0 - 0.9 ** step; bc2 = 1.0 - 0.999 ** step
             for k, dn in (('WQKV', 'dWqkv'), ('WO', 'dWo'), ('W1', 'dW1'), ('W3', 'dW3'), ('W2', 'dW2')):
                 off, n = layout[i][k]
-                K_H2F(A.queue, ((n + 255) // 256 * 256,), (256,), dev.b[dn], G_F32, np.int32(n))
-                K_FOPT(A.queue, ((n + 255) // 256 * 256,), (256,), master_buf, mom_buf, vel_buf,
-                      G_F32, np.int32(off), np.int32(n), np.float32(1e-4),
-                      np.float32(0.9), np.float32(0.999), np.float32(1e-8), np.float32(0.0),
-                      np.float32(bc1), np.float32(bc2))
+                A.cl.enqueue_copy(A.queue, GRAD_ARENA, dev.b[dn], byte_count=n * 2, dst_offset=off * 2)
+        # one fused AdamW over the whole 33M parameter arena
+        bc1 = 1.0 - 0.9 ** step; bc2 = 1.0 - 0.999 ** step
+        if __import__('os').environ.get('OPT_SYNC') == '1':
+            A.queue.finish()
+        _to = time.perf_counter()
+        _n4 = (total + 3) // 4
+        K_HV(A.queue, (((_n4 + 255) // 256) * 256,), (256,), master_buf, mom_buf, vel_buf,
+             GRAD_ARENA, np.int32(0), np.int32(total), np.float32(1e-4),
+             np.float32(0.9), np.float32(0.999), np.float32(1e-8), np.float32(0.0),
+             np.float32(bc1), np.float32(bc2))
+        if __import__('os').environ.get('OPT_SYNC') == '1':
+            A.queue.finish(); _opt_ms += time.perf_counter() - _to
         dxin = np.empty((ROWS, MD), dtype=np.float16)
         A.cl.enqueue_copy(A.queue, dxin, grad_buf)
         A.queue.finish()
@@ -219,6 +246,7 @@ __kernel void h2f(__global const half* src, __global float* dst, int n) {
         if step % 1 == 0:
             print('step %2d loss_cpu %.6f loss_gpu %.6f diff %+.6f wall %.2fs' %
                   (step, losses_cpu[-1], losses_gpu[-1], losses_gpu[-1] - losses_cpu[-1], dt), flush=True)
+    print('OPT_MS_PER_STEP %.2f' % (_opt_ms / steps * 1e3))
     print('final loss diff %.6f (steps=%d) wall %.1fs' %
           (losses_gpu[-1] - losses_cpu[-1], steps, time.perf_counter() - wall0))
 
