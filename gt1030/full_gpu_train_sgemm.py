@@ -74,6 +74,8 @@ class CpuRef(nn.Module):
 
 def main():
     torch.set_num_threads(6)
+    import psutil
+    rss0 = psutil.Process().memory_info().rss / 1e6
     rng = np.random.default_rng(0)
     torch.manual_seed(0)
     ref = CpuRef()
@@ -170,7 +172,7 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
         param -= lr * (m / (1 - b1 ** t)) / (np.sqrt(v / (1 - b2 ** t)) + eps) + lr * wd * param
 
     losses_gpu, losses_cpu = [], []
-    tm = {'cpu_ref': 0.0, 'head': 0.0, 'opt': 0.0, 'dev_opt': 0.0, 'norm_host': 0.0, 'emb_head': 0.0}
+    tm = {'cpu_ref': 0.0, 'head': 0.0, 'opt': 0.0, 'dev_opt': 0.0, 'norm_host': 0.0, 'emb_head': 0.0, 'fwd': 0.0, 'bwd': 0.0}
     t0 = time.perf_counter()
     for step in range(1, int(__import__('os').environ.get('STEPS', '50')) + 1):
         idx = rng.integers(0, data.shape[0], B)
@@ -187,6 +189,7 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
 
         # device path: embedding (host) -> transformer (iGPU) -> final norm/head/CE (host)
         x0 = emb[inp.numpy().reshape(-1)]  # (ROWS, MD)
+        tf = time.perf_counter()
         A.cl.enqueue_copy(A.queue, ckpt, x0)
         for i in range(10):
             upload_weights(i)
@@ -206,6 +209,7 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
                 print('layer0 maxerr %.3e rel %.3e' % (
                     float(np.abs(h0 - cref.numpy()).max()),
                     float(np.abs(h0 - cref.numpy()).max()/(np.abs(cref.numpy()).max()+1e-9))), flush=True)
+        tm['fwd'] += time.perf_counter() - tf
         hidden = np.empty((ROWS, MD), dtype=np.float32)
         A.cl.enqueue_copy(A.queue, hidden, ckpt, src_offset=10 * ROWB)
         A.queue.finish()
@@ -227,6 +231,7 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
         ghead = head_t.grad.numpy().astype(np.float32)
         tm['head'] += time.perf_counter() - tcm
         A.cl.enqueue_copy(A.queue, grad_buf, dhidden)
+        tb = time.perf_counter()
         for i in reversed(range(10)):
             upload_weights(i)
             A.cl.enqueue_copy(A.queue, input_buf, ckpt, byte_count=ROWB,
@@ -255,6 +260,7 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
                 adamw(hosts[i][lname], g, states[i][lname], t=step)
             tm['norm_host'] += time.perf_counter() - tn
             tm['opt'] += time.perf_counter() - top
+        tm['bwd'] += time.perf_counter() - tb
         # embedding grad: dx at input buffer
         te = time.perf_counter()
         dxin = np.empty((ROWS, MD), dtype=np.float32)
@@ -279,6 +285,8 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
         tm['dev_opt']/len(losses_gpu)*1e3, tm['norm_host']/len(losses_gpu)*1e3,
         tm['emb_head']/len(losses_gpu)*1e3,
         (tot - tm['cpu_ref'] - tm['head'] - tm['opt'] - tm['emb_head'])/len(losses_gpu)*1e3, tot/len(losses_gpu)*1e3))
+    print('fwd %.1f ms/step bwd %.1f ms/step' % (tm['fwd']/len(losses_gpu)*1e3, tm['bwd']/len(losses_gpu)*1e3))
+    print('RSS start %.0f MB end %.0f MB' % (rss0, psutil.Process().memory_info().rss / 1e6))
     print('wall %.1fs' % (time.perf_counter() - t0))
 
 
