@@ -253,11 +253,12 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
             A.queue.finish()
             tm['dev_opt'] += time.perf_counter() - top
             tn = time.perf_counter()
-            for lname, dbuf in (('LN1', 'dw1'), ('LN2', 'dw2')):
-                g = np.empty_like(hosts[i][lname])
-                A.cl.enqueue_copy(A.queue, g, dev.b[dbuf])
-                A.queue.finish()
-                adamw(hosts[i][lname], g, states[i][lname], t=step)
+            if not __import__('os').environ.get('NO_NORM_HOST') == '1':
+                for lname, dbuf in (('LN1', 'dw1'), ('LN2', 'dw2')):
+                    g = np.empty_like(hosts[i][lname])
+                    A.cl.enqueue_copy(A.queue, g, dev.b[dbuf])
+                    A.queue.finish()
+                    adamw(hosts[i][lname], g, states[i][lname], t=step)
             tm['norm_host'] += time.perf_counter() - tn
             tm['opt'] += time.perf_counter() - top
         tm['bwd'] += time.perf_counter() - tb
