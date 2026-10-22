@@ -130,17 +130,20 @@ def main():
         param -= lr * (m / (1 - b1 ** t)) / (np.sqrt(v / (1 - b2 ** t)) + eps) + lr * wd * param
 
     losses_gpu, losses_cpu = [], []
+    tm = {'cpu_ref': 0.0, 'head': 0.0, 'opt': 0.0}
     t0 = time.perf_counter()
     for step in range(1, int(__import__('os').environ.get('STEPS', '50')) + 1):
         idx = rng.integers(0, data.shape[0], B)
         batch = torch.from_numpy(data[idx, :T + 1])
         inp, tgt = batch[:, :-1], batch[:, 1:]
+        tcr = time.perf_counter()
         # CPU reference step
         opt_ref.zero_grad()
         logits_cpu = ref(inp)
         loss_cpu = F.cross_entropy(logits_cpu, tgt.reshape(-1))
         loss_cpu.backward(); opt_ref.step()
         losses_cpu.append(float(loss_cpu))
+        tm['cpu_ref'] += time.perf_counter() - tcr
 
         # device path: embedding (host) -> transformer (iGPU) -> final norm/head/CE (host)
         x0 = emb[inp.numpy().reshape(-1)]  # (ROWS, MD)
@@ -171,6 +174,7 @@ def main():
             hc = ref.last_hidden.detach().numpy().reshape(ROWS, MD)
             print('hidden maxerr %.3e rel %.3e' % (float(np.abs(hidden - hc).max()),
                   float(np.abs(hidden - hc).max() / (np.abs(hc).max() + 1e-9))), flush=True)
+        tcm = time.perf_counter()
         ht = torch.from_numpy(hidden).requires_grad_(True)
         norm_t = torch.from_numpy(norm.copy()).requires_grad_(True)
         head_t = torch.from_numpy(head.copy()).requires_grad_(True)
@@ -181,6 +185,7 @@ def main():
         dhidden = ht.grad.numpy().astype(np.float32)
         gnorm = norm_t.grad.numpy().astype(np.float32)
         ghead = head_t.grad.numpy().astype(np.float32)
+        tm['head'] += time.perf_counter() - tcm
         A.cl.enqueue_copy(A.queue, grad_buf, dhidden)
         for i in reversed(range(10)):
             upload_weights(hosts[i])
@@ -190,6 +195,7 @@ def main():
             dx = dev.backward(grad_buf)
             A.cl.enqueue_copy(A.queue, grad_buf, dx, byte_count=ROWB)
             dnames = {'WQKV': 'dWqkv', 'WO': 'dWo', 'W1': 'dW1', 'W3': 'dW3', 'W2': 'dW2'}
+            top = time.perf_counter()
             for k, dn in dnames.items():
                 g = np.empty_like(hosts[i][k])
                 A.cl.enqueue_copy(A.queue, g, dev.b[dn])
@@ -200,6 +206,7 @@ def main():
                 A.cl.enqueue_copy(A.queue, g, dev.b[dbuf])
                 A.queue.finish()
                 adamw(hosts[i][lname], g, states[i][lname], t=step)
+            tm['opt'] += time.perf_counter() - top
         # embedding grad: dx at input buffer
         dxin = np.empty((ROWS, MD), dtype=np.float32)
         A.cl.enqueue_copy(A.queue, dxin, grad_buf)
@@ -210,11 +217,17 @@ def main():
         adamw(emb, gemb, st_emb, t=step)
         adamw(norm, gnorm, st_norm, t=step)
         adamw(head, ghead, st_head, t=step)
+        top2 = time.perf_counter()
         losses_gpu.append(float(loss_gpu))
         if step % 10 == 1 or step == 50:
             print('step %2d loss_cpu %.6f loss_gpu %.6f diff %+.6f' %
                   (step, losses_cpu[-1], losses_gpu[-1], losses_gpu[-1] - losses_cpu[-1]), flush=True)
     print('final loss diff %.6f (steps=%d)' % (losses_gpu[-1] - losses_cpu[-1], len(losses_gpu)))
+    tot = time.perf_counter() - t0
+    print('time/step ms: cpu_ref %.1f, head/loss/bwd %.1f, host_opt %.1f, other/device %.1f, wall %.1f' % (
+        tm['cpu_ref']/len(losses_gpu)*1e3, tm['head']/len(losses_gpu)*1e3,
+        tm['opt']/len(losses_gpu)*1e3,
+        (tot - tm['cpu_ref'] - tm['head'] - tm['opt'])/len(losses_gpu)*1e3, tot/len(losses_gpu)*1e3))
     print('wall %.1fs' % (time.perf_counter() - t0))
 
 
