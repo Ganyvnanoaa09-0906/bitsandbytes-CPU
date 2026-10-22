@@ -172,7 +172,7 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
         param -= lr * (m / (1 - b1 ** t)) / (np.sqrt(v / (1 - b2 ** t)) + eps) + lr * wd * param
 
     losses_gpu, losses_cpu = [], []
-    tm = {'cpu_ref': 0.0, 'head': 0.0, 'opt': 0.0, 'dev_opt': 0.0, 'norm_host': 0.0, 'emb_head': 0.0, 'fwd': 0.0, 'bwd': 0.0}
+    tm = {'cpu_ref': 0.0, 'head': 0.0, 'opt': 0.0, 'dev_opt': 0.0, 'norm_host': 0.0, 'emb_head': 0.0, 'fwd': 0.0, 'bwd': 0.0, 'fwd_enq': 0.0, 'fwd_wait': 0.0, 'bwd_enq': 0.0, 'bwd_wait': 0.0}
     t0 = time.perf_counter()
     for step in range(1, int(__import__('os').environ.get('STEPS', '50')) + 1):
         idx = rng.integers(0, data.shape[0], B)
@@ -210,9 +210,13 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
                     float(np.abs(h0 - cref.numpy()).max()),
                     float(np.abs(h0 - cref.numpy()).max()/(np.abs(cref.numpy()).max()+1e-9))), flush=True)
         tm['fwd'] += time.perf_counter() - tf
+        tf2 = time.perf_counter()
         hidden = np.empty((ROWS, MD), dtype=np.float32)
         A.cl.enqueue_copy(A.queue, hidden, ckpt, src_offset=10 * ROWB)
+        tm['fwd_enq'] += time.perf_counter() - tf2
+        tf3 = time.perf_counter()
         A.queue.finish()
+        tm['fwd_wait'] += time.perf_counter() - tf3
 
         if step == 1:
             hc = ref.last_hidden.detach().numpy().reshape(ROWS, MD)
@@ -262,11 +266,15 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
             tm['norm_host'] += time.perf_counter() - tn
             tm['opt'] += time.perf_counter() - top
         tm['bwd'] += time.perf_counter() - tb
+        tb2 = time.perf_counter()
         # embedding grad: dx at input buffer
         te = time.perf_counter()
         dxin = np.empty((ROWS, MD), dtype=np.float32)
         A.cl.enqueue_copy(A.queue, dxin, grad_buf)
+        tm['bwd_enq'] += time.perf_counter() - tb2
+        tb3 = time.perf_counter()
         A.queue.finish()
+        tm['bwd_wait'] += time.perf_counter() - tb3
         gemb = np.zeros_like(emb)
         flat = inp.numpy().reshape(-1)
         np.add.at(gemb, flat, dxin)
@@ -287,6 +295,7 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
         tm['emb_head']/len(losses_gpu)*1e3,
         (tot - tm['cpu_ref'] - tm['head'] - tm['opt'] - tm['emb_head'])/len(losses_gpu)*1e3, tot/len(losses_gpu)*1e3))
     print('fwd %.1f ms/step bwd %.1f ms/step' % (tm['fwd']/len(losses_gpu)*1e3, tm['bwd']/len(losses_gpu)*1e3))
+    print('enq/wait ms/step: fwd_enq %.1f fwd_wait %.1f bwd_enq %.1f bwd_wait %.1f' % (tm['fwd_enq']/len(losses_gpu)*1e3, tm['fwd_wait']/len(losses_gpu)*1e3, tm['bwd_enq']/len(losses_gpu)*1e3, tm['bwd_wait']/len(losses_gpu)*1e3))
     print('RSS start %.0f MB end %.0f MB' % (rss0, psutil.Process().memory_info().rss / 1e6))
     print('wall %.1fs' % (time.perf_counter() - t0))
 
