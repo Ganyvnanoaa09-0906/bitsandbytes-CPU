@@ -9,6 +9,7 @@ Goal: find parameters beating CLBlast's own default (~928-957 GFLOPS) toward 112
 from __future__ import annotations
 
 import argparse
+import gc
 import time
 
 import numpy as np
@@ -58,14 +59,19 @@ def main():
     ap.add_argument('--vwm', type=int, default=1)
     ap.add_argument('--vwn', type=int, default=1)
     ap.add_argument('--gemmk', type=int, default=0)
+    ap.add_argument('--kwi', type=int, default=2)
+    ap.add_argument('--kreg', type=int, default=1)
+    ap.add_argument('--strm', type=int, default=0)
+    ap.add_argument('--strn', type=int, default=0)
     ap.add_argument('--iters', type=int, default=5)
+    ap.add_argument('--only', default='')
     args = ap.parse_args()
 
     defines = dict(
         PRECISION=16, GEMMK=args.gemmk, MWG=args.mwg, NWG=args.nwg, KWG=args.kwg,
         MDIMC=args.mdimc, NDIMC=args.ndimc, VWM=args.vwm, VWN=args.vwn,
         MDIMA=args.mdimc, NDIMB=args.ndimc,
-        ROUTINE_GEMM=1,
+        SA=1, SB=1, KWI=args.kwi, KREG=args.kreg, STRM=args.strm, STRN=args.strn, ROUTINE_GEMM=1,
     )
     opts = ['-cl-fast-relaxed-math', '-cl-mad-enable'] + ['-D%s=%d' % (k, v) for k, v in defines.items()]
     src = build_source()
@@ -79,20 +85,26 @@ def main():
           ' '.join('%s=%d' % (k, v) for k, v in defines.items())))
 
     for name, (M, N, K) in SHAPES.items():
+        if args.only and args.only not in name: continue
         if K % args.kwg != 0:
             print(name, 'skip K not multiple of KWG', K); continue
         rng = np.random.default_rng(0)
         a = (rng.standard_normal((M, K)).astype(np.float32) * 0.02).astype(np.float16)
         b = (rng.standard_normal((K, N)).astype(np.float32) * 0.02).astype(np.float16)
-        a_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=a)
+        # CLBlast Xgemm: A column-major MxK, B row-major KxN, C column-major MxN.
+        # Compute C^T = B^T A^T: kernel M'=N, N'=M; A_k = B (row-major KxN acts as
+        # column-major NxK), B_k = A^T (row-major KxM); Ck column-major NxM == row-major C.
+        aT = np.ascontiguousarray(a.T)
+        a_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=aT)
         b_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=b)
         c_buf = cl.Buffer(ctx, mf.WRITE_ONLY, M * N * 2)
         out = np.empty((M, N), dtype=np.float16)
-        gws = (int(np.ceil(M / args.mwg)) * args.mdimc, int(np.ceil(N / args.nwg)) * args.ndimc)
+        Mp, Np = N, M
+        gws = (int(np.ceil(Mp / args.mwg)) * args.mdimc, int(np.ceil(Np / args.nwg)) * args.ndimc)
         lws = (args.mdimc, args.ndimc)
 
         def call():
-            kern(q, gws, lws, np.int32(M), np.int32(N), np.int32(K),
+            kern(q, gws, lws, np.int32(Mp), np.int32(Np), np.int32(K),
                  np.float32(1.0), np.float32(0.0),
                  a_buf, b_buf, c_buf, np.int32(0), np.int32(0))
 
@@ -107,6 +119,8 @@ def main():
         gflops = 2.0 * M * N * K / sec / 1e9
         print('%-26s %8.1f ms  %8.1f GFLOPS  max|err| %.4e  %.2fx vs1127'
               % (name, sec * 1e3, gflops, err, gflops / 1127.0), flush=True)
+        del a_buf, b_buf, c_buf
+        gc.collect()
 
 
 if __name__ == '__main__':
