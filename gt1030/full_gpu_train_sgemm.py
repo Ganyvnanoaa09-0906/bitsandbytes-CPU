@@ -14,6 +14,7 @@ import sys
 import time
 
 import numpy as np
+import pyopencl as cl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -96,7 +97,7 @@ def main():
         head = ref.head.weight.detach().numpy().astype(np.float32)
 
     # CPU reference optimizer
-    opt_ref = torch.optim.AdamW(ref.parameters(), lr=1e-4)
+    opt_ref = torch.optim.AdamW(ref.parameters(), lr=1e-4, weight_decay=0.0)
     # host optimizer states for device transformer + embedding/norm/head
     states = []
     for h in hosts:
@@ -115,9 +116,48 @@ def main():
     A.cl.enqueue_copy(A.queue, ckpt, np.zeros((11 * ROWS, MD), dtype=np.float32))
     A.queue.finish()
 
-    def upload_weights(h):
-        for k in ('WQKV', 'WO', 'W1', 'W3', 'W2'):
-            A.cl.enqueue_copy(A.queue, dev.__dict__[k]['dev'], h[k])
+    # ---- device optimizer: one fp32 master/m/v arena for all 10 layers ----
+    OPT_KERNEL = r"""
+__kernel void adamw_off(__global float* master, __global float* mom, __global float* vel,
+                        __global const float* grad, int off, int n,
+                        float lr, float b1, float b2, float eps, float wd,
+                        float bc1, float bc2) {
+    int i = get_global_id(0);
+    if (i >= n) return;
+    int j = off + i;
+    float g = grad[i];
+    float m = b1 * mom[j] + (1.f - b1) * g;
+    float v = b2 * vel[j] + (1.f - b2) * g * g;
+    mom[j] = m; vel[j] = v;
+    master[j] -= lr * (m / bc1) / (sqrt(v / bc2) + eps) + lr * wd * master[j];
+}
+"""
+    prog_opt = cl.Program(A.ctx, OPT_KERNEL).build(options=['-cl-mad-enable', '-cl-fast-relaxed-math'])
+    K_OPT = cl.Kernel(prog_opt, 'adamw_off')
+    keys = ('WQKV', 'WO', 'W1', 'W3', 'W2')
+    layout = []
+    total = 0
+    for h in hosts:
+        d = {}
+        for k in keys:
+            d[k] = (total, h[k].size)
+            total += h[k].size
+        layout.append(d)
+    master_host = np.concatenate([h[k].reshape(-1) for h in hosts for k in keys])
+    master_buf = FM.buf(total * 4)
+    mom_buf = FM.buf(total * 4)
+    vel_buf = FM.buf(total * 4)
+    A.cl.enqueue_copy(A.queue, master_buf, master_host)
+    A.cl.enqueue_copy(A.queue, mom_buf, np.zeros(total, dtype=np.float32))
+    A.cl.enqueue_copy(A.queue, vel_buf, np.zeros(total, dtype=np.float32))
+    A.queue.finish()
+
+    def upload_weights(i):
+        h = hosts[i]
+        for k in keys:
+            off, n = layout[i][k]
+            A.cl.enqueue_copy(A.queue, dev.__dict__[k]['dev'], master_buf,
+                              byte_count=n * 4, src_offset=off * 4, dst_offset=0)
         dev.b['wqkv'] = dev.WQKV['dev']; dev.b['wo'] = dev.WO['dev']
         dev.b['w1'] = dev.W1['dev']; dev.b['w3'] = dev.W3['dev']; dev.b['w2'] = dev.W2['dev']
         A.cl.enqueue_copy(A.queue, dev.b['wnorm1'], h['LN1'])
@@ -149,7 +189,7 @@ def main():
         x0 = emb[inp.numpy().reshape(-1)]  # (ROWS, MD)
         A.cl.enqueue_copy(A.queue, ckpt, x0)
         for i in range(10):
-            upload_weights(hosts[i])
+            upload_weights(i)
             A.cl.enqueue_copy(A.queue, input_buf, ckpt, byte_count=ROWB,
                               src_offset=i * ROWB, dst_offset=0)
             out = dev.forward(input_buf)
@@ -188,7 +228,7 @@ def main():
         tm['head'] += time.perf_counter() - tcm
         A.cl.enqueue_copy(A.queue, grad_buf, dhidden)
         for i in reversed(range(10)):
-            upload_weights(hosts[i])
+            upload_weights(i)
             A.cl.enqueue_copy(A.queue, input_buf, ckpt, byte_count=ROWB,
                               src_offset=i * ROWB, dst_offset=0)
             dev.forward(input_buf)
@@ -196,11 +236,15 @@ def main():
             A.cl.enqueue_copy(A.queue, grad_buf, dx, byte_count=ROWB)
             dnames = {'WQKV': 'dWqkv', 'WO': 'dWo', 'W1': 'dW1', 'W3': 'dW3', 'W2': 'dW2'}
             top = time.perf_counter()
+            bc1 = 1.0 - 0.9 ** step
+            bc2 = 1.0 - 0.999 ** step
             for k, dn in dnames.items():
-                g = np.empty_like(hosts[i][k])
-                A.cl.enqueue_copy(A.queue, g, dev.b[dn])
-                A.queue.finish()
-                adamw(hosts[i][k], g, states[i][k], t=step)
+                off, n = layout[i][k]
+                K_OPT(A.queue, (((n + 255) // 256) * 256,), (256,),
+                      master_buf, mom_buf, vel_buf, dev.b[dn],
+                      np.int32(off), np.int32(n), np.float32(1e-4),
+                      np.float32(0.9), np.float32(0.999), np.float32(1e-8),
+                      np.float32(0.0), np.float32(bc1), np.float32(bc2))
             for lname, dbuf in (('LN1', 'dw1'), ('LN2', 'dw2')):
                 g = np.empty_like(hosts[i][lname])
                 A.cl.enqueue_copy(A.queue, g, dev.b[dbuf])
