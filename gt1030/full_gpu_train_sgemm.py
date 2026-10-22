@@ -154,6 +154,13 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
     A.cl.enqueue_copy(A.queue, vel_buf, np.zeros(total, dtype=np.float32))
     A.queue.finish()
 
+    # ---- batch norm upload: one contiguous host buffer -> one device buffer per step ----
+    NORM_BATCH = FM.buf(2 * 10 * MD * 4)
+
+    def upload_norm_batch():
+        flat = np.concatenate([np.concatenate([h['LN1'], h['LN2']]) for h in hosts])
+        A.cl.enqueue_copy(A.queue, NORM_BATCH, flat)
+
     def upload_weights(i):
         h = hosts[i]
         for k in keys:
@@ -163,8 +170,11 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
         dev.b['wqkv'] = dev.WQKV['dev']; dev.b['wo'] = dev.WO['dev']
         dev.b['w1'] = dev.W1['dev']; dev.b['w3'] = dev.W3['dev']; dev.b['w2'] = dev.W2['dev']
         if not __import__('os').environ.get('NO_NORM_UPLOAD') == '1':
-            A.cl.enqueue_copy(A.queue, dev.b['wnorm1'], h['LN1'])
-            A.cl.enqueue_copy(A.queue, dev.b['wnorm2'], h['LN2'])
+            base = i * 2 * MD * 4
+            A.cl.enqueue_copy(A.queue, dev.b['wnorm1'], NORM_BATCH,
+                              byte_count=MD * 4, src_offset=base, dst_offset=0)
+            A.cl.enqueue_copy(A.queue, dev.b['wnorm2'], NORM_BATCH,
+                              byte_count=MD * 4, src_offset=base + MD * 4, dst_offset=0)
 
     def adamw(param, grad, state, lr=1e-4, b1=0.9, b2=0.999, eps=1e-8, wd=0.0, t=1):
         m, v = state
@@ -192,6 +202,9 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
         tm['cpu_ref'] += time.perf_counter() - tcr
 
         # device path: embedding (host) -> transformer (iGPU) -> final norm/head/CE (host)
+        tu0 = time.perf_counter()
+        upload_norm_batch()
+        tm['upload'] += time.perf_counter() - tu0
         x0 = emb[inp.numpy().reshape(-1)]  # (ROWS, MD)
         tf = time.perf_counter()
         A.cl.enqueue_copy(A.queue, ckpt, x0)
