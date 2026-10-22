@@ -166,6 +166,7 @@ __kernel void adamw_hv(__global float* master, __global float* mom, __global flo
     A.queue.finish()
     losses_gpu, losses_cpu = [], []
     _opt_ms = 0.0
+    tm = {'fwd':0.0,'bwd':0.0,'head':0.0}
     wall0 = time.perf_counter()
     for step in range(1, steps + 1):
         tstep = time.perf_counter()
@@ -182,6 +183,7 @@ __kernel void adamw_hv(__global float* master, __global float* mom, __global flo
             loss_cpu.backward(); opt_ref.step()
         losses_cpu.append(float(loss_cpu))
 
+        _tf = time.perf_counter()
         x0 = emb[inp.numpy().reshape(-1)].astype(np.float16)  # (ROWS, MD)
         A.cl.enqueue_copy(A.queue, ckpt, x0)
         for i in range(10):
@@ -199,7 +201,9 @@ __kernel void adamw_hv(__global float* master, __global float* mom, __global flo
         hidden = np.empty((ROWS, MD), dtype=np.float16)
         A.cl.enqueue_copy(A.queue, hidden, ckpt, src_offset=10 * ROWB)
         A.queue.finish()
+        tm['fwd'] += time.perf_counter() - _tf
         hidden32 = hidden.astype(np.float32)
+        _th = time.perf_counter()
         ht = torch.from_numpy(hidden32).requires_grad_(True)
         norm_t = torch.from_numpy(norm.copy()).requires_grad_(True)
         head_t = torch.from_numpy(head.copy()).requires_grad_(True)
@@ -209,7 +213,9 @@ __kernel void adamw_hv(__global float* master, __global float* mom, __global flo
         dhidden = ht.grad.numpy().astype(np.float16)
         gnorm = norm_t.grad.numpy().astype(np.float32)
         ghead = head_t.grad.numpy().astype(np.float32)
+        tm['head'] += time.perf_counter() - _th
         A.cl.enqueue_copy(A.queue, grad_buf, dhidden)
+        _tb = time.perf_counter()
         for i in reversed(range(10)):
             upload_weights(i)
             A.cl.enqueue_copy(A.queue, input_buf, ckpt, byte_count=ROWB, src_offset=i * ROWB, dst_offset=0)
@@ -231,6 +237,8 @@ __kernel void adamw_hv(__global float* master, __global float* mom, __global flo
              np.float32(bc1), np.float32(bc2))
         if __import__('os').environ.get('OPT_SYNC') == '1':
             A.queue.finish(); _opt_ms += time.perf_counter() - _to
+        A.queue.finish()
+        tm['bwd'] += time.perf_counter() - _tb
         dxin = np.empty((ROWS, MD), dtype=np.float16)
         A.cl.enqueue_copy(A.queue, dxin, grad_buf)
         A.queue.finish()
@@ -246,6 +254,7 @@ __kernel void adamw_hv(__global float* master, __global float* mom, __global flo
         if step % 1 == 0:
             print('step %2d loss_cpu %.6f loss_gpu %.6f diff %+.6f wall %.2fs' %
                   (step, losses_cpu[-1], losses_gpu[-1], losses_gpu[-1] - losses_cpu[-1], dt), flush=True)
+    print('PHASE fwd %.1f bwd %.1f head %.1f ms/step' % (tm['fwd']/steps*1e3, tm['bwd']/steps*1e3, tm['head']/steps*1e3))
     print('OPT_MS_PER_STEP %.2f' % (_opt_ms / steps * 1e3))
     print('final loss diff %.6f (steps=%d) wall %.1fs' %
           (losses_gpu[-1] - losses_cpu[-1], steps, time.perf_counter() - wall0))
