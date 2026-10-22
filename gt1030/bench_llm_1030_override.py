@@ -19,6 +19,7 @@ import numpy as np
 import pyopencl as cl
 
 DLL = r'D:\work\clblast_build\CLBlast-master\build\clblast.dll'
+ONE, ZERO = 0x3C00, 0x0000
 REF_THEORY = 1127.0
 REF_PRACTICAL = 631.0
 
@@ -83,9 +84,9 @@ def main():
         c = np.empty((m, n), dtype=np.float16)
 
         def call():
-            bl.CLBlastHgemm(101, 111, 111, m, n, k, 1.0,
+            return bl.CLBlastHgemm(101, 111, 111, m, n, k, ONE,
                             ctypes.c_void_p(int(af.int_ptr)), 0, k,
-                            ctypes.c_void_p(int(bf.int_ptr)), 0, n, 0.0,
+                            ctypes.c_void_p(int(bf.int_ptr)), 0, n, ZERO,
                             ctypes.c_void_p(int(cf.int_ptr)), 0, n,
                             ctypes.byref(qp), None)
 
