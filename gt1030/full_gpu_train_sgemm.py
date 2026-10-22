@@ -162,8 +162,9 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
                               byte_count=n * 4, src_offset=off * 4, dst_offset=0)
         dev.b['wqkv'] = dev.WQKV['dev']; dev.b['wo'] = dev.WO['dev']
         dev.b['w1'] = dev.W1['dev']; dev.b['w3'] = dev.W3['dev']; dev.b['w2'] = dev.W2['dev']
-        A.cl.enqueue_copy(A.queue, dev.b['wnorm1'], h['LN1'])
-        A.cl.enqueue_copy(A.queue, dev.b['wnorm2'], h['LN2'])
+        if not __import__('os').environ.get('NO_NORM_UPLOAD') == '1':
+            A.cl.enqueue_copy(A.queue, dev.b['wnorm1'], h['LN1'])
+            A.cl.enqueue_copy(A.queue, dev.b['wnorm2'], h['LN2'])
 
     def adamw(param, grad, state, lr=1e-4, b1=0.9, b2=0.999, eps=1e-8, wd=0.0, t=1):
         m, v = state
@@ -172,9 +173,12 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
         param -= lr * (m / (1 - b1 ** t)) / (np.sqrt(v / (1 - b2 ** t)) + eps) + lr * wd * param
 
     losses_gpu, losses_cpu = [], []
-    tm = {'cpu_ref': 0.0, 'head': 0.0, 'opt': 0.0, 'dev_opt': 0.0, 'norm_host': 0.0, 'emb_head': 0.0, 'fwd': 0.0, 'bwd': 0.0, 'fwd_enq': 0.0, 'fwd_wait': 0.0, 'bwd_enq': 0.0, 'bwd_wait': 0.0}
+    per_step = []
+    tm = {'cpu_ref': 0.0, 'head': 0.0, 'opt': 0.0, 'dev_opt': 0.0, 'norm_host': 0.0, 'emb_head': 0.0, 'upload': 0.0, 'fwd': 0.0, 'bwd': 0.0, 'fwd_enq': 0.0, 'fwd_wait': 0.0, 'bwd_enq': 0.0, 'bwd_wait': 0.0}
     t0 = time.perf_counter()
     for step in range(1, int(__import__('os').environ.get('STEPS', '50')) + 1):
+        tstep = time.perf_counter()
+        prev_tm = dict(tm)
         idx = rng.integers(0, data.shape[0], B)
         batch = torch.from_numpy(data[idx, :T + 1])
         inp, tgt = batch[:, :-1], batch[:, 1:]
@@ -192,7 +196,9 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
         tf = time.perf_counter()
         A.cl.enqueue_copy(A.queue, ckpt, x0)
         for i in range(10):
+            _tu = time.perf_counter()
             upload_weights(i)
+            tm['upload'] += time.perf_counter() - _tu
             A.cl.enqueue_copy(A.queue, input_buf, ckpt, byte_count=ROWB,
                               src_offset=i * ROWB, dst_offset=0)
             out = dev.forward(input_buf)
@@ -237,7 +243,9 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
         A.cl.enqueue_copy(A.queue, grad_buf, dhidden)
         tb = time.perf_counter()
         for i in reversed(range(10)):
+            _tu = time.perf_counter()
             upload_weights(i)
+            tm['upload'] += time.perf_counter() - _tu
             A.cl.enqueue_copy(A.queue, input_buf, ckpt, byte_count=ROWB,
                               src_offset=i * ROWB, dst_offset=0)
             dev.forward(input_buf)
@@ -284,6 +292,12 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
         tm['emb_head'] += time.perf_counter() - te
         top2 = time.perf_counter()
         losses_gpu.append(float(loss_gpu))
+        d = {k: tm[k]-prev_tm[k] for k in tm}
+        wall_s = time.perf_counter() - tstep
+        per_step.append((step, wall_s, d))
+        print('STEPTIME %d wall %.1f fwd %.1f bwd %.1f adamw %.1f other %.1f' % (
+            step, wall_s*1e3, d['fwd']*1e3, d['bwd']*1e3, d['dev_opt']*1e3,
+            (wall_s - d['cpu_ref'] - d['head'] - d['opt'] - d['emb_head'])*1e3), flush=True)
         if step % 10 == 1 or step == 50:
             print('step %2d loss_cpu %.6f loss_gpu %.6f diff %+.6f' %
                   (step, losses_cpu[-1], losses_gpu[-1], losses_gpu[-1] - losses_cpu[-1]), flush=True)
@@ -294,6 +308,7 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
         tm['dev_opt']/len(losses_gpu)*1e3, tm['norm_host']/len(losses_gpu)*1e3,
         tm['emb_head']/len(losses_gpu)*1e3,
         (tot - tm['cpu_ref'] - tm['head'] - tm['opt'] - tm['emb_head'])/len(losses_gpu)*1e3, tot/len(losses_gpu)*1e3))
+    print('upload_weights %.1f ms/step' % (tm['upload']/len(losses_gpu)*1e3))
     print('fwd %.1f ms/step bwd %.1f ms/step' % (tm['fwd']/len(losses_gpu)*1e3, tm['bwd']/len(losses_gpu)*1e3))
     print('enq/wait ms/step: fwd_enq %.1f fwd_wait %.1f bwd_enq %.1f bwd_wait %.1f' % (tm['fwd_enq']/len(losses_gpu)*1e3, tm['fwd_wait']/len(losses_gpu)*1e3, tm['bwd_enq']/len(losses_gpu)*1e3, tm['bwd_wait']/len(losses_gpu)*1e3))
     print('RSS start %.0f MB end %.0f MB' % (rss0, psutil.Process().memory_info().rss / 1e6))
