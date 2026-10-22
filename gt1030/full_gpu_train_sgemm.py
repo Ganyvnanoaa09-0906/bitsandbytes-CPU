@@ -21,6 +21,7 @@ import torch.nn.functional as F
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 import gt1030.full_gpu_model_sgemm as FM  # noqa: E402
 import gt1030.full_gpu_layer as FMeta  # noqa: E402
+from gt1030.debug_full_gpu_model import cpu_layer  # noqa: E402
 
 M, MD, FF, WROW = FM.M, FM.MD, FM.FF, FM.WROW
 B, T, NH, NKV, HD = FMeta.B, FMeta.T, FMeta.NH, FMeta.NKV, FMeta.HD
@@ -66,6 +67,7 @@ class CpuRef(nn.Module):
             x = x + b.o(a)
             h = rms(x, b.ln2)
             x = x + b.w2(F.silu(b.w1(h)) * b.w3(h))
+        self.last_hidden = x
         return self.head(rms(x, self.norm)).reshape(-1, V)
 
 
@@ -86,11 +88,11 @@ def main():
         ref.load_state_dict(ref0.state_dict())
         for b in ref.layers:
             hosts.append(dict(
-                WQKV=torch.cat([b.qi.weight, b.ki.weight, b.vi.weight], 0).detach().numpy().astype(np.float32),
-                WO=b.o.weight.detach().numpy().astype(np.float32),
-                W1=b.w1.weight.detach().numpy().astype(np.float32),
-                W3=b.w3.weight.detach().numpy().astype(np.float32),
-                W2=b.w2.weight.detach().numpy().astype(np.float32),
+                WQKV=np.ascontiguousarray(torch.cat([b.qi.weight, b.ki.weight, b.vi.weight], 0).T.detach().numpy().astype(np.float32)),
+                WO=np.ascontiguousarray(b.o.weight.T.detach().numpy().astype(np.float32)),
+                W1=np.ascontiguousarray(b.w1.weight.T.detach().numpy().astype(np.float32)),
+                W3=np.ascontiguousarray(b.w3.weight.T.detach().numpy().astype(np.float32)),
+                W2=np.ascontiguousarray(b.w2.weight.T.detach().numpy().astype(np.float32)),
             ))
         emb = ref.emb.weight.detach().numpy().astype(np.float32)
         norm = ref.norm.detach().numpy().astype(np.float32)
@@ -151,10 +153,25 @@ def main():
             out = dev.forward(input_buf)
             A.cl.enqueue_copy(A.queue, ckpt, out, byte_count=ROWB,
                               src_offset=0, dst_offset=(i + 1) * ROWB)
+            if step == 1 and i == 0:
+                h0 = np.empty((ROWS, MD), dtype=np.float32)
+                A.cl.enqueue_copy(A.queue, h0, ckpt, src_offset=ROWB)
+                A.queue.finish()
+                hw = hosts[0]
+                cref = cpu_layer(torch.from_numpy(x0), torch.from_numpy(hw['WQKV']),
+                                 torch.from_numpy(hw['WO']), torch.from_numpy(hw['W1']),
+                                 torch.from_numpy(hw['W3']), torch.from_numpy(hw['W2']))
+                print('layer0 maxerr %.3e rel %.3e' % (
+                    float(np.abs(h0 - cref.numpy()).max()),
+                    float(np.abs(h0 - cref.numpy()).max()/(np.abs(cref.numpy()).max()+1e-9))), flush=True)
         hidden = np.empty((ROWS, MD), dtype=np.float32)
         A.cl.enqueue_copy(A.queue, hidden, ckpt, src_offset=10 * ROWB)
         A.queue.finish()
 
+        if step == 1:
+            hc = ref.last_hidden.detach().numpy().reshape(ROWS, MD)
+            print('hidden maxerr %.3e rel %.3e' % (float(np.abs(hidden - hc).max()),
+                  float(np.abs(hidden - hc).max() / (np.abs(hc).max() + 1e-9))), flush=True)
         ht = torch.from_numpy(hidden).requires_grad_(True)
         norm_t = torch.from_numpy(norm.copy()).requires_grad_(True)
         head_t = torch.from_numpy(head.copy()).requires_grad_(True)
