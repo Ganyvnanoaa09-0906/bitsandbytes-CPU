@@ -170,7 +170,7 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
         param -= lr * (m / (1 - b1 ** t)) / (np.sqrt(v / (1 - b2 ** t)) + eps) + lr * wd * param
 
     losses_gpu, losses_cpu = [], []
-    tm = {'cpu_ref': 0.0, 'head': 0.0, 'opt': 0.0}
+    tm = {'cpu_ref': 0.0, 'head': 0.0, 'opt': 0.0, 'dev_opt': 0.0, 'norm_host': 0.0, 'emb_head': 0.0}
     t0 = time.perf_counter()
     for step in range(1, int(__import__('os').environ.get('STEPS', '50')) + 1):
         idx = rng.integers(0, data.shape[0], B)
@@ -245,13 +245,18 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
                       np.int32(off), np.int32(n), np.float32(1e-4),
                       np.float32(0.9), np.float32(0.999), np.float32(1e-8),
                       np.float32(0.0), np.float32(bc1), np.float32(bc2))
+            A.queue.finish()
+            tm['dev_opt'] += time.perf_counter() - top
+            tn = time.perf_counter()
             for lname, dbuf in (('LN1', 'dw1'), ('LN2', 'dw2')):
                 g = np.empty_like(hosts[i][lname])
                 A.cl.enqueue_copy(A.queue, g, dev.b[dbuf])
                 A.queue.finish()
                 adamw(hosts[i][lname], g, states[i][lname], t=step)
+            tm['norm_host'] += time.perf_counter() - tn
             tm['opt'] += time.perf_counter() - top
         # embedding grad: dx at input buffer
+        te = time.perf_counter()
         dxin = np.empty((ROWS, MD), dtype=np.float32)
         A.cl.enqueue_copy(A.queue, dxin, grad_buf)
         A.queue.finish()
@@ -261,6 +266,7 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
         adamw(emb, gemb, st_emb, t=step)
         adamw(norm, gnorm, st_norm, t=step)
         adamw(head, ghead, st_head, t=step)
+        tm['emb_head'] += time.perf_counter() - te
         top2 = time.perf_counter()
         losses_gpu.append(float(loss_gpu))
         if step % 10 == 1 or step == 50:
@@ -268,10 +274,11 @@ __kernel void adamw_off(__global float* master, __global float* mom, __global fl
                   (step, losses_cpu[-1], losses_gpu[-1], losses_gpu[-1] - losses_cpu[-1]), flush=True)
     print('final loss diff %.6f (steps=%d)' % (losses_gpu[-1] - losses_cpu[-1], len(losses_gpu)))
     tot = time.perf_counter() - t0
-    print('time/step ms: cpu_ref %.1f, head/loss/bwd %.1f, host_opt %.1f, other/device %.1f, wall %.1f' % (
+    print('time/step ms: cpu_ref %.1f, head/loss %.1f, dev_adamw %.1f, norm_host %.1f, emb_head %.1f, other/device %.1f, wall %.1f' % (
         tm['cpu_ref']/len(losses_gpu)*1e3, tm['head']/len(losses_gpu)*1e3,
-        tm['opt']/len(losses_gpu)*1e3,
-        (tot - tm['cpu_ref'] - tm['head'] - tm['opt'])/len(losses_gpu)*1e3, tot/len(losses_gpu)*1e3))
+        tm['dev_opt']/len(losses_gpu)*1e3, tm['norm_host']/len(losses_gpu)*1e3,
+        tm['emb_head']/len(losses_gpu)*1e3,
+        (tot - tm['cpu_ref'] - tm['head'] - tm['opt'] - tm['emb_head'])/len(losses_gpu)*1e3, tot/len(losses_gpu)*1e3))
     print('wall %.1fs' % (time.perf_counter() - t0))
 
 
