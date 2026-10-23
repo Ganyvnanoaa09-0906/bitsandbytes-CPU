@@ -91,3 +91,13 @@ memcpy上限42.7）。**未达 <100ms/≥5–10GB/s 的“雷霆”门槛**。
   **0.85GB/s**，远低于 NF4 fused 5.1、fp16 14.4、上限42.7。
 - 内核数值正确（relL2~5e-7），但**2bit 解包/码表计算**比 NF4 更贵；当前实现远未优化，且差距太大。
 - 结论：**2bit fused 也救不了**；CPU “雷霆-2bit”不成立，dequant 实现吃掉带宽红利。
+## 7. 工具链：本机 zig 可编 native DLL
+
+`D:\work\tools-zig\zig\zig-x86_64-windows-0.14.1\zig.exe`（0.14.1，自带 clang）。示例：
+
+```powershell
+& 'D:\work\tools-zig\zig\zig-x86_64-windows-0.14.1\zig.exe' c++ -O3 -mavx2 -mfma -shared `
+  gt1030/q2bit_gemv.cpp -o gt1030/q2bit_gemv.dll
+```
+
+`q2bit_gemv.cpp` 即用此方式编译（ctypes 加载）。以后 2bit/NF4 kernel 不再需要 MSVC。
