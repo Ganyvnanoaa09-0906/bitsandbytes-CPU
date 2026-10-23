@@ -160,6 +160,7 @@ def main() -> int:
     ap.add_argument('--out', default='')
     ap.add_argument('--skip-names', default='')
     ap.add_argument('--eval-only', action='store_true')
+    ap.add_argument('--optim', default='adamw8bit', choices=['adamw8bit','adamw'])
     args = ap.parse_args()
 
     torch.set_num_threads(6)
@@ -217,12 +218,16 @@ def main() -> int:
     trainable = sum(p.numel() for p in params)
     log('trainable: %.2f M (%.2f%% of base) | %d tensors'
         % (trainable / 1e6, 100 * trainable / total, len(params)))
-    try:
-        opt = bnb.optim.AdamW8bit(params, lr=args.lr)
-        opt_name = 'AdamW8bit'
-    except Exception:
+    if args.optim == 'adamw':
         opt = torch.optim.AdamW(params, lr=args.lr)
         opt_name = 'AdamW'
+    else:
+        try:
+            opt = bnb.optim.AdamW8bit(params, lr=args.lr)
+            opt_name = 'AdamW8bit'
+        except Exception:
+            opt = torch.optim.AdamW(params, lr=args.lr)
+            opt_name = 'AdamW'
     log('optimizer: %s' % opt_name)
 
     model.train()
