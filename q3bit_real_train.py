@@ -268,7 +268,7 @@ def main() -> int:
         os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
         with open(args.out, 'w', encoding='utf-8') as fh:
             json.dump(result, fh, indent=1, ensure_ascii=False)
-        log('wrote', args.out)
+        log('wrote %s' % args.out)
     return 0
 
 
