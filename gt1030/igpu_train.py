@@ -392,6 +392,13 @@ def make_optimizer(args, named_params):
                 rest = 'AdamW (bitsandbytes missing)'
         return CombinedOptimizer(opts), 'Muon NS%d on %d 2-D weights + %s on %d' % (
             args.ns_iters, len(muon_p), rest, len(other_p))
+    if name in ('adamw4bit', '4bit'):
+        try:
+            import bitsandbytes as bnb
+            return bnb.optim.AdamW4bit([p for _, p in named_params], lr=args.lr,
+                                       weight_decay=wd), 'AdamW4bit (bnb)'
+        except Exception as exc:
+            print('  WARNING: AdamW4bit unavailable (%s); falling back' % str(exc)[:80])
     if name in ('adamw8bit', '8bit'):
         try:
             import bitsandbytes as bnb
@@ -633,6 +640,14 @@ def train(args) -> int:
     args.backend = backend
     print('  backend:', backend + (' (OpenCL device %s)' % ctx.devices[0].name if backend == 'igpu' else ' (no OpenCL needed)'))
     skip_lm = bool(getattr(model.config, 'tie_word_embeddings', False))
+    if getattr(args, 'grad_checkpoint', False):
+        try:
+            model.gradient_checkpointing_enable()
+            if hasattr(model, 'enable_input_require_grads'):
+                model.enable_input_require_grads()
+            print('  gradient checkpointing: enabled')
+        except Exception as exc:
+            print('  WARNING: gradient checkpointing unavailable: %s' % str(exc)[:120])
     # base_loss above needs eval(); training itself must run in train mode (dropout on).
     model.train()
     total = sum(p.numel() for p in model.parameters())      # before patching: base weights leave Parameters
@@ -771,7 +786,7 @@ def main() -> int:
     ap.add_argument('--batch', type=int, default=1)
     ap.add_argument('--lora-r', type=int, default=8)
     ap.add_argument('--lr', type=float, default=1e-3)
-    ap.add_argument('--optimizer', choices=['adamw', 'adamw8bit', 'muon'], default='adamw',
+    ap.add_argument('--optimizer', choices=['adamw', 'adamw8bit', 'adamw4bit', 'muon'], default='adamw',
                     help='same choices as the CPU training scripts; runs on the CPU in both backends')
     ap.add_argument('--weight-decay', type=float, default=0.0)
     ap.add_argument('--momentum', type=float, default=0.95, help='Muon momentum')
@@ -782,6 +797,7 @@ def main() -> int:
     ap.add_argument('--save', type=str, default=None, help='dir to save the trainable weights')
     ap.add_argument('--resume', type=str, default=None, help='dir with trainable.pt to resume from')
     ap.add_argument('--check', action='store_true', help='verify CPU/iGPU parity and exit')
+    ap.add_argument('--grad-checkpoint', action='store_true', help='enable HF gradient checkpointing')
     args = ap.parse_args()
     if args.check:
         args.steps = min(args.steps, 2)
