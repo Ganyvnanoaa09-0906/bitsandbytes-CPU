@@ -36,6 +36,12 @@ import torch
 import torch.nn as nn
 
 try:
+    from memwatch import check_or_exit as _memcheck
+except Exception:
+    def _memcheck(tag=''):
+        return None
+
+try:
     sys.stdout.reconfigure(encoding='utf-8')
 except AttributeError:
     pass
@@ -729,6 +735,7 @@ def train(args) -> int:
                 if isinstance(m, (IgpuLinear, IgpuConv1D)):
                     m.refresh()
         opt.zero_grad(set_to_none=True)
+        _memcheck('step')
         dt = time.perf_counter() - t0
         times.append(dt)
         losses.append(float(loss.detach()))
@@ -799,6 +806,7 @@ def main() -> int:
     ap.add_argument('--check', action='store_true', help='verify CPU/iGPU parity and exit')
     ap.add_argument('--grad-checkpoint', action='store_true', help='enable HF gradient checkpointing')
     args = ap.parse_args()
+    _memcheck('start')
     if args.check:
         args.steps = min(args.steps, 2)
         args.log_every = 1
