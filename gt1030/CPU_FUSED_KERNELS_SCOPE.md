@@ -52,3 +52,15 @@ y = fused.silu_mul_native(gate, up)      # forward-only C scalar（慢，实验�
 - **AR 30M step 对比：不适用**（AR Hgemm 的 RMS/SiLU 在 device/OpenCL 上，host fused 不能替 device buffer）；
   要测 CPU 训练路径需给 `train_llm_sft.py`/CPU trainer 接 fused 模块（未做）。
 - **rope native**：仅 torch 参考；未写 kernel。
+## 5. CPU trainer 集成实测（train_llm_sft.py：0.8B, seq256, LoRA r8, fp32, 5步）
+
+| 配置 | 5步总时 | step | 峰值 RSS | loss first→last |
+|---|---|---|---|---|
+| baseline | **41.6s** | 8.3s | 7.4GB | 2.8656→2.0272 |
+| `--fused`（rms=61/mlp=24） | **108.6s** | 21.7s | 5.51GB* | 2.8656→2.0272（完全一致） |
+
+\* fused 峰值采样偏低，不作为内存结论；loss 完全一致 = 语义正确。
+- **fused 路径慢 2.6×**：monkeypatch 用 torch 参考（非 native），每层 Python wrapper + MLP 替换开销；
+  native rms/silu 是 forward-only，训练 backward 仍走 torch，**集成不赚速度**。
+- **1.7B 不可跑**：fp32 加载即被 free0.84GB 杀；fp16 单步 >10min（已杀），不在本机时间盒内。
+- 结论：**当前 CPU 训练不要开 `--fused`**；staged/native autograd（自定义 Function）是前提。

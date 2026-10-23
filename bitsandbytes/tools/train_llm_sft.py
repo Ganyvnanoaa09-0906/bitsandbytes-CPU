@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import time
+import types
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -32,10 +33,14 @@ def main():
     ap.add_argument("--rank", type=int, default=16)
     ap.add_argument("--threads", type=int, default=6)
     ap.add_argument("--out", default=r"D:\work\output\llm_sft")
+    ap.add_argument("--fused", action="store_true", help="use bitsandbytes.fused rms_norm/silu_mul")
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--dtype", choices=["fp32","fp16","bf16"], default="fp32")
     args = ap.parse_args()
 
     torch.set_num_threads(args.threads)
-    dtype = torch.float32
+    torch.manual_seed(args.seed)
+    dtype = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}[args.dtype]
 
     t = AutoTokenizer.from_pretrained(args.model)
     if t.pad_token is None:
@@ -54,6 +59,26 @@ def main():
     except Exception as e:
         print(f"[warn] peft LoRA fail ({e}); fallback full finetune (slow)")
         trainable = sum(p.numel() for p in m.parameters() if p.requires_grad)
+
+
+    if args.fused:
+        import bitsandbytes.fused as F
+        n_rms = n_mlp = 0
+        for module in m.modules():
+            cls = module.__class__.__name__
+            if cls in ("Qwen3RMSNorm", "Qwen3_5RMSNorm"):
+                def fwd_rms(self, x, _F=F):
+                    if hasattr(self, "eps"):
+                        return _F.rms_norm(x, 1.0 + self.weight, self.eps)
+                    return _F.rms_norm(x, self.weight, self.variance_epsilon)
+                module.forward = types.MethodType(fwd_rms, module)
+                n_rms += 1
+            elif cls in ("Qwen3MLP", "Qwen3_5MLP"):
+                def fwd_mlp(self, x, _F=F):
+                    return self.down_proj(_F.silu_mul(self.gate_proj(x), self.up_proj(x)))
+                module.forward = types.MethodType(fwd_mlp, module)
+                n_mlp += 1
+        print(f"[fused] rms={n_rms} mlp={n_mlp} native={F.native_available()}")
 
     # 读 jsonl(数组或逐行)
     raw = open(args.data, encoding="utf-8").read()
