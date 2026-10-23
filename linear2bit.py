@@ -62,7 +62,9 @@ class Linear2bit(nn.Module):
                           self._table)
 
     def forward(self, x):
-        return F.linear(x, self.weight(), self.bias)
+        w = self.weight().to(x.dtype)
+        b = None if self.bias is None else self.bias.to(x.dtype)
+        return F.linear(x, w, b)
 
     def extra_repr(self):
         return ('in=%d, out=%d, %d bytes packed (%.2f bit/weight, %.1fx vs fp32)'

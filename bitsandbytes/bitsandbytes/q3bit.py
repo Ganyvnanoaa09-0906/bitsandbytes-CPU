@@ -451,8 +451,10 @@ class QuantLinear3bit(nn.Module):
         else:
             w = self.weight().to(x.dtype)
             base = F.linear(x2, w, self.bias)
-        lora = (x2 @ self.lora_A.t()) @ self.lora_B.t() * self.scale
-        return (base + lora).reshape(*lead, self.out_features)
+        la = self.lora_A.to(x2.dtype)
+        lb = self.lora_B.to(x2.dtype)
+        lora = (x2 @ la.t()) @ lb.t() * self.scale
+        return (base + lora).to(x.dtype).reshape(*lead, self.out_features)
 
     def extra_repr(self) -> str:
         return ("in_features=%d, out_features=%d, bits=3, block=%d, lora_r=%d"
