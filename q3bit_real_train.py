@@ -158,6 +158,8 @@ def main() -> int:
     ap.add_argument('--block', type=int, default=64)
     ap.add_argument('--log-every', type=int, default=10)
     ap.add_argument('--out', default='')
+    ap.add_argument('--skip-names', default='')
+    ap.add_argument('--eval-only', action='store_true')
     args = ap.parse_args()
 
     torch.set_num_threads(6)
@@ -195,8 +197,10 @@ def main() -> int:
 
     t1 = time.perf_counter()
     if args.mode == 'q3bit':
+        _skip = tuple(x.strip() for x in args.skip_names.split(',') if x.strip())
         n = q3bit.convert_linears_3bit(model, block=args.block, lora_r=args.lora_r,
-                                       lora_alpha=args.lora_alpha)
+                                       lora_alpha=args.lora_alpha,
+                                       skip_names=('lm_head',) + _skip)
     else:
         n = wrap_lora_fp32(model, args.lora_r, args.lora_alpha)
     conv_time = time.perf_counter() - t1
@@ -206,6 +210,9 @@ def main() -> int:
     log('converted %d linears in %.1f s | RSS %.2f GB | eval after conversion: %.4f'
         % (n, conv_time, conv_rss, quant_loss))
 
+    if args.eval_only:
+        print('EVAL_ONLY base=%.4f after=%.4f damage=%.4f n=%d skip=%s rss=%.2f' % (base_loss, quant_loss, quant_loss-base_loss, n, args.skip_names, conv_rss), flush=True)
+        return 0
     params = [p for p in model.parameters() if p.requires_grad]
     trainable = sum(p.numel() for p in params)
     log('trainable: %.2f M (%.2f%% of base) | %d tensors'
