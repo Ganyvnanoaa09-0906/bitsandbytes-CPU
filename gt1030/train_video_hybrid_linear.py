@@ -7,6 +7,7 @@ Usage: copy the usual train_video_mvp args after the script name.
 """
 from __future__ import annotations
 
+import os
 import sys
 
 import numpy as np
@@ -21,6 +22,7 @@ _orig_linear = F.linear
 STATS = {'gpu_calls': 0, 'cpu_calls': 0, 'gpu_ms': 0.0}
 MIN_M = 1024
 MIN_K = 128
+MIN_FLOPS = int(os.environ.get('HYBRID_MIN_FLOPS', '0'))
 
 
 class GpuLinearFn(torch.autograd.Function):
@@ -45,7 +47,9 @@ class GpuLinearFn(torch.autograd.Function):
 
 
 def gpu_linear(x, w, b=None):
-    if x.dim() >= 2 and w.dim() == 2 and x.shape[-1] >= MIN_K and x.numel() // x.shape[-1] >= MIN_M:
+    if (x.dim() >= 2 and w.dim() == 2 and x.shape[-1] >= MIN_K
+            and x.numel() // x.shape[-1] >= MIN_M
+            and 2 * x.numel() * w.shape[0] >= MIN_FLOPS):
         STATS['gpu_calls'] += 1
         return GpuLinearFn.apply(x, w, b)
     STATS['cpu_calls'] += 1
