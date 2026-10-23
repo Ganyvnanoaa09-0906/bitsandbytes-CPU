@@ -57,3 +57,15 @@ memcpy上限42.7）。**未达 <100ms/≥5–10GB/s 的“雷霆”门槛**。
 **结论**：fused NF4 把“物化路径”的 1483ms 救到 ~191ms（7.8×），但**仍慢于 fp16 GEMV**；
 2bit 再减半权重也救不了 dequant 计算/带宽效率，**不做 2bit fused 内核**；2bit 只在“放得下”
 维度有意义（且当前 Linear2bit 仍 OOM）。
+## 5. 2bit fused LUT：本机无法构建（blocker）+ 最终结论
+
+- 现有 native 库只有 **3bit** fused（`q3bit_gemm.dll`）；`q3bit_kernel.dll` 仅有
+  `bnb_dequant_2bit`，**没有 2bit GEMV/GEMV fused**。
+- 本机 **无 C++ 编译器**（`cl`/`g++`/`clang`/`zig` 均不可用，torch cpp_extension 也无编译器），
+  因此无法新写 AVX2 2bit LUT fused kernel；**不虚报 2bit fused 数据**。
+- 即使按 NF4 fused 的实测外推：权重字节减半（~0.5GB），但 dequant 是逐元素 LUT+dot，
+  **NF4 fused 已只有 5.1GB/s（fp16 14.4、上限42.7）**，2bit 不可能把有效带宽提到 2×；且
+  NF4 fused 整token ~191ms 仍慢于 fp16 239ms，未达 <100ms。
+- **最终结论**：CPU 上“2bit 省一半带宽”不成立；dequant 实现吃掉带宽红利。2bit 只在
+  “放得下”维度有价值；当前 `Linear2bit` 无 fused、还会 OOM，不用于推理交付。
+  需要真正复核需有编译器的环境 + 新 AVX2 LUT 内核。
