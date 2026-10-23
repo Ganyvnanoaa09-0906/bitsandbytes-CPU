@@ -53,6 +53,10 @@ def main():
             latents = sched.step(noise_pred, t, latents).prev_sample
             fwd += time.perf_counter() - t0
     out = latents
+    z_dim = int(vae.config.z_dim)
+    lat_mean = torch.tensor(vae.config.latents_mean).view(1, z_dim, 1, 1, 1)
+    lat_std = 1.0 / torch.tensor(vae.config.latents_std).view(1, z_dim, 1, 1, 1)
+    out = out / lat_std + lat_mean
     t0 = time.perf_counter()
     with torch.no_grad():
         frames = vae.decode(out, return_dict=False)[0]

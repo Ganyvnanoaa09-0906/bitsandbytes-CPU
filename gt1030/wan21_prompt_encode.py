@@ -15,12 +15,15 @@ def main():
     t0 = time.perf_counter()
     model = load_model()
     tok = AutoTokenizer.from_pretrained(TOK, local_files_only=True)
-    enc = tok(['a cat walking on grass'], padding='max_length', max_length=512,
-              truncation=True, return_tensors='pt')
+    enc = tok(['a cat walking on grass'], padding=False, truncation=True,
+              max_length=512, return_tensors='pt')
     with torch.no_grad():
         h = model(input_ids=enc['input_ids'], attention_mask=enc['attention_mask']).last_hidden_state
-    print('encode %.1fs shape %s finite %s mean %.4f std %.4f'
-          % (time.perf_counter() - t0, tuple(h.shape), bool(torch.isfinite(h).all()),
+    seq = int(enc['attention_mask'].sum())
+    h = h[0, :seq]
+    h = torch.cat([h, h.new_zeros(512 - seq, h.shape[1])], dim=0).unsqueeze(0)
+    print('encode %.1fs seq %d padded %s finite %s mean %.4f std %.4f'
+          % (time.perf_counter() - t0, seq, tuple(h.shape), bool(torch.isfinite(h).all()),
              float(h.float().mean()), float(h.float().std())), flush=True)
     torch.save(h.detach().to(torch.float32),
                r'D:\work\textmodel\Wan2.1-T2V-1.3B\prompt_cat_hidden.pt')
