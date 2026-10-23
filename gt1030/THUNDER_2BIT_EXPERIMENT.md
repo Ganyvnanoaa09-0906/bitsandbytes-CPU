@@ -57,6 +57,11 @@ memcpy上限42.7）。**未达 <100ms/≥5–10GB/s 的“雷霆”门槛**。
 **结论**：fused NF4 把“物化路径”的 1483ms 救到 ~191ms（7.8×），但**仍慢于 fp16 GEMV**；
 2bit 再减半权重也救不了 dequant 计算/带宽效率，**不做 2bit fused 内核**；2bit 只在“放得下”
 维度有意义（且当前 Linear2bit 仍 OOM）。
+
+**正收益（可交付）**：`bnb.functional.gemv_4bit` fused AVX2 相对物化路径 **9–19×**
+（lm_head 18.9×），relL2 0.0017；NF4 decode 1.48s→~0.19s，权重仅 fp16 的13%。虽仍0.8×于fp16，
+但这是“放得下档”的实用加速——任何 NF4 推理应默认用 `gemv_4bit`，不物化。
+
 ## 5. 2bit fused LUT：本机无法构建（blocker）+ 最终结论
 
 - 现有 native 库只有 **3bit** fused（`q3bit_gemm.dll`）；`q3bit_kernel.dll` 仅有
