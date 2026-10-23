@@ -571,6 +571,20 @@ assert [n for n, p in ql.named_parameters() if p.requires_grad] == ['lora_A', 'l
 
 **`convert_linears_3bit(model, lora_r=8)`** -- replaces every nn.Linear in place and returns the count; lm_head stays fp32
 
+**`混合精度配方（2026-10-23，Qwen3-1.7B 实测）`** -- `down_proj` 是 3bit 损伤主源：全 3bit 初始
+eval 损伤 +9.05 nats；`skip_names=('lm_head','down_proj')` 后 +0.87，150 步 final 3.292
+（全 3bit 100 步 3.505），RSS 8.03→4.12GB。推荐：
+
+```python
+from bitsandbytes import q3bit
+n = q3bit.convert_linears_3bit(model, block=16, lora_r=8,
+                               skip_names=('lm_head', 'down_proj'))
+```
+
+注意：当前 native q3bit dequant 在 300 步长程会触发 `0xC0000005`（VCRUNTIME，约 step90–160，
+换 torch 优化器仍复现）；150 步内稳定。长程先用 150 步验证，或 `BNB_Q3BIT_FORCE_TORCH=1`
+走纯 torch 路径（更慢）。详见报告 §7.192。
+
 **`experimental / portability`** -- since dev9 the Windows wheel ships a CI-built MSVC DLL; older wheels use the pure-torch fallback, while the dev9 Windows and Linux wheels use the native kernels
 
 ## Reference: bitsandbytes.nn
