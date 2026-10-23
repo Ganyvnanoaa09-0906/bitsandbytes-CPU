@@ -182,7 +182,11 @@ def _quantize(w: torch.Tensor, bits: int, block: int) -> Tuple[torch.Tensor, tor
         flat = torch.cat([flat, torch.zeros(pad, dtype=flat.dtype)])
     nb = flat.numel() // block
     blk = flat.view(nb, block)
-    absmax = blk.abs().amax(dim=1)
+    _clip = float(os.environ.get('BNB_Q3BIT_CLIP', '1.0') or 1.0)
+    if 0.5 < _clip < 1.0:
+        absmax = torch.quantile(blk.abs(), _clip, dim=1)
+    else:
+        absmax = blk.abs().amax(dim=1)
     center = _CENTER[bits]
     scale = (absmax / center).clamp_min(1e-12)
     q = torch.round(blk / scale.unsqueeze(1) + center).clamp(0, _levels(bits) - 1).to(torch.uint8)
