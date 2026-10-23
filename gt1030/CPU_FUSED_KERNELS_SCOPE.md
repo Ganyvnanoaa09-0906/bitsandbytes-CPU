@@ -41,12 +41,14 @@ y = fused.silu_mul_native(gate, up)      # forward-only C scalar（慢，实验�
 - 微基准（CPU 6线程）：
   - rms [2048,4096] torch 16.51ms → native **7.09ms（2.33×）**
   - rms [512,8192] 8.36→3.38ms（2.47×）
-  - silu [2048,11008] torch 31.28ms → native **295.1ms（0.11×，慢）**；标量 exp 未向量化，**不推荐用 native silu**，等 AVX2 多项式 exp。
+  - silu [2048,11008] torch 31.28ms → native **18.53ms（1.71×）**；AVX2 多项式 exp，rel 4.7e-8，达标。
 
 ## 4. 未完成/后续
 
 - **反向/autograd**：native 目前 forward-only；torch 参考可 autograd。训练接入需给 rms/silu/rope 写 backward（或自定义 Function）。
-- **fused_ce native**：未实现；当前 torch。
-- **AR 30M step 对比**：未接入；AR Hgemm 训练用 OpenCL V2 kernels，CPU fused 包不能直接替换其 device buffer；
-  下一步需在 CPU SGEMM 路径或给 `full_gpu_layer.py` 加“host fused fallback”，再测 5–10 步 step/RSS。
+- **fused_ce 分块版**：`linear_cross_entropy(hidden, weight, labels, chunk)` 已实现（online logsumexp，不物化全 logits）；
+  对拍 rel **1.2e-7**；M=1024/V=151936/D=2048 峰值 RSS **1.52GB vs full 2.68GB（0.57×）**，
+  时间 3.38s vs 3.24s（约1.04×，基本持平）。native CE 未单独写。
+- **AR 30M step 对比：不适用**（AR Hgemm 的 RMS/SiLU 在 device/OpenCL 上，host fused 不能替 device buffer）；
+  要测 CPU 训练路径需给 `train_llm_sft.py`/CPU trainer 接 fused 模块（未做）。
 - **rope native**：仅 torch 参考；未写 kernel。

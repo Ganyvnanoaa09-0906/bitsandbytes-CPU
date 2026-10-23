@@ -44,6 +44,13 @@ def main():
     # CE reference
     logits = torch.randn(64, 1024); labels = torch.randint(0, 1024, (64,))
     print('fused_ce', float(B.fused_ce(logits, labels)))
+    ce_ref = B.fused_ce(logits, labels)
+    h = torch.randn(64, 512); w2 = torch.randn(1024, 512); lab2 = torch.randint(0, 1024, (64,))
+    ce_full = torch.nn.functional.cross_entropy(h @ w2.t(), lab2)
+    ce_chunk = B.linear_cross_entropy(h, w2, lab2, chunk=256)
+    r = rel(ce_chunk, ce_full)
+    assert r < 1e-3, ('linear_ce', r)
+    print('linear_ce rel', r, 'full', float(ce_full), 'chunk', float(ce_chunk))
     print('ALL_PASS')
 
 

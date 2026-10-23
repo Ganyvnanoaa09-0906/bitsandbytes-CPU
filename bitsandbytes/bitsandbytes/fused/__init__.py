@@ -13,8 +13,9 @@ The torch versions are the contract; native versions must match rel<1e-3.
 """
 from __future__ import annotations
 
-from ._ref import fused_ce, rms_norm, rope, silu_mul
+from ._ref import fused_ce, linear_cross_entropy, rms_norm, rope, silu_mul
 from ._native import native_available, rms_norm_native, silu_mul_native
 
 __all__ = ['rms_norm', 'silu_mul', 'rope', 'fused_ce',
-           'native_available', 'rms_norm_native', 'silu_mul_native']
+           'native_available', 'rms_norm_native', 'silu_mul_native',
+           'linear_cross_entropy']

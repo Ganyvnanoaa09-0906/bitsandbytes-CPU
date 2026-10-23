@@ -35,3 +35,28 @@ def fused_ce(logits: torch.Tensor, labels: torch.Tensor,
              ignore_index: int = -100) -> torch.Tensor:
     """Mean cross entropy over N rows (logits [N,V], labels [N])."""
     return F.cross_entropy(logits, labels, ignore_index=ignore_index)
+
+def linear_cross_entropy(hidden: torch.Tensor, weight: torch.Tensor,
+                         labels: torch.Tensor, chunk: int = 1024,
+                         ignore_index: int = -100) -> torch.Tensor:
+    """Cross entropy of hidden @ weight.T without materialising full logits."""
+    M, D = hidden.shape
+    V = weight.shape[0]
+    mask = labels != ignore_index
+    tgt = labels.clone()
+    tgt[~mask] = 0
+    target_logit = (hidden * weight[tgt]).sum(dim=-1)
+    maxv = torch.full((M,), -float('inf'), dtype=torch.float64)
+    sumexp = torch.zeros(M, dtype=torch.float64)
+    target_logit = target_logit.double()
+    for s in range(0, V, chunk):
+        e = min(V, s + chunk)
+        logits = (hidden @ weight[s:e].t()).double()
+        cmax = logits.max(dim=-1).values
+        newmax = torch.maximum(maxv, cmax)
+        sumexp = sumexp * torch.exp(maxv - newmax) + torch.exp(logits - newmax[:, None]).sum(dim=-1)
+        maxv = newmax
+    loss = torch.log(sumexp) + maxv - target_logit
+    if mask.any():
+        return loss[mask].mean()
+    return loss.mean()
