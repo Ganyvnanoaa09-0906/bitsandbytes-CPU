@@ -161,6 +161,8 @@ def main() -> int:
     ap.add_argument('--skip-names', default='')
     ap.add_argument('--eval-only', action='store_true')
     ap.add_argument('--optim', default='adamw8bit', choices=['adamw8bit','adamw'])
+    ap.add_argument('--save-every', type=int, default=0)
+    ap.add_argument('--resume', default='')
     args = ap.parse_args()
 
     torch.set_num_threads(6)
@@ -230,10 +232,30 @@ def main() -> int:
             opt_name = 'AdamW'
     log('optimizer: %s' % opt_name)
 
+    start_step = 0
+    ckpt_path = (args.out + '.ckpt.pt') if args.out else ''
+    if args.resume and os.path.exists(args.resume):
+        ck = torch.load(args.resume, map_location='cpu', weights_only=False)
+        sd = {k: v for k, v in model.state_dict().items() if 'lora' in k.lower()}
+        model.load_state_dict(ck['lora'], strict=False)
+        try:
+            opt.load_state_dict(ck['opt'])
+        except Exception as e:
+            log('optimizer state not restored: %s' % e)
+        start_step = int(ck.get('step', 0))
+        log('resumed %s @ step %d' % (args.resume, start_step))
+
+    def save_ckpt(step):
+        if not ckpt_path:
+            return
+        lora = {k: v for k, v in model.state_dict().items() if 'lora' in k.lower()}
+        torch.save({'lora': lora, 'opt': opt.state_dict(), 'step': step}, ckpt_path)
+        log('checkpoint %s @ step %d' % (ckpt_path, step))
+
     model.train()
     losses, times, rss_peak = [], [], conv_rss
     t_start = time.perf_counter()
-    for step in range(args.steps):
+    for step in range(start_step, args.steps):
         batch = train[step] if step < len(train) else train[-1]
         t0 = time.perf_counter()
         out = model(input_ids=batch[:, :-1], labels=batch[:, :-1], use_cache=False)
@@ -251,6 +273,9 @@ def main() -> int:
         if not math.isfinite(losses[-1]):
             log('  !! non-finite loss, stopping')
             break
+        if args.save_every and (step + 1) % args.save_every == 0:
+            save_ckpt(step + 1)
+    save_ckpt(args.steps)
     total_s = time.perf_counter() - t_start
     med = statistics.median(times[1:]) if len(times) > 1 else times[0]
     final_loss = loss_on(model, evals)
