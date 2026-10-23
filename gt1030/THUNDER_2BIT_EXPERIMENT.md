@@ -37,3 +37,23 @@ python gt1030/thunder2bit_bench.py --precision q3bit
 python gt1030/thunder2bit_bench.py --precision q2bit   # 当前 OOM，预期失败
 ```
 日志/JSON：`research/bench_results/thunder2bit*`、`research/bench_results/thunder2bit/`。
+## 4. NF4 fused AVX2 GEMV（M=1）实测（2026-10-23）
+
+现成 `bnb.functional.gemv_4bit`（AVX2 LUT）单层，vs 解包物化 F.linear：
+
+| shape | N×K | 权重字节 | fused | material | speedup | fused 有效带宽 | relL2 |
+|---|---|---|---|---|---|---|---|
+| qkv | 4096×2048 | 4.72MB | **0.899ms** | 8.72ms | **9.7×** | 5.25GB/s | 0.0017 |
+| o | 2048×2048 | 2.36MB | 0.522ms | 4.55ms | 8.7× | 4.52GB/s | 0.0017 |
+| gate | 6144×2048 | 7.08MB | 1.531ms | 13.60ms | 8.9× | 4.62GB/s | 0.0017 |
+| up | 6144×2048 | 7.08MB | 1.395ms | 13.40ms | 9.6× | 5.07GB/s | 0.0017 |
+| down | 2048×6144 | 7.08MB | 1.472ms | 13.12ms | 8.9× | 4.81GB/s | 0.0017 |
+| lm_head | 151936×2048 | 175MB | **28.2ms** | 533ms | **18.9×** | 6.20GB/s | 0.0017 |
+
+**整 token 估算**：28 层 × (qkv+o+gate+up+down=5.82ms) =162.9ms + lm_head28.2ms = **~191ms**；
+对比 fp16 decode **239ms** ⇒ **约0.8×，仍不更快**；有效权重带宽约 **5.1GB/s**（fp16 14.4，
+memcpy上限42.7）。**未达 <100ms/≥5–10GB/s 的“雷霆”门槛**。
+
+**结论**：fused NF4 把“物化路径”的 1483ms 救到 ~191ms（7.8×），但**仍慢于 fp16 GEMV**；
+2bit 再减半权重也救不了 dequant 计算/带宽效率，**不做 2bit fused 内核**；2bit 只在“放得下”
+维度有意义（且当前 Linear2bit 仍 OOM）。
