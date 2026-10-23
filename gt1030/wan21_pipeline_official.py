@@ -30,6 +30,7 @@ def main():
     ap.add_argument('--frames', type=int, default=9)
     ap.add_argument('--size', type=int, default=256)
     ap.add_argument('--guidance', type=float, default=5.0)
+    ap.add_argument('--shift', type=float, default=5.0)
     ap.add_argument('--outdir', default='')
     args = ap.parse_args()
     torch.set_num_threads(6)
@@ -37,13 +38,13 @@ def main():
 
     text = torch.load(r'D:\work\textmodel\Wan2.1-T2V-1.3B\prompt_cat_hidden.pt',
                       map_location='cpu').float()
-    neg = torch.zeros_like(text)
+    neg = torch.load(r'D:\work\textmodel\Wan2.1-T2V-1.3B\prompt_empty_hidden.pt', map_location='cpu').float()
     vae = VP.load_decoder()
     transformer = load_wan_transformer()
     n = 0
     if args.backend == 'nf4':
         n = quantize_linears(transformer)
-    sched = FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=5.0)
+    sched = FlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=args.shift)
     pipe = WanPipeline(vae=vae, text_encoder=None, tokenizer=None,
                        transformer=transformer, scheduler=sched)
     generator = torch.Generator(device='cpu').manual_seed(1234)
