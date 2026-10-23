@@ -44,6 +44,8 @@ def main():
     ap.add_argument('--size', type=int, default=256)
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--out', default='')
+    ap.add_argument('--no-mem-pattern', action='store_true')
+    ap.add_argument('--no-arena', action='store_true')
     args = ap.parse_args()
 
     from optimum.onnxruntime import ORTStableDiffusionPipeline
@@ -51,7 +53,17 @@ def main():
     provider = 'DmlExecutionProvider' if args.provider == 'dml' else 'CPUExecutionProvider'
     log('loading %s (provider=%s)' % (args.onnx_dir, provider))
     t0 = time.perf_counter()
+    import onnxruntime as ort
+    so = ort.SessionOptions()
+    if args.no_mem_pattern:
+        so.enable_mem_pattern = False
+    po = None
+    if args.no_arena:
+        so.enable_cpu_mem_arena = False
+        po = [{'enable_memory_arena': False}]
     pipe = ORTStableDiffusionPipeline.from_pretrained(args.onnx_dir, provider=provider,
+                                                      session_options=so,
+                                                      provider_options=po,
                                                       local_files_only=True)
     load_s = time.perf_counter() - t0
     log('loaded in %.1f s | RSS %.2f GB' % (load_s, rss_gb()))
