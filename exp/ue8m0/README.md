@@ -93,3 +93,21 @@ it is kept because it is what produced the first, wrong conclusion, and the inte
   and on ARM (dotprod/SVE), neither of which this machine has.
 * Next step if pursued: measure end-to-end model accuracy (logit / top-1 agreement) rather
   than per-matmul relative error, and only then decide.
+
+## End-to-end accuracy sanity check (toy MLP — not a validation)
+
+`e2e_accuracy.py` runs a 512 -> 2048 -> 512 -> 10 MLP on 200 random inputs under three regimes:
+fp32, weights-only u8 (bnb today), and weights+activations int8 (integer-dot requirement).
+
+| BK | w8 logit err | w8a8 logit err | w8 top-1 | w8a8 top-1 | w8 max prob drift | w8a8 max prob drift |
+|---|---|---|---|---|---|---|
+| 64 | 1.11e-2 | 1.73e-2 | 99.5% | 99.5% | 3.2e-4 | 4.1e-4 |
+| 128 | 1.12e-2 | 1.66e-2 | 99.0% | 97.5% | 2.8e-4 | 4.1e-4 |
+| 256 | 1.25e-2 | 1.93e-2 | 98.0% | 98.0% | 3.1e-4 | 4.6e-4 |
+| 512 | 1.39e-2 | 2.13e-2 | 98.5% | 97.5% | 3.8e-4 | 5.2e-4 |
+| 1024 | 1.27e-2 | 1.90e-2 | 99.0% | 98.5% | 3.2e-4 | 5.7e-4 |
+
+Logit error grows ~50%, but top-1 agreement and maximum probability drift barely move, i.e.
+decisions do not change in this toy setting. This is **not** a green light: the weights are
+random and untrained and the class margins are large. A real trained model on real data is
+required before adopting anything.
