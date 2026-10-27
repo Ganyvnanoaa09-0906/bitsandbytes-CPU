@@ -890,6 +890,8 @@ sector_mirror.exe 1 E:\d_drive.img
 
 #### 9.2.4 恢复（镜像完成后，在完好机器上操作）
 
+- 先用本仓库自带的 **`mft_recover`**（§9.2.6，按 MFT 记录精确还原名字/大小/内容）或
+  **`sector_carve`**（§9.2.5，MFT 已毁时的签名恢复）；或
 - 用 **TestDisk**（便携版）从 `d_drive.img` 恢复分区 / 文件；或
 - 用 **7-Zip** 提取 `.img`（若文件系统尚可读）；或
 - 用 **Windows File Recovery** 对镜像深度扫描（`winfr` 支持从镜像恢复）。
@@ -915,6 +917,33 @@ sector_carve.exe E: D:\carved_mom
 > **实测参考**：MFT 已损坏的 U 盘（7.5GB）经 sector_mirror 镜像 + sector_carve 扫，
 > 恢复 **3200+ 个文件**（照片/压缩包/PDF/MP4/Word/Excel/PPT）；PNG 99.6% 可打开、
 > docx 10/10 有效、MP4 完整；GUI 直扫物理盘恢复 **~95% 可用**。
+
+#### 9.2.6 元数据恢复 `mft_recover`（自带，可打平 winfr 的 regular 模式）
+
+> **用途**：**MFT 本身还在**（哪怕文件已被删除、目录项已消失），按 `$MFT` 记录里的
+> `$FILE_NAME` / 大小 / 数据运行列表**精确还原**——这就是 winfr 的 regular 模式，但本工具
+> **只读**、**直接吃镜像或盘符**、**不需要挂载 NTFS**，还能按原始名字 + 精确大小输出。
+
+```bat
+:: 用法：mft_recover <镜像/盘符> [输出目录] [--all] [--debug]
+mft_recover.exe D:\usb_mom.img D:\recovered          :: 只还原「已删除」的文件
+mft_recover.exe D:\usb_mom.img D:\recovered --all    :: 连没删的一起导出
+mft_recover.exe D:\usb_mom.img --debug               :: 只统计 + 逐条打印判定（排查用）
+mft_recover.exe \\.\F: D:\recovered                  :: 直接扫盘符（需管理员）
+```
+
+- **输出命名**：`del_<记录号>_<原名>` / `live_<记录号>_<原名>`，记录号可回查 `--debug`。
+- **能还原**：驻留小文件（含 0 字节文件）、非驻留大文件（按 runlist 逐簇拷贝，稀疏段补 0）、
+  UTF-16 中文文件名。
+- **还不能还原**：记录已被覆写/清零的文件、压缩或加密的数据流、属性被
+  `$ATTRIBUTE_LIST` 拆到 extension record 的超多属性文件、目录层级（输出是扁平的，
+  名字与内容保住，路径不重建）。
+- **先跑哪个**：**MFT 还能读 → 先 `mft_recover`**（有名字、大小精确）；**MFT 已毁 →
+  `sector_carve` 签名恢复**（没名字、靠文件头尾特征）。两个可以都跑，结果取并集。
+
+> **自测**：`python tools\mft_selftest.py`（需要 WSL + ntfs-3g）会造 5 个真 NTFS 卷
+> （默认几何 / 8KB 簇 / 1KB 簇 / 4KB 扇区 / 人为清零一条记录），逐文件核对 sha256，
+> **全 PASS** 才说明恢复是字节级正确的，而不是「大小差不多」。
 
 ### 9.3 第二梯队：本仓库 / 工具均不可用时 → Windows File Recovery
 

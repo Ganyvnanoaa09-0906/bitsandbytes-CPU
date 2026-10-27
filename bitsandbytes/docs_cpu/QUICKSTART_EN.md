@@ -949,6 +949,8 @@ sector_mirror.exe 1 E:\d_drive.img      :: legacy: physical disk number 1
 
 #### 9.2.4 Recover (on a healthy machine after the mirror)
 
+- First try this repo's built-in **`mft_recover`** (9.2.6, exact rebuild from MFT records:
+  names, sizes, content) or **`sector_carve`** (9.2.5, signature carve for a dead MFT); or
 - **TestDisk** (portable) from `d_drive.img`; or **7-Zip** extract `.img`; or
   **Windows File Recovery** deep scan (`winfr` supports image recovery).
 
@@ -971,6 +973,36 @@ sector_carve.exe E: D:\carved_mom
 > **Measured**: on an MFT-damaged 7.5GB USB stick, mirror + carve recovered **3200+ files**
 > (photos/zip/PDF/MP4/Word/Excel/PPT); PNG 99.6% open, docx 10/10 valid, MP4 complete;
 > the GUI physical-drive scan recovers **~95%** usable.
+
+#### 9.2.6 Metadata recovery `mft_recover` (built-in; matches winfr's regular mode)
+
+> When the **MFT itself is still readable** (even after files were deleted and directory
+> entries vanished), this rebuilds files from the `$FILE_NAME` / size / data-runlist stored in
+> their `$MFT` records — that is winfr's regular mode, but read-only, working directly on an
+> image or a drive letter, **no NTFS mount required**, preserving original names and exact sizes.
+
+```bat
+:: usage: mft_recover <image|drive> [outdir] [--all] [--debug]
+mft_recover.exe D:\usb_mom.img D:\recovered          :: deleted files only (default)
+mft_recover.exe D:\usb_mom.img D:\recovered --all    :: also export the live ones
+mft_recover.exe D:\usb_mom.img --debug               :: stats + per-record decisions only
+mft_recover.exe \\.\F: D:\recovered                  :: scan a drive directly (admin)
+```
+
+- **Output names**: `del_<record#>_<original name>` / `live_<record#>_<original name>`; the
+  record number maps back to `--debug` output.
+- **Recovers**: resident small files (including 0-byte files), non-resident large files (copied
+  cluster by cluster via the runlist, sparse runs zero-filled), UTF-16 (e.g. Chinese) names.
+- **Does not recover (yet)**: records overwritten/zeroed, compressed or encrypted data streams,
+  files whose attributes were split into extension records via `$ATTRIBUTE_LIST`, and the
+  directory hierarchy (output is flat — names and content are kept, paths are not rebuilt).
+- **Which one first**: **MFT readable → `mft_recover`** (names + exact sizes); **MFT destroyed →
+  `sector_carve`** signature mode (no names, header/trailer heuristics). Run both and merge.
+
+> **Self-test**: `python tools\mft_selftest.py` (needs WSL + ntfs-3g) builds five real NTFS
+> volumes (default geometry / 8KB clusters / 1KB clusters / 4KB sectors / one deliberately
+> zeroed record) and verifies every recovered file by SHA-256 — all PASS means the recovery is
+> byte-exact, not merely the right size.
 
 ### 9.3 Tier 2: Windows File Recovery (when repo/tool unavailable)
 
