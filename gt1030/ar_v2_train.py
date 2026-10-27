@@ -46,6 +46,9 @@ def main():
     ap.add_argument('--shuffle', type=int, default=1)
     ap.add_argument('--opt-state', type=int, default=0, help='1=存取优化器状态')
     ap.add_argument('--spike', type=float, default=100.0, help='grad_norm 超过就跳过该步')
+    ap.add_argument('--sgdr', type=int, default=0, help='1=cosine warm restarts')
+    ap.add_argument('--sgdr-cycle', type=int, default=1000, help='首个 cycle 长度(步)')
+    ap.add_argument('--sgdr-mult', type=float, default=1.0, help='每 cycle 长度倍数')
     ap.add_argument('--warmup', type=int, default=0, help='前多少步线性升温到 --lr')
     ap.add_argument('--lr-min', type=float, default=0.0, help='余弦衰减终点')
     ap.add_argument('--val-frac', type=float, default=0.02,
@@ -79,9 +82,31 @@ def main():
     losses, step_times = [], []
     import math
 
+    # SGDR 的 cycle 边界（预计算：T_cur 每周期乘 sgdr_mult）
+    cyc_edges = []
+    if args.sgdr:
+        t, acc = float(args.sgdr_cycle), 0.0
+        while acc < args.steps:
+            acc += t
+            cyc_edges.append(int(round(acc)))
+            t *= args.sgdr_mult
+
     def lr_at(st):
         if args.warmup and st <= args.warmup:
             return args.lr * float(st) / float(args.warmup)
+        if args.sgdr and cyc_edges:
+            lo = 0
+            for e in cyc_edges:            # 定位当前 cycle
+                if st <= e:
+                    hi = e
+                    break
+                lo = e
+            else:
+                hi = cyc_edges[-1]
+            span = max(1, hi - lo)
+            prog = (st - lo) / float(span)
+            prog = min(1.0, max(0.0, prog))
+            return args.lr_min + (args.lr - args.lr_min) * 0.5 * (1.0 + math.cos(math.pi * prog))
         prog = (st - args.warmup) / float(max(1, args.steps - args.warmup))
         prog = min(1.0, max(0.0, prog))
         return args.lr_min + (args.lr - args.lr_min) * 0.5 * (1.0 + math.cos(math.pi * prog))
@@ -89,6 +114,10 @@ def main():
     n_skip = 0
     n_spike = 0
     lr_used = args.lr
+    cyc_i = 0
+    cyc_gn_max = 0.0
+    cyc_loss0 = None
+    cyc_lossN = None
     for st in range(1, args.steps + 1):
         lr_used = lr_at(st)
         if pos + MM.B > len(order):
@@ -118,6 +147,23 @@ def main():
                     logf.write(msg1 + "\n"); logf.flush()
                 continue
         gn = model.opt_step(lr_used, start_step + st)   # 真的用调度后的 lr
+        if args.sgdr:
+            if np.isfinite(gn):
+                cyc_gn_max = max(cyc_gn_max, float(gn))
+            if cyc_loss0 is None:
+                cyc_loss0 = loss
+            cyc_lossN = loss
+            while cyc_i < len(cyc_edges) and st >= cyc_edges[cyc_i]:
+                msgc = ('[igpu] SGDR cycle %d 结束 @step %d：gnorm_max=%.2f  loss %.4f -> %.4f  '
+                        '下一 cycle 从 lr=%.2e 重启'
+                        % (cyc_i + 1, st, cyc_gn_max, cyc_loss0 if cyc_loss0 else 0.0,
+                           cyc_lossN if cyc_lossN else 0.0, args.lr))
+                print(msgc, flush=True)
+                if logf:
+                    logf.write(msgc + "\n"); logf.flush()
+                cyc_i += 1
+                cyc_gn_max = 0.0
+                cyc_loss0 = None
         dt = time.time() - t0
         losses.append(loss)
         step_times.append(dt)
