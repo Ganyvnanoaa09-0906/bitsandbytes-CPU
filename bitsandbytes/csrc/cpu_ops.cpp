@@ -2146,22 +2146,24 @@ void quantize_4bit_cpu_impl(
 #pragma GCC target("avx2,fma,f16c")
 #endif
 
-static int g_perm64[64];
-static bool g_perm64_ready = false;
-
-static void ensure_perm64()
-{
-    if (g_perm64_ready)
-        return;
-    for (int j = 0; j < 8; ++j)
-        for (int h = 0; h < 2; ++h)
-            for (int i = 0; i < 4; ++i) {
-                int off = (j < 4) ? (h ? 32 + j * 4 : j * 4)
-                                  : (h ? 48 + (j - 4) * 4 : 16 + (j - 4) * 4);
-                g_perm64[j * 8 + h * 4 + i] = off + i;
-            }
-    g_perm64_ready = true;
-}
+// 🔴 2026-10-27 【数据竞争修复】原先这里是 `static int g_perm64[64]` + `g_perm64_ready`
+//    的惰性初始化：`ensure_perm64()` 没有任何同步，多线程首次并发进 v3 时，一个线程
+//    可能先看到 ready=true 再读到**半初始化**的表（C++ 内存模型下是数据竞争/UB；表内容
+//    虽然确定，但"各线程只写相同值"属于侥幸，不构成正确性保证——编译器/CPU 都可能把
+//    ready 的发布提前到填表完成之前）。现在改成**编译期常量表**：没有惰性初始化、
+//    没有共享可写状态、没有发布顺序问题，v3 每次调用也少一个分支。
+//    数值与原循环逐项一致（原循环：off = j<4 ? (h?32+j*4:j*4) : (h?48+(j-4)*4:16+(j-4)*4)，
+//    写入 g_perm64[j*8+h*4+i] = off+i）。
+static const int g_perm64[64] = {
+    0,  1,  2,  3,  32, 33, 34, 35,
+    4,  5,  6,  7,  36, 37, 38, 39,
+    8,  9,  10, 11, 40, 41, 42, 43,
+    12, 13, 14, 15, 44, 45, 46, 47,
+    16, 17, 18, 19, 48, 49, 50, 51,
+    20, 21, 22, 23, 52, 53, 54, 55,
+    24, 25, 26, 27, 56, 57, 58, 59,
+    28, 29, 30, 31, 60, 61, 62, 63,
+};
 
 // out[n] = sum_k A[k] * lut[nib(B[n,k/2])] * absmax[n, k/blocksize], for M == 1.
 static void avx2_gemv_4bit_inference_v3_f32(
@@ -2172,7 +2174,6 @@ static void avx2_gemv_4bit_inference_v3_f32(
     const long long k2 = K >> 1;
     const long long bpr = K / blocksize;
     __m128i p0, p1, p2, p3;
-    ensure_perm64();
     avx2_lut_planes(lut, p0, p1, p2, p3);
     const __m256i pl0 = _mm256_broadcastsi128_si256(p0);
     const __m256i pl1 = _mm256_broadcastsi128_si256(p1);
