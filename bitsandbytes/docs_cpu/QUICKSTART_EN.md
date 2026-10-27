@@ -980,6 +980,7 @@ sector_carve.exe E: D:\carved_mom
 - **Filtering** (saves a lot of time/space on big images): `--ext jpg,png` keeps only those
   types, `--min-size 100k` drops smaller results (k/m/g suffixes accepted), e.g.
   `sector_carve.exe D:\usb.img D:\carved --ext jpg,png --min-size 20k`.
+  (`--ext` / `--min-size` exist in the **CLI** only; the GUI deliberately stays simple.)
 - **ZIP / OOXML lengths are computed structurally** (local header -> central directory ->
   EOCD), so several zips/docx/xlsx/pptx in one image no longer swallow each other (the old
   implementation took the last `PK\x05\x06` in its buffer, which turned a 3KB docx into a

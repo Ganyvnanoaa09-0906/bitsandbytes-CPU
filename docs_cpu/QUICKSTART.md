@@ -922,6 +922,7 @@ sector_carve.exe E: D:\carved_mom
 - **过滤**（大镜像上很省时间/空间）：`--ext jpg,png` 只保留这些类型；`--min-size 100k`
   跳过小于该尺寸的结果（支持 k/m/g 后缀）。例：
   `sector_carve.exe D:\usb.img D:\carved --ext jpg,png --min-size 20k`。
+  （`--ext` / `--min-size` 只在**命令行版**提供；GUI 版为了界面简单没有过滤项。）
 - **ZIP / OOXML 长度是「按结构算」出来的**：顺序走 local header → 中央目录 → EOCD，
   所以同一镜像里有多个 zip/docx/xlsx/pptx 时不会互相吞并（旧实现是找缓冲区内最后一个
   `PK\x05\x06`，实测会把 3KB 的 docx 切成 461KB 的大块）。
