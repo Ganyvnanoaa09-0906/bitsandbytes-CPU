@@ -78,6 +78,85 @@ losetup -d "$LOOP" 2>/dev/null
 echo "BUILD_OK"
 """
 
+BUILDER_BULK = r"""#!/bin/bash
+# 由 mft_selftest.py 生成：造「多文件」或「MFT 碎片化」场景
+#   $1 镜像  $2 挂载点  $3 清单  $4 模式(scale|frag)  $5.. mkfs 额外参数
+set -u
+IMG="$1"; MNT="$2"; MAN="$3"; MODE="$4"; shift 4
+GEO="$*"
+
+rm -f "$IMG" "$MAN"
+truncate -s 96M "$IMG" || { echo "TRUNCATE_FAIL"; exit 2; }
+# shellcheck disable=SC2086
+mkfs.ntfs -F -Q -L mfttest $GEO "$IMG" >/dev/null 2>&1 || { echo "MKFS_FAIL"; exit 2; }
+mkdir -p "$MNT"
+LOOP=$(losetup -f --show "$IMG" 2>/dev/null) || { echo "LOSETUP_FAIL"; exit 2; }
+mount -t ntfs-3g "$LOOP" "$MNT" 2>/dev/null || { echo "MOUNT_FAIL"; exit 2; }
+cd "$MNT" || { echo "CD_FAIL"; exit 2; }
+
+if [ "$MODE" = "frag" ]; then
+  # 碎化 $MFT 的思路：先把卷塞到接近满（1MB 大文件写满，再用 64KB 小文件把 MFT 保留区也吃掉），
+  # 然后隔一个删一个 —— 空洞散布在整个卷上。之后创建的数据和 $MFT 的增长只能塞进这些碎洞，
+  # 于是 MFT 会被切成多段 run（这正是本场景要验的代码路径）。
+  mkdir -p fill
+  i=0
+  while [ $i -lt 200 ]; do
+    i=$((i + 1))
+    dd if=/dev/urandom of="fill/big$i.bin" bs=1M count=1 status=none 2>/dev/null
+    if [ "$(stat -c %s "fill/big$i.bin" 2>/dev/null)" != "1048576" ]; then
+      rm -f "fill/big$i.bin"
+      break
+    fi
+  done
+  j=0
+  while [ $j -lt 400 ]; do
+    j=$((j + 1))
+    dd if=/dev/urandom of="fill/small$j.bin" bs=64k count=1 status=none 2>/dev/null
+    if [ "$(stat -c %s "fill/small$j.bin" 2>/dev/null)" != "65536" ]; then
+      rm -f "fill/small$j.bin"
+      break
+    fi
+  done
+  sync
+  k=0
+  for f in $(ls fill | sort); do
+    k=$((k + 1))
+    if [ $((k % 2)) -eq 0 ]; then rm -f "fill/$f"; fi
+  done
+  sync
+fi
+
+mkdir -p d
+for i in $(seq 1 20); do mkdir -p "d/dir$i"; done
+for i in $(seq 1 20); do
+  for j in $(seq 1 25); do
+    sz=$(( (RANDOM % 3000) + 200 ))
+    head -c $sz /dev/urandom > "d/dir$i/f$j.bin"
+  done
+done
+sync
+
+# 记录全部清单，并隔一个删一个（排序后按序号决定，保证可重复）
+: > "$MAN"
+k=0
+for f in $(find d -type f | sort); do
+  sz=$(stat -c %s "$f")
+  hs=$(sha256sum "$f" | cut -d' ' -f1)
+  k=$((k + 1))
+  if [ $((k % 2)) -eq 0 ]; then
+    printf '%s\t%s\t%s\t%s\n' "$f" "$hs" "$sz" "deleted" >> "$MAN"
+    rm -f "$f"
+  else
+    printf '%s\t%s\t%s\t%s\n' "$f" "$hs" "$sz" "live" >> "$MAN"
+  fi
+done
+sync
+cd / || true
+umount "$MNT" 2>/dev/null || umount -l "$MNT" 2>/dev/null || { echo "UMOUNT_FAIL"; exit 2; }
+losetup -d "$LOOP" 2>/dev/null
+echo "BUILD_OK"
+"""
+
 # 每个场景：名字 -> mkfs.ntfs 额外参数
 CASES = {
     "basic": [],
@@ -106,6 +185,7 @@ def run(cmd, **kw):
     kw.setdefault("capture_output", True)
     kw.setdefault("text", True)
     kw.setdefault("errors", "replace")
+    kw.setdefault("encoding", "utf-8")
     return subprocess.run(cmd, **kw)
 
 
@@ -121,6 +201,31 @@ def build_image(case_dir, geo):
     os.makedirs(mnt, exist_ok=True)
     r = run(["wsl", "-u", "root", "--", "bash", wsl_path(script),
              wsl_path(img), wsl_path(mnt), wsl_path(man)] + geo)
+    if r.returncode != 0 or "BUILD_OK" not in r.stdout:
+        raise RuntimeError("造卷失败: rc=%s out=%r err=%r" % (r.returncode, r.stdout[-300:], r.stderr[-300:]))
+    expect = {}
+    with open(man, encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            rel, hs, sz, st = line.split("\t")
+            expect[rel] = (hs, int(sz), st)
+    return img, expect
+
+
+def build_image_bulk(case_dir, mode, geo):
+    """scale / frag 场景：用 BUILDER_BULK 造一个多文件卷，返回 {relpath: (sha, size, state)}"""
+    os.makedirs(case_dir, exist_ok=True)
+    img = os.path.join(case_dir, "mft.img")
+    mnt = os.path.join(case_dir, "mnt")
+    man = os.path.join(case_dir, "manifest.tsv")
+    script = os.path.join(case_dir, "_build_bulk.sh")
+    with open(script, "w", newline="\n", encoding="utf-8") as f:
+        f.write(BUILDER_BULK)
+    os.makedirs(mnt, exist_ok=True)
+    r = run(["wsl", "-u", "root", "--", "bash", wsl_path(script),
+             wsl_path(img), wsl_path(mnt), wsl_path(man), mode] + geo)
     if r.returncode != 0 or "BUILD_OK" not in r.stdout:
         raise RuntimeError("造卷失败: rc=%s out=%r err=%r" % (r.returncode, r.stdout[-300:], r.stderr[-300:]))
     expect = {}
@@ -225,7 +330,9 @@ def main():
     cases = list(CASES)
     if args.only:
         cases = [c for c in args.only.split(",") if c]
-    cases = cases + ["damaged"]
+    for extra in ("damaged", "scale", "frag"):
+        if extra not in cases:
+            cases.append(extra)
 
     results = {}
     for case in cases:
@@ -234,11 +341,15 @@ def main():
         print("=" * 70)
         case_dir = os.path.join(args.workdir, case)
         try:
-            if case == "damaged":
+            if case in ("scale", "frag"):
+                img, expect = build_image_bulk(case_dir, "frag" if case == "frag" else "scale",
+                                               CASES["basic"])
+            elif case == "damaged":
                 geo = CASES["basic"]
+                img, expect = build_image(case_dir, geo)
             else:
                 geo = CASES[case]
-            img, expect = build_image(case_dir, geo)
+                img, expect = build_image(case_dir, geo)
         except Exception as e:  # noqa: BLE001
             print("  SKIP 造卷不可用: %s" % e)
             results[case] = (None, ["  SKIP %s" % e])
@@ -296,6 +407,14 @@ def main():
                 ok = ok and ok_gui
         else:
             lines.append("  GUI 版: 跳过（没找到 mft_recover_gui.exe）")
+        if case in ("scale", "frag"):
+            runs = re.search(r"数据段数=(\d+)", r.stdout)
+            nrun = int(runs.group(1)) if runs else -1
+            lines.append("  $MFT 数据段数=%d" % nrun)
+            if case == "frag" and nrun < 2:
+                lines.append("  SKIP 本卷的 $MFT 没能裂成多段（碎片化测试只验证了正确性）")
+                # 正确性仍然必须过，所以只提示不判失败
+
         # --flat 模式（老的扁平命名 del_<idx>_<name>）：必须还可用，别为了目录树把旧格式弄丢
         outf = os.path.join(case_dir, "out_flat")
         rf = run_tool(exe, img, outf, ["--flat"])
