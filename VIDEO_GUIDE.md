@@ -434,6 +434,17 @@ python video_e2e.py train --data D:\work\video_mvp\data\data_win_S128_T8.pt `
 4. 官方 AnimateDiff 的初始噪声是**逐帧独立**的（diffusers 0.40 `prepare_latents`），
    "共享一张噪声"不是修复方向：实测配合确定性采样会得到 8 帧完全相同（frame_diff 0.64）。
 5. 运动模块本身没问题：adapter 567/567 张量逐一对上（max|diff|=0），扰动一帧其它帧输出变化 0.15–0.44。
+6. **滑窗（continuous）模式要调 carry 参数**：默认 `carry-steps 3 / carry-noise 400` 在 26 帧上
+   细节衰减 47.1%（判据 FAIL）；改成 `--steps 10 --carry-steps 5 --carry-noise 300` 后
+   细节衰减 **17.6%（判据 PASS）**、seam ratio **0.859**（<1.5）、帧间 MAD 8.12。
+   原因：每次续接都要把"带着的帧"重新加噪到 t≈300 再走 5 步去噪，步数太少细节回不来。
+   命令：
+   ```powershell
+   python video_e2e.py gen --mode sliding --res 128 --frames 24 --chunk 8 --overlap 2 `
+     --steps 10 --carry-steps 5 --carry-noise 300 --scheduler dpm --out runs\slideA
+   ```
+   注：sliding 模式**没有 LoRA 加载入口**（设计如此，见 VIDEO_E2E_PIPELINE_PLAN §2.1）；
+   要带自训 LoRA 请用 `--mode independent`。
 
 演示产物（不进仓库，仓库卫生守卫会拦图片/视频）：
 `D:\work\video_mvp\demo_2026-10-27\`
