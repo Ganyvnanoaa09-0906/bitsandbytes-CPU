@@ -16,6 +16,12 @@
 //
 // Shapes are the ones measured earlier on this machine so the numbers are comparable
 // with the shipped kernel's 19.67 GB/s.
+//
+// 🔴 2026-10-27 【覆盖范围，审计发现】本文件验证的是 `avx2_gemv_4bit.h` 里的
+//    `gemv_4bit_m1`，**不是**发布物实际调用的实现（生产是 `cpu_ops.cpp` 的 v3）。
+//    两者数值等价目前只是**推演**，没有测量；生产路径的收益由发布物实测给出
+//    （见 avx2_gemv_4bit.h 顶部：vs dequant+dense 回退 13.4–15.9×，中位 ≈14.5×）。
+//    别把这里的计时当成"生产内核的加速"。
 
 #include "avx2_gemv_4bit.h"
 

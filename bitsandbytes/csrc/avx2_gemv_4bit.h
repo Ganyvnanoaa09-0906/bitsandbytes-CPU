@@ -21,6 +21,15 @@
 // So on AVX2-only hardware the fused path is worth an order of magnitude, and it is
 // simply absent upstream.
 //
+// 🔴 2026-10-27 【适用范围，审计发现】上面 10.6× 是**这个头文件里的 `gemv_4bit_m1`**
+//    （独立贡献/参考实现）的测量值。它**没有被生产路径 include**——生产跑的是
+//    `cpu_ops.cpp` 里的 `avx2_gemv_4bit_inference_v3_f32`（M=1、blocksize=64、K%64==0 时进入）。
+//    所以不要把 10.6× 当成"发布物的加速"。发布物的真实数字（2026-10-27 用 dev9 wheel 实测，
+//    单线程、Qwen3-8B 四个层形状）：
+//        生产 fused kernel vs 上游 dequantise+dense GEMM 回退：13.39× / 13.73× / 15.93× / 14.85×
+//        （4096×4096 / 6144×4096 / 24576×4096 / 4096×12288，中位 ≈14.5×）
+//    即生产路径比本文的贡献实现更快；本文保留作算法说明，但"覆盖率"以生产路径为准。
+//
 // DESIGN NOTES
 // ------------
 // * The 16-entry NF4/FP4 tables exactly fill the 16-byte index space of pshufb, so one
