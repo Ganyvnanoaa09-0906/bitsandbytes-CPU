@@ -381,6 +381,13 @@ python video_e2e.py gen --mode independent --res 128 --frames 16 --chunk 8 `
 # ③ 连续镜头（滑窗，带 overlap 混合；seam 指标会按 sliding 判据检查）
 python video_e2e.py gen --mode sliding --res 128 --frames 24 --chunk 8 --overlap 2 `
   --steps 6 --scheduler dpm --out runs\slideA
+
+# ④ 训练 LoRA（分段落盘；每段受 time-limit 截断后自动 --resume 续跑）
+#    ★ --out 必须用【绝对路径】：子进程 cwd 在仓库根，相对路径会让续跑找不到 ckpt
+python video_e2e.py train --data D:\work\video_mvp\data\data_win_S128_T8.pt `
+  --val-data D:\work\video_mvp\data\data_win_S128_T8.pt `
+  --out D:\work\video_mvp\runs\t128_f8_win_spatial_r4 `
+  --stages 60,100,140 --res 128 --frames 8 --lora-scope spatial --rank 4 --lr 1e-4
 ```
 
 前置条件：
@@ -405,11 +412,15 @@ python video_e2e.py gen --mode sliding --res 128 --frames 24 --chunk 8 --overlap
 
 | 配方 | 调度器 / 步数 | CFG | 帧间 MAD | 白像素 | 结论 |
 |---|---|---|---|---|---|
-| **基线（无 LoRA）** | **DPM / 6** | 7.5 | **18.1** | 6.1–6.4% | **连贯动画：头转、表情、头发都在动** ✅ |
-| 基线（旧 smoke A） | DPM / 6 | 7.5 | 15.2 | 0.14 / 0.51 | 同一配方，旧判据因阈值误判 |
+| **基线（无 LoRA）** | **DPM / 6** | 7.5 | **18.11** | 6.1–6.4% | **连贯动画：头转、表情、头发都在动** ✅ |
+| 基线（旧 smoke A） | DPM / 6 | 7.5 | 15.23（旧口径） | 0.14 / 0.51 | 同一配方，旧判据因阈值误判 |
 | 基线 | DDIM / 12 | 6.0 | 3.85 | — | **几乎静止**（确定性采样收敛到平均帧） |
-| 自训 temporal LoRA（rank8，1000 步） | DPM / 6 | 7.5 | **9.1（−49%）** | **25.9%** | 运动减半 + 过曝变形 ⇒ **有害** |
-| 同上 | DDIM / 12 | 6.0 | 3.85 | — | 静止（夜间那条"无运动"就是这一类测量） |
+| temporal LoRA（rank8，1000 步） | DPM / 6 | 7.5 | **12.06（−33%）** | **25.9 / 15.8%** | 过曝变形、运动受损 ⇒ **有害** |
+| **spatial LoRA（rank4，151 步）** | **DPM / 6** | 7.5 | **17.56（−3%）** | **7.85 / 1.46%** | **运动保住、风格明显改变** ✅ |
+| temporal LoRA | DDIM / 12 | 6.0 | 3.85 | — | 静止（夜间那条"无运动"就是这一类测量） |
+
+> 表里的 MAD 统一取 `metrics.json` 的 `temporal.mad`（同一口径）；生成日志里的
+> "intra-shot MAD" 是**每块内**的平均值，口径不同，不要混用。
 
 要点：
 1. **调度器决定运动**：同一份权重，DDIM 12 步几乎是静止图，DPM-Solver 6 步会动。
@@ -417,9 +428,23 @@ python video_e2e.py gen --mode sliding --res 128 --frames 24 --chunk 8 --overlap
 2. **训练闭环的采样器曾经没有 CFG**：`sample_check.py` 只做无条件 epsilon，等效 cfg=1.0，
    出的是彩色噪声 —— 夜里据此下的"motion_probe 无运动"结论无效。现已补 `--cfg`（默认 6.0）。
 3. **temporal-only LoRA（rank8/1000 步）会损害运动**：只动 168 个时序层时，最省事的降损方式就是
-   让各帧预测一致 ⇒ 静态化 + 过曝。换 `--lora_scope spatial`（只动空间层、不碰时序）是可验证的替代。
+   让各帧预测一致 ⇒ 静态化 + 过曝。**已验证的替代是 `--lora_scope spatial`**（只动空间层、不碰
+   时序模块）：rank4 训 151 步后，帧间 MAD 17.56（≈ 基线的 97%）、白像素 7.85%（正常），
+   同时画面风格明显改变（暖色/脸型/背景都变）⇒ **要 LoRA 就用 spatial scope**。
 4. 官方 AnimateDiff 的初始噪声是**逐帧独立**的（diffusers 0.40 `prepare_latents`），
    "共享一张噪声"不是修复方向：实测配合确定性采样会得到 8 帧完全相同（frame_diff 0.64）。
 5. 运动模块本身没问题：adapter 567/567 张量逐一对上（max|diff|=0），扰动一帧其它帧输出变化 0.15–0.44。
+
+演示产物（不进仓库，仓库卫生守卫会拦图片/视频）：
+`D:\work\video_mvp\demo_2026-10-27\`
+
+| 文件 | 内容 |
+|---|---|
+| `video_24f_spatial_lora.mp4` / `.gif` | **主交付**：24 帧（3 块 × 8）、128²、spatial LoRA、DPM 6 步 + CFG 7.5、FSRCNN 后处理 |
+| `video_16f_base.mp4` / `.gif` | 基线对照（无 LoRA），同一 prompt/seed |
+| `video_16f_spatial_lora.mp4` | spatial LoRA 16 帧对照 |
+| `video_16f_temporal_lora_NEGATIVE.mp4` | 负结果存档（temporal LoRA 过曝变形） |
+| `compare_base_vs_lora.png` | 三行帧条对照（base / temporal / spatial） |
+| `metrics_*.json`、`compare.json` | 对应 metrics.json 与汇总 |
 
 完整证据与复现：`D:\work\collab\shared\VIDEO_MOTION_DIAGNOSIS_2026-10-27.md`。
