@@ -36,6 +36,12 @@ def main():
     print('BASE    :', tok.decode(out[0], skip_special_tokens=True), flush=True)
     ck = safe_open(CKPT[args.format], framework='pt', device='cpu')
     keys = set(ck.keys())
+    # overlay nonquant weights from the quantized checkpoint (lm_head/embed/norms)
+    nq = {k: ck.get_tensor(k) for k in keys
+          if not any(x in k for x in ('.qweight', '.qzeros', '.scales', '.g_idx'))}
+    if nq:
+        model.load_state_dict(nq, strict=False)
+        print('[overlay] nonquant keys', len(nq), flush=True)
     n = 0
     for name, module in model.named_modules():
         if not hasattr(module, 'weight') or module.weight.ndim != 2:

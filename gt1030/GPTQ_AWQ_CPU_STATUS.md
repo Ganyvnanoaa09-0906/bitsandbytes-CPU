@@ -80,3 +80,16 @@ RTN control yrel0.1014 < GPTQ checkpoint0.1265，查了两个可能：
 ⇒ 剩余可能：我们的 GPTQ 反量化与官方仍有细节差异，或该 checkpoint 的 GPTQ 对随机 x 本就比 RTN 差
   （GPTQ 为校准分布优化，随机 x 不一定占优）。**需 AutoGPTQ/optimum 纯 torch 参考做 0.0 对拍**；
   在拿到之前不宣称 GPTQ 实现通过。
+## 关键修复 + 质量（2026-10-27）
+
+**必须用量化 checkpoint 的 nonquant 权重覆盖** `lm_head/embed_tokens/norms`；只加载 base 的非量化权重会
+让 AWQ 直接崩（PPL 9681、生成只输出 prompt）。覆盖后：
+- AWQ：PPL **2.7008 vs base2.4854（+8.66%）**；生成连贯（“Once upon a time, the world...”）。
+- GPTQ：PPL **2.8683 vs base2.4854（+15.40%）**；生成连贯。
+- 质量量级：+8.7%/+15.4%，高于“+2~6%”理想区间但非灾难；GPTQ 偏高可能与其 checkpoint/校准有关。
+- 实现等价性：AWQ 与 autoawq 官方 **rel0.0**；GPTQ 仍无官方参考（红旗未完全消）。
+
+**验收状态**：
+- (a) 实现等价性：AWQ PASS；GPTQ 待官方参考。
+- (b) 质量：**有 PPL 数据**（AWQ +8.66%、GPTQ +15.4%），未做 KL。
+- (c) fused GEMV/decode≥5×/内存≈4bit：**未做** ⇒ **#2 仍不宣称通过**。
