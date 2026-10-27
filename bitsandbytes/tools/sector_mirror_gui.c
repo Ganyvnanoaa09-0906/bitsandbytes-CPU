@@ -171,6 +171,30 @@ struct MirrorJob {
     wchar_t dstFull[MAX_PATH * 2];
 };
 
+/* 抗坏道读：整块失败时逐级缩小粒度抢救（1MB -> 64KB -> 4KB），读不出的填 0。
+   *badOut 累加坏区字节数（GUI 版只记数并在日志里报，不写 badmap 文件）。 */
+static DWORD SalvageReadG(HANDLE h, BYTE* buf, DWORD want, DWORDLONG off, DWORDLONG* badOut) {
+    DWORD got = 0, o, q, part, sp, br, sb;
+    const DWORD szMid = 65536, szSmall = 4096;
+    LARGE_INTEGER li;
+    for (o = 0; o < want; o += szMid) {
+        part = (want - o < szMid) ? (want - o) : szMid;
+        li.QuadPart = (LONGLONG)(off + o);
+        if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN)) break;
+        br = 0;
+        if (ReadFile(h, buf + o, part, &br, NULL) && br == part) { got += part; continue; }
+        for (q = 0; q < part; q += szSmall) {
+            sp = (part - q < szSmall) ? (part - q) : szSmall;
+            li.QuadPart = (LONGLONG)(off + o + q);
+            if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN)) break;
+            sb = 0;
+            if (ReadFile(h, buf + o + q, sp, &sb, NULL) && sb == sp) got += sp;
+            else { memset(buf + o + q, 0, sp); if (badOut) *badOut += sp; }
+        }
+    }
+    return got;
+}
+
 static DWORD WINAPI MirrorThread(LPVOID lp) {
     struct MirrorJob* job = (struct MirrorJob*)lp;
     wchar_t srcDrive[4], dstFull[MAX_PATH * 2];
@@ -226,6 +250,7 @@ static DWORD WINAPI MirrorThread(LPVOID lp) {
     logMsg(L"[*] 开始镜像（每 %u MB 一读；全 0 块按稀疏空洞跳过，非 0 数据全部保留）...", BUF_MB);
 
     DWORDLONG copied = 0, scanned = 0, total = diskSize;
+    DWORDLONG badBytes = 0;
     ULONGLONG lastPrint = GetTickCount64();
     /* 退出状态：0=正常完成 1=用户取消 2=读错误 3=写错误（与 WM_APP_DONE 的 wParam 对齐） */
     int exitCode = 0;
@@ -233,10 +258,24 @@ static DWORD WINAPI MirrorThread(LPVOID lp) {
         DWORD br = 0;
         if (!ReadFile(hSrc, buf, bufSize, &br, NULL)) {
             DWORD err = GetLastError();
-            if (err == ERROR_HANDLE_EOF) { break; }   /* 读到正常结尾 → 完成 */
-            logMsg(L"\n[警告] 读失败（err=%lu），已扫描 %llu MB 停止。", err, (ULONGLONG)(scanned / 1048576));
-            exitCode = 2;
-            break;
+            if (err == ERROR_HANDLE_EOF) break;
+            {   /* 坏块：重试 3 次，再逐级缩小粒度抢救，填 0 后继续 */
+                int rt;
+                for (rt = 0; rt < 3; ++rt) {
+                    LARGE_INTEGER lr; lr.QuadPart = (LONGLONG)scanned;
+                    SetFilePointerEx(hSrc, lr, NULL, FILE_BEGIN);
+                    br = 0;
+                    if (ReadFile(hSrc, buf, bufSize, &br, NULL)) break;
+                }
+                if (rt == 3) {
+                    LARGE_INTEGER lr; lr.QuadPart = (LONGLONG)scanned;
+                    SetFilePointerEx(hSrc, lr, NULL, FILE_BEGIN);
+                    br = SalvageReadG(hSrc, buf, bufSize, scanned, &badBytes);
+                    if (br == 0) { memset(buf, 0, bufSize); br = bufSize; }
+                    logMsg(L"[\u574f\u5757] \u504f\u79fb %llu MB \u4e0d\u53ef\u8bfb\uff08\u7d2f\u8ba1 %llu MB\uff09\uff0c\u5df2\u586b 0 \u5e76\u7ee7\u7eed",
+                           (ULONGLONG)(scanned / 1048576), (ULONGLONG)(badBytes / 1048576));
+                }
+            }
         }
         if (br == 0) break;   /* 一次读 0 字节 → 正常到结尾，完成 */
         if (g_abort) { exitCode = 1; break; }   /* 已请求取消 */
