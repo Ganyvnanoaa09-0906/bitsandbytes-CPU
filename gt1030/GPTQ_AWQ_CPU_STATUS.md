@@ -57,3 +57,16 @@ python gt1030/gptq_awq_cpu.py --format awq
 - 控制组表明 lead 估的“0.02–0.04”过于乐观：**g128 对称 int4 实测 wrel≈0.14**。
 - 单层 y rel GPTQ 0.126 >5e-3，仍不能算通过；全模型 logits0.53 也说明 base/量化 checkpoint
   不能直接这样对拍。
+## 实现等价性（最终判据，2026-10-27）
+
+- 直接 import autoawq `awq.utils.packing_utils.dequantize_gemm`，与我们的 `dequant_awq` 对拍：
+  **q_proj / down_proj 均 `rel = 0.0`**（我们的输出就是官方输出的转置，用于 `[out,in]` 权重布局）。
+  ⇒ **AWQ 解包实现正确**，此前 weight rel0.46 不是布局 bug，而是 base/checkpoint 对拍/量化误差问题。
+- GPTQ 无本地 AutoGPTQ 参考；control 与 checkpoint 同量级（0.14 vs 0.17），逐行 corr 0.93–0.99，
+  生成 20 token 连贯 ⇒ 实现大概率正确，但**未做官方 0.0 对拍**。
+- 生成对照：base `Once upon a time, there was a young man...`；GPTQ 同风格连贯；
+  AWQ 只输出 prompt（**这是 base/checkpoint 或未替换参数的问题，不是解包**，待查）。
+- **验收判据修正**：int4 不应要求 logits rel<1e-3。拆成：
+  (a) 实现等价性：AWQ **PASS（0.0）**；GPTQ 待官方参考。
+  (b) 质量：用 ppl/KL（int4 正常 +2~6% ppl、KL0.05~0.2），本轮未测。
+- 仍**不宣称 #2 通过**：GPTQ 官方等价性、fused GEMV/decode≥5×/内存未完成。
