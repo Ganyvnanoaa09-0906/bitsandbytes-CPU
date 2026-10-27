@@ -947,6 +947,16 @@ sector_mirror.exe 1 E:\d_drive.img      :: legacy: physical disk number 1
 - **Target ≠ source / `C:`** (anti-secondary-damage); **sparse mirror** (all-zero as holes);
 - **admin required**; **Ctrl+C** keeps the written portion.
 
+**Resume** (a multi-hour mirror should not restart from zero after a power cut):
+
+- **GUI**: progress goes into `<image>.progress`; reopen, keep "断点续传 / resume" checked and
+  press Start again to continue (a clean finish deletes the progress file, so a fresh run starts
+  from zero as expected);
+- **CLI**: `sector_mirror.exe D: E:\d_drive.img --resume`;
+- **Self-check** (no admin, no real disk needed): `sector_mirror_gui.exe --selftest`, log at
+  `%TEMP%\sm_resume_selftest.log` — verifies offset detection, byte-identical continuation, and
+  that an out-of-range checkpoint is rejected.
+
 #### 9.2.4 Recover (on a healthy machine after the mirror)
 
 - First try this repo's built-in **`mft_recover`** (9.2.6, exact rebuild from MFT records:

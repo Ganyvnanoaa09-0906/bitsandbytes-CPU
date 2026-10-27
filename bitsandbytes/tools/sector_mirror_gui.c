@@ -30,6 +30,7 @@
  *   用 TestDisk / 7-Zip 从 .img 提取文件；或 Windows File Recovery 在 .img 上深度扫描。
  */
 #ifndef UNICODE
+#define _CRT_SECURE_NO_WARNINGS
 #define UNICODE
 #endif
 #ifndef _UNICODE
@@ -37,6 +38,7 @@
 #endif
 #include <windows.h>
 #include <commctrl.h>
+#include <shellapi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -67,8 +69,10 @@
 #define IDC_LOG      106
 #define IDC_PROGRESS 107
 #define IDC_PCT      108
+#define IDC_RESUME   109   /* 断点续传复选框 */
 
 static HWND g_hwnd, g_src, g_dst, g_browse, g_start, g_cancel, g_log, g_progress, g_pct;
+static HWND g_resume;
 static HFONT g_font;
 static HANDLE g_thread = NULL;
 static volatile LONG g_abort = 0;     /* 1 = 请求取消 */
@@ -169,6 +173,7 @@ static void logMsg(const wchar_t* fmt, ...) {
 struct MirrorJob {
     wchar_t srcDrive[4];
     wchar_t dstFull[MAX_PATH * 2];
+    int resume;                /* 1 = 发现 <镜像>.progress 就从断点继续 */
 };
 
 /* 抗坏道读：整块失败时逐级缩小粒度抢救（1MB -> 64KB -> 4KB），读不出的填 0。
@@ -195,11 +200,52 @@ static DWORD SalvageReadG(HANDLE h, BYTE* buf, DWORD want, DWORDLONG off, DWORDL
     return got;
 }
 
+/* 断点判定（纯逻辑，好测）：
+ *   <镜像>.progress 里只存一行「已扫描字节数」。
+ *   返回 0 表示没有可用断点；否则返回断点值，并把 src/dst 都定位到该偏移。
+ *   注意 dst 必须用 OPEN_ALWAYS 打开（调用方负责），CREATE_ALWAYS 会先截断，断点就白存了。 */
+static DWORDLONG TryResumeOffset(const wchar_t* progPath, HANDLE hSrc, HANDLE hDst,
+                                 DWORDLONG diskSize) {
+    FILE* fpr;
+    DWORDLONG off = 0;
+    LARGE_INTEGER sz, li;
+    fpr = _wfopen(progPath, L"r");
+    if (!fpr) return 0;
+    {
+        unsigned long long v = 0;
+        if (fwscanf(fpr, L"%llu", &v) == 1 && v > 0 && (diskSize == 0 || v <= diskSize))
+            off = (DWORDLONG)v;
+    }
+    fclose(fpr);
+    if (!off) return 0;
+    if (!GetFileSizeEx(hDst, &sz) || sz.QuadPart < (LONGLONG)off) return 0;  /* 镜像比断点短 */
+    li.QuadPart = (LONGLONG)off;
+    if (!SetFilePointerEx(hSrc, li, NULL, FILE_BEGIN)) return 0;
+    if (!SetFilePointerEx(hDst, li, NULL, FILE_BEGIN)) return 0;
+    return off;
+}
+
+/* 断点续传状态：<镜像>.progress 里只存一行「已扫描字节数」 */
+static DWORDLONG g_resumeOff = 0;
+static wchar_t g_progPath[MAX_PATH * 2] = {0};
+static int g_progOn = 0;
+
+static void SaveProgress(void) {
+    FILE* fp;
+    if (!g_progOn || !g_progPath[0]) return;
+    fp = _wfopen(g_progPath, L"w");
+    if (!fp) return;
+    fwprintf(fp, L"%llu\n", (unsigned long long)g_resumeOff);
+    fclose(fp);
+}
+
 static DWORD WINAPI MirrorThread(LPVOID lp) {
     struct MirrorJob* job = (struct MirrorJob*)lp;
     wchar_t srcDrive[4], dstFull[MAX_PATH * 2];
+    int wantResume;
     wcsncpy_s(srcDrive, 4, job->srcDrive, _TRUNCATE);
     wcsncpy_s(dstFull, MAX_PATH * 2, job->dstFull, _TRUNCATE);
+    wantResume = job->resume;
     free(job);
 
     HANDLE hSrc = INVALID_HANDLE_VALUE, hDst = INVALID_HANDLE_VALUE;
@@ -226,17 +272,61 @@ static DWORD WINAPI MirrorThread(LPVOID lp) {
     else
         logMsg(L"[*] 源盘大小: %llu 字节 (~%.1f GB)", diskSize, (double)diskSize / 1073741824.0);
 
-    hDst = CreateFileW(dstFull, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
-                       FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hDst == INVALID_HANDLE_VALUE) {
-        logMsg(L"[错误] 打不开目标镜像文件 %s（err=%lu）。", dstFull, GetLastError());
-        CloseHandle(hSrc);
-        PostMessageW(g_hwnd, WM_APP_DONE, 2, 0);
-        return 1;
-    }
+    /* 续跑要用 OPEN_ALWAYS：CREATE_ALWAYS 会先把镜像截成 0，断点就白存了 */
     {
-        DWORD brc = 0;
-        DeviceIoControl(hDst, FSCTL_SET_SPARSE, NULL, 0, NULL, 0, &brc, NULL);
+        wchar_t progPath[MAX_PATH * 2];
+        DWORDLONG resumeOff = 0;
+        _snwprintf_s(progPath, MAX_PATH * 2, _TRUNCATE, L"%ls.progress", dstFull);
+        if (wantResume) {
+            /* 先只读一下断点值，决定用 OPEN_ALWAYS 还是 CREATE_ALWAYS */
+            FILE* fpr = _wfopen(progPath, L"r");
+            if (fpr) {
+                unsigned long long v = 0;
+                if (fwscanf(fpr, L"%llu", &v) == 1 && v > 0 &&
+                    (diskSize == 0 || v <= diskSize))
+                    resumeOff = (DWORDLONG)v;
+                fclose(fpr);
+            }
+        }
+        hDst = CreateFileW(dstFull, GENERIC_WRITE, 0, NULL,
+                           resumeOff ? OPEN_ALWAYS : CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hDst == INVALID_HANDLE_VALUE) {
+        }
+        if (hDst == INVALID_HANDLE_VALUE) {
+            logMsg(L"[错误] 打不开目标镜像文件 %s（err=%lu）。", dstFull, GetLastError());
+            CloseHandle(hSrc);
+            PostMessageW(g_hwnd, WM_APP_DONE, 2, 0);
+            return 1;
+        }
+        {
+            DWORD brc = 0;
+            DeviceIoControl(hDst, FSCTL_SET_SPARSE, NULL, 0, NULL, 0, &brc, NULL);
+        }
+        /* 断点定位：源和目标都 seek 到断点；目标文件比断点短就从头来 */
+        if (resumeOff) {
+            DWORDLONG got = TryResumeOffset(progPath, hSrc, hDst, diskSize);
+            if (got) {
+                resumeOff = got;
+                g_resumeOff = got;
+                logMsg(L"[*] 断点续传：从 %llu MB 处继续（断点文件 %s）",
+                       (ULONGLONG)(got / 1048576), progPath);
+            } else {
+                logMsg(L"[!] 断点无法定位（镜像比断点短？），本次从头开始。");
+                resumeOff = 0;
+                g_resumeOff = 0;
+            }
+        }
+        if (!resumeOff) {
+            LARGE_INTEGER zero;
+            zero.QuadPart = 0;
+            SetFilePointerEx(hDst, zero, NULL, FILE_BEGIN);
+            SetEndOfFile(hDst);
+            g_resumeOff = 0;
+        }
+        wcsncpy_s(g_progPath, MAX_PATH * 2, progPath, _TRUNCATE);
+        g_progOn = 1;
+        SaveProgress();     /* 先落一个断点，保证中途崩溃后至少有文件可读 */
     }
 
     DWORD bufSize = BUF_MB * 1024 * 1024;
@@ -249,7 +339,7 @@ static DWORD WINAPI MirrorThread(LPVOID lp) {
     }
     logMsg(L"[*] 开始镜像（每 %u MB 一读；全 0 块按稀疏空洞跳过，非 0 数据全部保留）...", BUF_MB);
 
-    DWORDLONG copied = 0, scanned = 0, total = diskSize;
+    DWORDLONG copied = 0, scanned = g_resumeOff, total = diskSize;
     DWORDLONG badBytes = 0;
     ULONGLONG lastPrint = GetTickCount64();
     /* 退出状态：0=正常完成 1=用户取消 2=读错误 3=写错误（与 WM_APP_DONE 的 wParam 对齐） */
@@ -280,6 +370,7 @@ static DWORD WINAPI MirrorThread(LPVOID lp) {
         if (br == 0) break;   /* 一次读 0 字节 → 正常到结尾，完成 */
         if (g_abort) { exitCode = 1; break; }   /* 已请求取消 */
         scanned += br;
+        g_resumeOff = scanned;
         BOOL allZero = TRUE;
         for (DWORD t = 0; t < br; t++) {
             if (buf[t] != 0) { allZero = FALSE; break; }
@@ -301,6 +392,7 @@ static DWORD WINAPI MirrorThread(LPVOID lp) {
         if (now - lastPrint >= PROGRESS_MS) {
             DWORDLONG pct = total ? ((scanned * 100) / total) : 0;
             PostMessageW(g_hwnd, WM_APP_PROGRESS, 0, (LPARAM)pct);
+            SaveProgress();          /* 每 2 秒落一次断点，断电量也能续 */
             lastPrint = now;
         }
     }
@@ -312,9 +404,12 @@ static DWORD WINAPI MirrorThread(LPVOID lp) {
     CloseHandle(hDst);
 
     if (exitCode == 1) {
-        logMsg(L"[*] 已取消。已写 %llu MB 保留在 %s（顺序文件，可续/可提取）。",
+        SaveProgress();
+        logMsg(L"[*] 已取消。已写 %llu MB 保留在 %s（顺序文件，可续/可提取）。"
+               L"下次点【开始镜像】会从这个断点继续。",
                (ULONGLONG)(copied / 1048576), dstFull);
     } else if (exitCode == 0) {
+        if (g_progOn) { DeleteFileW(g_progPath); g_progOn = 0; }   /* 干净完成才清断点 */
         logMsg(L"[*] 镜像完成: 扫描 %llu 字节, 实际写入 %llu 字节到 %s",
                scanned, copied, dstFull);
         logMsg(L"[DONE] 扇区镜像成功（稀疏文件，全 0 不占空间）。之后在完好机器上用 "
@@ -356,6 +451,7 @@ static void UiState(BOOL running) {
     EnableWindow(g_src, !running);
     EnableWindow(g_dst, !running);
     EnableWindow(g_cancel, running ? TRUE : FALSE);
+    EnableWindow(g_resume, !running);
 }
 
 static void BrowseDst(void) {
@@ -386,13 +482,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                     12, 76, 120, 30, hwnd, (HMENU)IDC_START, GetModuleHandleW(NULL), NULL);
         g_cancel = CreateWindowExW(0, L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                                     140, 76, 90, 30, hwnd, (HMENU)IDC_CANCEL, GetModuleHandleW(NULL), NULL);
+        g_resume = CreateWindowExW(0, L"BUTTON", L"断点续传（发现 .progress 就继续上次）",
+                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+                                   12, 112, 340, 22, hwnd, (HMENU)IDC_RESUME, GetModuleHandleW(NULL), NULL);
+        SendMessageW(g_resume, BM_SETCHECK, BST_CHECKED, 0);
         g_progress = CreateWindowExW(0, PROGRESS_CLASSW, L"", WS_CHILD | WS_VISIBLE,
-                                    12, 116, 300, 20, hwnd, (HMENU)IDC_PROGRESS, GetModuleHandleW(NULL), NULL);
+                                    12, 140, 300, 20, hwnd, (HMENU)IDC_PROGRESS, GetModuleHandleW(NULL), NULL);
         g_pct = CreateWindowExW(0, L"STATIC", L"0%", WS_CHILD | WS_VISIBLE,
-                                320, 116, 60, 20, hwnd, NULL, GetModuleHandleW(NULL), NULL);
+                                320, 140, 60, 20, hwnd, NULL, GetModuleHandleW(NULL), NULL);
         g_log = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE |
                                 ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
-                                12, 150, 340, 220, hwnd, (HMENU)IDC_LOG, GetModuleHandleW(NULL), NULL);
+                                12, 170, 340, 206, hwnd, (HMENU)IDC_LOG, GetModuleHandleW(NULL), NULL);
         SendMessageW(g_progress, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
         SendMessageW(g_progress, PBM_SETPOS, 0, 0);
         SendMessageW(g_log, WM_SETFONT, (WPARAM)g_font, TRUE);
@@ -400,6 +500,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         UiState(FALSE);
         logMsg(L"[提示] 选择【源盘】和目标镜像文件，点【开始镜像】。请用【不同物理盘】"
                L"且剩余空间足够的 U 盘/移动硬盘。");
+        logMsg(L"[提示] 镜像中断也不用重来：勾着「断点续传」，下次点开始会从 .progress 处继续。");
         if (!IsAdmin())
             logMsg(L"[提示] 尚未管理员权限，点“开始镜像”时会自动提权重启。");
         break;
@@ -455,6 +556,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (!job) { MessageBoxW(hwnd, L"内存不足。", L"Sector Mirror", MB_OK); break; }
             wcsncpy_s(job->srcDrive, 4, srcDrive, _TRUNCATE);
             wcsncpy_s(job->dstFull, MAX_PATH * 2, dstFull, _TRUNCATE);
+            job->resume = (SendMessageW(g_resume, BM_GETCHECK, 0, 0) == BST_CHECKED) ? 1 : 0;
             g_thread = CreateThread(NULL, 0, MirrorThread, job, 0, NULL);
             if (!g_thread) {
                 MessageBoxW(hwnd, L"无法创建镜像线程。", L"Sector Mirror", MB_OK);
@@ -525,7 +627,164 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return 0;
 }
 
+/* ------------------------------------------------------------------ */
+/* 无头自检（不需要管理员、不需要真盘）：                                    */
+/*   sector_mirror_gui.exe --selftest                                    */
+/* 用两个临时文件模拟「镜像到一半被打断」：源文件 512KB，目标只有前 200KB，  */
+/* 断点文件写 200000。要求 TryResumeOffset 认出断点、并从断点把余下字节拷完， */
+/* 最终目标文件与源文件逐字节相同。日志写到 %TEMP%\sm_resume_selftest.log。 */
+/* ------------------------------------------------------------------ */
+static void SelfLog(FILE* fp, const wchar_t* fmt, ...) {
+    va_list ap;
+    wchar_t buf[1024];
+    va_start(ap, fmt);
+    _vsnwprintf_s(buf, 1024, _TRUNCATE, fmt, ap);
+    va_end(ap);
+    fwprintf(fp, L"%ls\n", buf);
+    fflush(fp);
+}
+
+static int RunResumeSelftest(void) {
+    const DWORD total = 512u * 1024u, cut = 200000u;
+    wchar_t dir[MAX_PATH], src[MAX_PATH], dst[MAX_PATH], prog[MAX_PATH], log[MAX_PATH];
+    FILE* fp = NULL;
+    HANDLE hSrc = INVALID_HANDLE_VALUE, hDst = INVALID_HANDLE_VALUE;
+    BYTE* buf = NULL;
+    DWORD i, n, bw;
+    int fail = 0;
+    DWORDLONG got;
+
+    GetTempPathW(MAX_PATH, dir);
+    _snwprintf_s(src, MAX_PATH, _TRUNCATE, L"%lssm_resume_src.bin", dir);
+    _snwprintf_s(dst, MAX_PATH, _TRUNCATE, L"%lssm_resume_dst.img", dir);
+    _snwprintf_s(prog, MAX_PATH, _TRUNCATE, L"%lssm_resume_dst.img.progress", dir);
+    _snwprintf_s(log, MAX_PATH, _TRUNCATE, L"%lssm_resume_selftest.log", dir);
+    fp = _wfopen(log, L"w, ccs=UTF-8");
+    if (!fp) return 2;
+
+    buf = (BYTE*)malloc(total);
+    if (!buf) { fclose(fp); return 2; }
+    for (i = 0; i < total; i++) buf[i] = (BYTE)((i * 37u + (i >> 8)) & 0xFF);   /* 确定性图案 */
+
+    /* 造源文件 */
+    hSrc = CreateFileW(src, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hSrc == INVALID_HANDLE_VALUE || !WriteFile(hSrc, buf, total, &n, NULL) || n != total) {
+        SelfLog(fp, L"FAIL 造源文件");
+        fail = 1;
+    }
+    if (hSrc != INVALID_HANDLE_VALUE) CloseHandle(hSrc);
+
+    /* 造「被打断的目标」：只有前 cut 字节 + 断点文件 */
+    if (!fail) {
+        hDst = CreateFileW(dst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hDst == INVALID_HANDLE_VALUE || !WriteFile(hDst, buf, cut, &n, NULL) || n != cut) {
+            SelfLog(fp, L"FAIL 造半截镜像");
+            fail = 1;
+        }
+        if (hDst != INVALID_HANDLE_VALUE) { CloseHandle(hDst); hDst = INVALID_HANDLE_VALUE; }
+        {
+            FILE* fpp = _wfopen(prog, L"w");
+            if (fpp) { fwprintf(fpp, L"%lu\n", (unsigned long)cut); fclose(fpp); }
+            else { SelfLog(fp, L"FAIL 写断点文件"); fail = 1; }
+        }
+    }
+
+    if (!fail) {
+        hSrc = CreateFileW(src, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+        hDst = CreateFileW(dst, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, 0, NULL);
+        if (hSrc == INVALID_HANDLE_VALUE || hDst == INVALID_HANDLE_VALUE) {
+            SelfLog(fp, L"FAIL 打开文件");
+            fail = 1;
+        }
+    }
+
+    /* 断点为 0 的情况（没有断点文件）也必须正常工作：这里先验「有断点」 */
+    if (!fail) {
+        got = TryResumeOffset(prog, hSrc, hDst, 0);
+        if (got != cut) {
+            SelfLog(fp, L"FAIL 断点识别: 期望 %lu，得到 %llu", (unsigned long)cut,
+                    (unsigned long long)got);
+            fail = 1;
+        } else {
+            SelfLog(fp, L"OK   断点识别: %llu 字节", (unsigned long long)got);
+        }
+    }
+
+    /* 从断点把余下字节拷完，然后整文件比对 */
+    if (!fail) {
+        DWORD copied = 0;
+        for (;;) {
+            DWORD br = 0;
+            if (!ReadFile(hSrc, buf, total, &br, NULL) || br == 0) break;
+            if (!WriteFile(hDst, buf, br, &bw, NULL) || bw != br) { fail = 1; break; }
+            copied += bw;
+        }
+        SelfLog(fp, L"%ls 续拷 %lu 字节", fail ? L"FAIL" : L"OK  ", (unsigned long)copied);
+        CloseHandle(hSrc); CloseHandle(hDst);
+        hSrc = INVALID_HANDLE_VALUE; hDst = INVALID_HANDLE_VALUE;
+    }
+    if (!fail) {
+        HANDLE a = CreateFileW(src, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+        HANDLE b = CreateFileW(dst, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+        BYTE* ba; BYTE* bb;
+        DWORD na = 0, nb = 0;
+        ba = (BYTE*)malloc(total); bb = (BYTE*)malloc(total);
+        if (a == INVALID_HANDLE_VALUE || b == INVALID_HANDLE_VALUE || !ba || !bb) {
+            fail = 1;
+        } else {
+            ReadFile(a, ba, total, &na, NULL);
+            ReadFile(b, bb, total, &nb, NULL);
+            if (na != total || nb != total || memcmp(ba, bb, total) != 0) {
+                SelfLog(fp, L"FAIL 续跑结果与源不一致 (src %lu / dst %lu 字节)",
+                        (unsigned long)na, (unsigned long)nb);
+                fail = 1;
+            } else {
+                SelfLog(fp, L"OK   续跑结果与源逐字节一致 (%lu 字节)", (unsigned long)na);
+            }
+        }
+        if (ba) free(ba);
+        if (bb) free(bb);
+        if (a != INVALID_HANDLE_VALUE) CloseHandle(a);
+        if (b != INVALID_HANDLE_VALUE) CloseHandle(b);
+    }
+
+    /* 断点值大于镜像长度时必须拒绝续跑（否则会 seek 到空洞里写出垃圾） */
+    if (!fail) {
+        FILE* fpp = _wfopen(prog, L"w");
+        HANDLE a, b2;
+        DWORDLONG r2;
+        if (fpp) { fwprintf(fpp, L"%lu\n", (unsigned long)total + 1u); fclose(fpp); }
+        a = CreateFileW(src, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+        b2 = CreateFileW(dst, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, 0, NULL);
+        r2 = TryResumeOffset(prog, a, b2, 0);
+        if (r2 != 0) { SelfLog(fp, L"FAIL 超长断点被接受 (%llu)", (unsigned long long)r2); fail = 1; }
+        else SelfLog(fp, L"OK   超长断点被拒绝");
+        CloseHandle(a); CloseHandle(b2);
+    }
+
+    if (hSrc != INVALID_HANDLE_VALUE) CloseHandle(hSrc);
+    if (hDst != INVALID_HANDLE_VALUE) CloseHandle(hDst);
+    free(buf);
+    SelfLog(fp, L"[selftest] %ls (日志 %ls)", fail ? L"FAIL" : L"PASS", log);
+    fclose(fp);
+    DeleteFileW(src); DeleteFileW(dst); DeleteFileW(prog);
+    return fail ? 1 : 0;
+}
+
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow) {
+    /* 无头自检入口：不开窗口、不需要管理员。
+     * 注意不要用 __argc/__wargv —— 本程序是 GUI 子系统，实测 __wargv 为空，
+     * 直接访问会 ACCESS_VIOLATION（0xC0000005），所以走 CommandLineToArgvW。 */
+    {
+        int nArg = 0;
+        LPWSTR* pArgv = CommandLineToArgvW(GetCommandLineW(), &nArg);
+        if (pArgv) {
+            int isTest = (nArg >= 2 && _wcsicmp(pArgv[1], L"--selftest") == 0);
+            LocalFree(pArgv);
+            if (isTest) return RunResumeSelftest();
+        }
+    }
+
     /* 若无需管理员（读原始盘需要），先检测：非管理员则自动 UAC 提权重启自己 */
     if (!IsAdmin()) {
         wchar_t exe[MAX_PATH] = {0};
@@ -547,7 +806,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow) {
     wc.lpszClassName = L"SectorMirrorGui";
     RegisterClassW(&wc);
 
-    RECT r = {0, 0, 380, 410};
+    RECT r = {0, 0, 380, 430};
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
     g_hwnd = CreateWindowExW(0, wc.lpszClassName,
                              L"Sector Mirror — 扇区镜像灾难恢复（GUI）",
