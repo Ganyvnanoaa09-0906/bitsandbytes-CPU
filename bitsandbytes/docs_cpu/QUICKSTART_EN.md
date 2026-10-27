@@ -989,6 +989,10 @@ mft_recover.exe D:\usb_mom.img --debug               :: stats + per-record decis
 mft_recover.exe \\.\F: D:\recovered                  :: scan a drive directly (admin)
 ```
 
+- **GUI `mft_recover_gui.exe` (recommended, double-click)**: pick the image (drag & drop also works), or a drive from the
+  drop-down) → pick the output directory → click Start; progress bar, log and a Stop button.
+  It **refuses to run when the output is on the same drive as the source** (that would overwrite
+  what you are recovering) and self-elevates when scanning a physical drive.
 - **Output names**: `del_<record#>_<original name>` / `live_<record#>_<original name>`; the
   record number maps back to `--debug` output.
 - **Recovers**: resident small files (including 0-byte files), non-resident large files (copied

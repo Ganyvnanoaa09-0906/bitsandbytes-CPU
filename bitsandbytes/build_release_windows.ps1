@@ -130,7 +130,7 @@ Copy-Item "docs_cpu\*.md" $stageDocs -Force
 
 $stageTools = Join-Path $stage "tools"
 New-Item -ItemType Directory -Force -Path $stageTools | Out-Null
-Copy-Item "tools\sector_mirror.c","tools\sector_mirror_gui.c","tools\sector_carve.c","tools\sector_carve_gui.c" $stageTools -Force
+Copy-Item "tools\sector_mirror.c","tools\sector_mirror_gui.c","tools\sector_carve.c","tools\sector_carve_gui.c","tools\mftcore.h","tools\mft_recover.c","tools\mft_recover_gui.c","tools\mft_recover_gui.manifest" $stageTools -Force
 
 # ---- 4) compile disaster-recovery tools (vendor-neutral, /MT static CRT -> system dlls only) ----
 Write-Host "[6/..] Compiling disaster tools (sector_mirror.exe / sector_mirror_gui.exe) ..." -ForegroundColor Cyan
@@ -160,6 +160,20 @@ cmd /c $carveGuiCmd | Out-Host
 if ($LASTEXITCODE -eq 0) { Copy-Item "$toolsBuild\sector_carve_gui.exe" $stageTools -Force }
 else { Write-Warning "sector_carve_gui.exe build failed (non-fatal)." }
 
+# mft_recover: metadata recovery (winfr regular-mode equivalent) -- CLI
+# Both front-ends include tools\mftcore.h, so cl resolves the include relative to the .c file.
+Write-Host "[6/..] Compiling mft_recover.exe / mft_recover_gui.exe ..." -ForegroundColor Cyan
+$mftCmd = "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W3 /utf-8 /DNOMINMAX /DNDEBUG tools\mft_recover.c /Fe:$toolsBuild\mft_recover.exe /link advapi32.lib"
+cmd /c $mftCmd | Out-Host
+if ($LASTEXITCODE -eq 0) { Copy-Item "$toolsBuild\mft_recover.exe" $stageTools -Force }
+else { Write-Warning "mft_recover.exe build failed (non-fatal)." }
+
+# mft_recover GUI
+$mftGuiCmd = "`"$vcvars`" >nul 2>&1 && cl /nologo /O2 /W3 /utf-8 /DNOMINMAX /DNDEBUG tools\mft_recover_gui.c /Fe:$toolsBuild\mft_recover_gui.exe /link /MANIFEST:EMBED /MANIFESTINPUT:tools\mft_recover_gui.manifest comctl32.lib shell32.lib comdlg32.lib ole32.lib advapi32.lib user32.lib gdi32.lib"
+cmd /c $mftGuiCmd | Out-Host
+if ($LASTEXITCODE -eq 0) { Copy-Item "$toolsBuild\mft_recover_gui.exe" $stageTools -Force }
+else { Write-Warning "mft_recover_gui.exe build failed (non-fatal)." }
+
 # ---- 5) LICENSE + README (use the fork README_EN) ----
 Copy-Item "LICENSE" (Join-Path $stage "LICENSE") -Force
 if (Test-Path "README_EN.md") { Copy-Item "README_EN.md" (Join-Path $stage "README.md") -Force }
@@ -184,7 +198,8 @@ compiled with MSVC, so you can **extract and use it directly** -- no local C++ t
 - `docs_cpu/`      -- technical guide / quickstart / tech report, each in a zh file and a separate _EN file
 - `tools/`         -- disaster tools: `sector_mirror.exe` (mirror, CLI), `sector_mirror_gui.exe`
                      (mirror, GUI no-cmd), `sector_carve.exe` (signature carve/extract, CLI),
-                     `sector_carve_gui.exe` (carve, GUI no-cmd)
+                     `sector_carve_gui.exe` (carve, GUI no-cmd), `mft_recover.exe` (deleted-file
+                     recovery from $MFT records, CLI), `mft_recover_gui.exe` (same, GUI no-cmd)
 - `LICENSE`, `README.md`
 
 ## Install / use
@@ -208,6 +223,14 @@ drop-down, Browse the target image, click Start Mirror, progress bar + log, canc
 mirrors a damaged drive at raw sector level, bypassing the filesystem (see
 `docs_cpu/QUICKSTART.md` (Section 9: Disaster Recovery Guide)). It is the reliable entry point when `cmd.exe` / `powershell.exe`
 cannot open.
+
+## Two ways to get files back
+- **MFT still readable** -> `tools/mft_recover_gui.exe` (or `mft_recover.exe`): rebuilds deleted
+  files from their `$MFT` records, so you get the **original names and exact sizes**, byte for
+  byte. Outputs `del_<record#>_<name>` / `live_<record#>_<name>`.
+- **MFT destroyed** -> `tools/sector_carve_gui.exe`: carves files by signature (PNG/JPEG/GIF/ZIP/
+  PDF/MP4), no names, but it still works when the filesystem metadata is gone.
+Run both if unsure; the results can be merged. Never write the output back to the damaged drive.
 
 ## License
 MIT (see LICENSE). Only the bitsandbytes component is open-sourced; models / datasets / training

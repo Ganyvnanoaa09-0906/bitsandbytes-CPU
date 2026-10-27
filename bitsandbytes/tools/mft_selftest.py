@@ -152,6 +152,13 @@ def run_tool(exe, img, outdir, extra=()):
     return r
 
 
+def run_gui_selftest(gui, img, outdir, extra=()):
+    """GUI 版的无头自检入口：--selftest <img> <outdir>，走的是同一份 mftcore.h"""
+    if os.path.isdir(outdir):
+        shutil.rmtree(outdir)
+    return run([gui, "--selftest", img, outdir] + list(extra))
+
+
 def check_recovered(outdir, expect, states, label, allow_missing=()):
     """返回 (ok, lines)。用 sha256 做多重集比对，忽略文件名里的记录号前缀"""
     want = {}
@@ -202,6 +209,8 @@ def check_recovered(outdir, expect, states, label, allow_missing=()):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--exe", default=DEFAULT_EXE)
+    ap.add_argument("--gui-exe", default=None,
+                    help="GUI 版 mft_recover_gui.exe（默认找同目录，找不到就跳过 GUI 那一路）")
     ap.add_argument("--workdir", default=os.path.join(tempfile.gettempdir(), "mft_selftest"))
     ap.add_argument("--only", default=None, help="只跑指定场景（逗号分隔）")
     ap.add_argument("--keep", action="store_true", help="保留镜像与输出便于排查")
@@ -271,6 +280,22 @@ def main():
             continue
 
         ok, lines = check_recovered(outdir, expect, {"deleted"}, case)
+
+        # GUI 版走同一份内核：确认它也能按字节还原（防止两个前端行为漂移）
+        gui = args.gui_exe or os.path.join(os.path.dirname(exe), "mft_recover_gui.exe")
+        if os.path.isfile(gui):
+            outg = os.path.join(case_dir, "out_gui")
+            rg = run_gui_selftest(gui, img, outg)
+            if rg.returncode != 0:
+                ok = False
+                lines.append("  FAIL GUI 自检返回码 %d" % rg.returncode)
+            else:
+                ok_gui, lines_gui = check_recovered(outg, expect, {"deleted"}, case + "/gui")
+                lines.append("  GUI 版（--selftest）:")
+                lines.extend(lines_gui)
+                ok = ok and ok_gui
+        else:
+            lines.append("  GUI 版: 跳过（没找到 mft_recover_gui.exe）")
         # --all 模式：未删除的文件也要能按名字还原
         outall = os.path.join(case_dir, "out_all")
         rall = run_tool(exe, img, outall, ["--all"])
