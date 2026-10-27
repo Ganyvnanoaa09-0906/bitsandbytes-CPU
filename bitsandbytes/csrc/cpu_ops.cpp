@@ -2120,8 +2120,18 @@ void quantize_4bit_cpu_impl(
 // Measured (K=4096, real Qwen3-8B weights, OMP=4):
 //   inner loop   2.85x   GEMV 2.33x (24.4 / 22.9 / 19.4 GB/s vs 9.9 / 9.7 / 8.9)
 //   end to end   1.65x (2.731 vs 1.660 token/s)
-//   perplexity   7.6010 -> 7.6341 (+0.44%, i.e. noise) -- the codebook is
-//                untouched, the decode is bit-exact apart from summation order.
+//   perplexity   7.6010 -> 7.6341 (+0.44%) — 这一行 2026-10-27 被审计纠正过口径，
+//                别再当成"v3 的困惑度证据"：
+//                  * 该测量是在**研究版**取数（`membw/bench_nf4_v3.py`，块长 63、M=64），
+//                    而**交付版** v3 的守卫是 `M == 1 && blocksize == 64`（见本文件下方
+//                    gemv_4bit_inference_cpu_impl），M=64 根本不进 v3，走的是 m0 += 4
+//                    分支 ⇒ 这份 PPL 测的不是交付路径；
+//                  * 交付版 v3 的数值证据是**误差界**而非 PPL：发布物实测 vs float64 参考
+//                    rel_rms ≈ 2e-7 / 单次 GEMV（115 行差分，含 padding/边界/NaN 用例）
+//                    ⇒ logit 误差 ~1e-6 ⇒ ppl 影响 ~1e-6（0.0001%），比 +0.44% 小四个
+//                    数量级 ⇒ **+0.44% 数学上不可能来自 v3 的数值差异**（是协议/测量伪影）；
+//                  * 若要给交付路径的 PPL 证据，必须用 `PPL_CHUNK=1`（M=1）跑。
+//                码本未动、除求和顺序外逐位正确，这一点不变。
 //
 // The k order inside a 64-element group comes out scrambled, so the activation
 // is pre-permuted once per layer; every output register still covers eight
@@ -2263,6 +2273,17 @@ void gemv_4bit_inference_cpu_impl(
     if (M <= 0 || N <= 0 || K <= 0 || blocksize <= 0)
         return;
     if (data_type != FP4 && data_type != NF4)
+        return;
+    // 🔴 2026-10-27 【标量回退的越界读】absmax 的行主索引是
+    //     absmax[n * (K / blocksize) + k / blocksize]，用的是**截断除法**。K 不能被
+    //     blocksize 整除时，最后一个不完整 block 的索引会多推进一格、读到本行之外的
+    //     1 个 float（实测 K=4096、blocksize=48 时输出 1.6e+32，正好命中我们在 absmax
+    //     尾部摆的 1e30 哨兵）。
+    //     AVX2 快路本来就有 `K % blocksize == 0` 守卫（下面那行），但**标量回退没有**，
+    //     于是"不整除"这个非法组合恰好被分派到最不设防的那条路上。这里在入口统一挡掉：
+    //     C API 没有错误通道，契约就是 K 必须被 blocksize 整除（Python 层 quantize_4bit
+    //     会保证这一点），不满足时不写出垃圾结果。
+    if (K % blocksize != 0)
         return;
 #if BNB_AVX2_CODE && (defined(__AVX2__) || (defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))))
     // fast path assumes one scale broadcast covers each 8-element decode
