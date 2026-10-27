@@ -919,6 +919,9 @@ sector_carve.exe E: D:\carved_mom
 ```
 
 - **支持格式**：PNG/JPEG/GIF/ZIP(自动识别 docx/xlsx/pptx)/PDF/MP4 —— 流式跨块提取。
+- **一个硬限制**：小于约 700 字节的小文件会被 NTFS 直接**驻留**在 `$MFT` 记录里，记录末尾
+  2 字节被 fixup 值替换 —— 纯签名扫描天生读不全这 2 字节。这类文件**只能靠 §9.2.6 的
+  `mft_recover`**（它会过 fixup）精确还原；`sector_carve` 只对**非驻留**（>1KB）文件字节精确。
 - **GUI 版 `sector_carve_gui.exe`（推荐）**：双击即用，无需命令行。
 - **零写入原盘** + **输出目录禁止写回受损盘**。
 

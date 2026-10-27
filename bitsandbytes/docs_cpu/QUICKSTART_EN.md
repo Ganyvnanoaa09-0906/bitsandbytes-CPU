@@ -977,6 +977,10 @@ sector_carve.exe E: D:\carved_mom
 ```
 
 - **Formats**: PNG/JPEG/GIF/ZIP(auto-detects docx/xlsx/pptx)/PDF/MP4 — streamed cross-block.
+- **One hard limit**: files under ~700 bytes are stored **resident** inside their `$MFT` record,
+  and the last 2 bytes of each record sector are replaced by the fixup value. Signature carving
+  cannot recover those 2 bytes, so such files are byte-exact only through `mft_recover` (9.2.6,
+  which applies the fixup). `sector_carve` is byte-exact for **non-resident** (>1KB) files.
 - **GUI `sector_carve_gui.exe` (recommended)** — double-click, no command line.
 - **Zero writes to the source**; **never write the outdir back to the damaged drive**.
 
