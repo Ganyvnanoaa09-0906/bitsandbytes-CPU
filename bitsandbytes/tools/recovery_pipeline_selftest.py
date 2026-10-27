@@ -223,6 +223,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--workdir", default=os.path.join(tempfile.gettempdir(), "recovery_pipeline_selftest"))
     ap.add_argument("--exe-dir", default=HERE)
+    ap.add_argument("--gui-exe", default=None, help="可选：sector_carve_gui.exe（有就一起验）")
     ap.add_argument("--keep", action="store_true")
     args = ap.parse_args()
 
@@ -306,6 +307,27 @@ def main():
         print("       （注意：驻留文件的内容存在 $MFT 记录里，MFT 一旦被毁，签名扫描本就救不回来；")
         print("        夹具里的文件都做成了非驻留，所以这里应该 9/9）")
         fail += 1
+
+    # GUI 版走同一份内核：用它的无头自检入口再跑一遍被毁镜像，结果必须和 CLI 一样
+    gui = args.gui_exe or os.path.join(args.exe_dir, "sector_carve_gui.exe")
+    if os.path.isfile(gui):
+        out_g = os.path.join(case, "out_carve_gui")
+        shutil.rmtree(out_g, ignore_errors=True)
+        os.makedirs(out_g, exist_ok=True)
+        rg = run([gui, "--selftest", wiped_img, out_g])
+        got_g = collect(out_g)
+        hit_g = sum(1 for _rel, _p, h, _s in got_g if h in want)
+        print("\n" + "=" * 74)
+        print("附加：sector_carve_gui.exe --selftest（同一镜像）rc=%d，捞回 %d 个，%d 个一致"
+              % (rg.returncode, len(got_g), hit_g))
+        print("=" * 74)
+        if hit_g != len(want):
+            print("  FAIL GUI 版 carve 只捞回 %d/%d 个文件" % (hit_g, len(want)))
+            fail += 1
+        else:
+            print("  OK   GUI 版与 CLI 版结果一致")
+    else:
+        print("\n  （没找到 sector_carve_gui.exe，跳过 GUI 分支校验）")
 
     print("\n" + "=" * 74)
     print("结论")

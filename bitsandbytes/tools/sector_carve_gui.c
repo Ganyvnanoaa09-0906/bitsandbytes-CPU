@@ -113,16 +113,154 @@ static BOOL seek(HANDLE h, DWORDLONG off) {
     return SetFilePointerEx(h, pos, NULL, FILE_BEGIN);
 }
 
+/* headless selftest: when set, guiLog writes to a file instead of the (absent) log window */
+static FILE* g_selftestLog = NULL;
+
 static void guiLog(const wchar_t* fmt, ...) {
     wchar_t buf[2048];
-    va_list ap; va_start(ap, fmt);
-    _vsnwprintf_s(buf, 2048, _TRUNCATE, fmt, ap); va_end(ap);
-    size_t L = wcslen(buf);
-    wchar_t* heap = (wchar_t*)malloc((L + 2) * sizeof(wchar_t));
-    if (!heap) return;
-    wcscpy_s(heap, L + 2, buf);
-    heap[L] = L'\n'; heap[L+1] = L'\0';
-    SendMessageW(g_hwnd, WM_APP_LOG, 0, (LPARAM)heap);
+    va_list ap;
+    va_start(ap, fmt);
+    _vsnwprintf_s(buf, 2048, _TRUNCATE, fmt, ap);
+    va_end(ap);
+    if (g_selftestLog) {                      /* headless: file only */
+        fwprintf(g_selftestLog, L"%ls\n", buf);
+        fflush(g_selftestLog);
+        return;
+    }
+    {
+        size_t L = wcslen(buf);
+        wchar_t* heap = (wchar_t*)malloc((L + 2) * sizeof(wchar_t));
+        if (!heap) return;
+        wcscpy_s(heap, L + 2, buf);
+        heap[L] = L'\n';
+        heap[L + 1] = L'\0';
+        SendMessageW(g_hwnd, WM_APP_LOG, 0, (LPARAM)heap);
+    }
+}
+
+
+
+/* ---- shared with sector_carve.c: exact GIF/ZIP length parsers ---- */
+static unsigned int z_rd32(const unsigned char* b, size_t o) {
+    return (unsigned int)b[o] | ((unsigned int)b[o + 1] << 8) |
+           ((unsigned int)b[o + 2] << 16) | ((unsigned int)b[o + 3] << 24);
+}
+
+static unsigned int z_rd16(const unsigned char* b, size_t o) {
+    return (unsigned int)b[o] | ((unsigned int)b[o + 1] << 8);
+}
+
+static int zipFileSize(const unsigned char* b, size_t len, DWORDLONG* outSize, DWORDLONG* outSafe) {
+    size_t p = 0, safe = 0;
+    int entries = 0;
+    *outSize = 0;
+    *outSafe = 0;
+    for (;;) {
+        unsigned int sig;
+        if (p + 4 > len) return 0;
+        sig = z_rd32(b, p);
+        if (sig == 0x04034B50u) {                        /* local file header */
+            unsigned int flags, compSize, nameLen, extraLen;
+            if (p + 30 > len) return 0;
+            flags = z_rd16(b, p + 6);
+            compSize = z_rd32(b, p + 18);
+            nameLen = z_rd16(b, p + 26);
+            extraLen = z_rd16(b, p + 28);
+            if (p + 30 + nameLen + extraLen > len) return 0;
+            if (flags & 0x08u) { *outSafe = safe; return -1; }   /* sizes in data descriptor */
+            p += 30 + nameLen + extraLen + (size_t)compSize;
+            if (p > len) return 0;
+            safe = p;
+            entries++;
+            continue;
+        }
+        if (sig == 0x02014B50u) {                        /* central directory entry */
+            unsigned int nameLen, extraLen, commentLen;
+            if (p + 46 > len) return 0;
+            nameLen = z_rd16(b, p + 28);
+            extraLen = z_rd16(b, p + 30);
+            commentLen = z_rd16(b, p + 32);
+            if (p + 46 + nameLen + extraLen + commentLen > len) return 0;
+            p += 46 + nameLen + extraLen + commentLen;
+            safe = p;
+            continue;
+        }
+        if (sig == 0x06054B50u) {                        /* EOCD */
+            unsigned int commentLen;
+            if (entries == 0) { *outSafe = 0; return -1; }   /* stray EOCD, no entries before it */
+            if (p + 22 > len) return 0;
+            commentLen = z_rd16(b, p + 20);
+            if (p + 22 + commentLen > len) return 0;
+            *outSize = (DWORDLONG)(p + 22 + (size_t)commentLen);
+            return 1;
+        }
+        *outSafe = safe;
+        return -1;
+    }
+}
+
+static int gifFileSize(const unsigned char* b, size_t len, DWORDLONG* outSize,
+                       DWORDLONG* outSafe) {
+    size_t p = 0;
+    size_t gt;
+    int gct;
+    for (;;) {
+        if (p + 13 > len) return 0;
+        if (memcmp(b + p, "GIF8", 4) != 0) return -1;
+        gct = (b[p + 10] & 0x80) ? 1 : 0;
+        p += 13;
+        if (gct) {
+            gt = (size_t)3 << ((b[p - 3] & 0x07) + 1);
+            if (p + gt > len) return 0;
+            p += gt;
+        }
+        break;
+    }
+    for (;;) {
+        unsigned char blk;
+        if (outSafe) *outSafe = (DWORDLONG)p;   /* 最近一个完整块边界 */
+        if (p + 1 > len) return 0;
+        blk = b[p];
+        if (blk == 0x3B) { *outSize = (DWORDLONG)p + 1; return 1; }
+        if (blk == 0x21) {                 /* 扩展块 */
+            p += 2;                        /* 0x21 + label */
+            for (;;) {
+                size_t n;
+                if (p + 1 > len) return 0;
+                n = b[p];
+                p += 1;
+                if (n == 0) break;
+                if (p + n > len) return 0;
+                p += n;
+            }
+            continue;
+        }
+        if (blk == 0x2C) {                 /* 图像描述符 */
+            int lct;
+            size_t lt;
+            if (p + 10 > len) return 0;
+            lct = (b[p + 9] & 0x80) ? 1 : 0;
+            p += 10;
+            if (lct) {
+                lt = (size_t)3 << ((b[p - 1] & 0x07) + 1);
+                if (p + lt > len) return 0;
+                p += lt;
+            }
+            p += 1;                        /* LZW 最小码长 */
+            if (p > len) return 0;
+            for (;;) {
+                size_t n;
+                if (p + 1 > len) return 0;
+                n = b[p];
+                p += 1;
+                if (n == 0) break;
+                if (p + n > len) return 0;
+                p += n;
+            }
+            continue;
+        }
+        return -1;
+    }
 }
 
 static DWORDLONG extractFile(HANDLE hSrc, FmtKind k, DWORDLONG fileStart, const wchar_t* outdir) {
@@ -156,10 +294,21 @@ static DWORDLONG extractFile(HANDLE hSrc, FmtKind k, DWORDLONG fileStart, const 
                 if (!memcmp(content + i, tail, 8)) { endPos = fileStart + i + 8; hitTail = TRUE; break; }
             break;
         }
-        case FMT_GIF:
-            for (size_t i = 0; i < contentLen; i++)
-                if (content[i] == 0x3B) { endPos = fileStart + i + 1; hitTail = TRUE; break; }
+        case FMT_GIF: {
+            /* structural block walk (same parser as sector_carve.c): the old
+               "first 0x3B byte" guess truncated real GIFs at the first 0x3B that
+               happened to appear inside image data */
+            DWORDLONG gsz = 0, gsafe = 0;
+            int gr = gifFileSize(content, contentLen, &gsz, &gsafe);
+            if (gr == 1) {
+                endPos = fileStart + gsz;
+                hitTail = TRUE;
+            } else if (gr == -1 && gsafe > 13) {
+                endPos = fileStart + gsafe;      /* damaged mid-file: stop at last good block */
+                hitTail = TRUE;
+            }
             break;
+        }
         case FMT_JPEG: {
             BOOL nextHdr = FALSE;
             for (size_t i = 0; i + 1 < contentLen; i++) {
@@ -180,11 +329,17 @@ static DWORDLONG extractFile(HANDLE hSrc, FmtKind k, DWORDLONG fileStart, const 
             break;
         }
         case FMT_ZIP: {
-            DWORDLONG lastEocd = 0;
-            for (size_t i = 0; i + 22 <= contentLen; i++)
-                if (content[i]==0x50 && content[i+1]==0x4B && content[i+2]==0x05 && content[i+3]==0x06)
-                    lastEocd = fileStart + i + 22;
-            if (lastEocd) { endPos = lastEocd; hitTail = TRUE; }
+            /* walk the structure (local header -> central dir -> EOCD); taking the last
+               PK\x05\x06 in the buffer swallows neighbouring zips / Office files */
+            DWORDLONG zsz = 0, zsafe = 0;
+            int zr = zipFileSize(content, contentLen, &zsz, &zsafe);
+            if (zr == 1) {
+                endPos = fileStart + zsz;
+                hitTail = TRUE;
+            } else if (zr == -1 && zsafe > 0) {
+                endPos = fileStart + zsafe;
+                hitTail = TRUE;
+            }
             break;
         }
         case FMT_MP4: {
@@ -529,7 +684,58 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return 0;
 }
 
+/* ------------------------------------------------------------------ */
+/* headless selftest: same core, no window, no admin                    */
+/*   sector_carve_gui.exe --selftest <image> <outdir>                   */
+/* log -> %TEMP%\carve_gui_selftest.log ; exit 0 if anything recovered  */
+/* ------------------------------------------------------------------ */
+static int RunCarveSelftest(int argc, wchar_t** argv) {
+    wchar_t logPath[MAX_PATH];
+    HANDLE h;
+    DWORDLONG total = 0;
+    int rc;
+
+    if (argc < 4) return 2;
+    GetTempPathW(MAX_PATH, logPath);
+    wcscat_s(logPath, MAX_PATH, L"carve_gui_selftest.log");
+    g_selftestLog = _wfopen(logPath, L"w, ccs=UTF-8");
+    if (!g_selftestLog) return 2;
+
+    CreateDirectoryW(argv[3], NULL);
+    g_carved = 0;
+    g_abort = 0;
+    h = openSource(argv[2], &total);
+    if (h == INVALID_HANDLE_VALUE) {
+        guiLog(L"[error] cannot open source %ls", argv[2]);
+        fwprintf(g_selftestLog, L"[selftest] rc=2\n");
+        fclose(g_selftestLog);
+        g_selftestLog = NULL;
+        return 2;
+    }
+    guiLog(L"[*] src %.1f MB -> %ls", (double)total / 1048576.0, argv[3]);
+    scanFile(h, total, argv[3]);
+    CloseHandle(h);
+    rc = g_carved > 0 ? 0 : 2;
+    fwprintf(g_selftestLog, L"[selftest] rc=%d carved=%ld\n", rc, (long)g_carved);
+    fclose(g_selftestLog);
+    g_selftestLog = NULL;
+    return rc;
+}
+
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow) {
+    /* headless selftest entry: must be checked before any GUI/elevation work */
+    {
+        int nArg = 0;
+        LPWSTR* pArgv = CommandLineToArgvW(GetCommandLineW(), &nArg);
+        if (pArgv) {
+            int isTest = (nArg >= 2 && _wcsicmp(pArgv[1], L"--selftest") == 0);
+            int rc = 0;
+            if (isTest) rc = RunCarveSelftest(nArg, pArgv);
+            LocalFree(pArgv);
+            if (isTest) return rc;
+        }
+    }
+
     if (!IsAdmin()) {
         wchar_t exe[MAX_PATH] = {0};
         GetModuleFileNameW(NULL, exe, MAX_PATH);

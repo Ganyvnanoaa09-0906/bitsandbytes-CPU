@@ -1032,6 +1032,30 @@ mft_recover.exe \\.\F: D:\recovered                  :: scan a drive directly (a
 > zeroed record) and verifies every recovered file by SHA-256 — all PASS means the recovery is
 > byte-exact, not merely the right size.
 
+#### 9.2.7 Self-checks (run these after changing the tools)
+
+The tools ship with self-tests: no damaged hardware, no real disk needed.
+
+```bat
+:: mirror: resume logic (offset detection / identical continuation / oversized checkpoint rejected)
+sector_mirror_gui.exe --selftest
+
+:: signature carve: real corpus + 4 corruption variants, scored by byte-identity
+python tools\carve_selftest.py
+
+:: metadata recovery: 5 real NTFS volumes (default / 8KB clusters / 1KB clusters / 4KB sectors / damaged record)
+python tools\mft_selftest.py
+
+:: end-to-end decision tree: MFT readable -> mft_recover; MFT destroyed -> sector_carve
+python tools\recovery_pipeline_selftest.py
+```
+
+- the three python harnesses need **WSL + ntfs-3g** (they build real volumes with `mkfs.ntfs`);
+- `mft_selftest.py` also drives the GUI build (`mft_recover_gui.exe --selftest`) and re-tests the
+  legacy `--flat` naming;
+- `carve_selftest.py` also compares the **GUI against the CLI** on every variant, because those two
+  front-ends still carry separate copies of the carving engine.
+
 ### 9.3 Tier 2: Windows File Recovery (when repo/tool unavailable)
 
 > **Use**: when **MFT corruption is too severe that even this repo / Python / the exe can't

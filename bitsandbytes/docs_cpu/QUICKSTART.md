@@ -967,6 +967,28 @@ mft_recover.exe \\.\F: D:\recovered                  :: 直接扫盘符（需管
 > （默认几何 / 8KB 簇 / 1KB 簇 / 4KB 扇区 / 人为清零一条记录），逐文件核对 sha256，
 > **全 PASS** 才说明恢复是字节级正确的，而不是「大小差不多」。
 
+#### 9.2.7 工具自检（改完代码 / 出问题先跑这些）
+
+工具本身带自测台，不需要坏硬件、不需要真盘：
+
+```bat
+:: 镜像：断点续传逻辑（断点识别 / 续拷一致 / 超长断点被拒绝）
+sector_mirror_gui.exe --selftest
+
+:: 签名恢复：用真实素材 + 4 种损坏变体验证「恢复出来是不是字节一致」
+python tools\carve_selftest.py
+
+:: 元数据恢复：5 个真 NTFS 卷（默认/8KB 簇/1KB 簇/4KB 扇区/坏记录）
+python tools\mft_selftest.py
+
+:: 端到端决策链：MFT 在 -> mft_recover；MFT 毁 -> sector_carve
+python tools\recovery_pipeline_selftest.py
+```
+
+- `carve_selftest.py` / `mft_selftest.py` / `recovery_pipeline_selftest.py` 需要 **WSL + ntfs-3g**（用 `mkfs.ntfs` 造真卷）；
+- `mft_selftest.py` 还会顺带跑 GUI 版（`mft_recover_gui.exe --selftest`）与 `--flat` 老格式回归；
+- `carve_selftest.py` 会顺带比对 **GUI 版与 CLI 版结果是否一致**（两个前端共用一套内核逻辑，防止改一处漏一处）。
+
 ### 9.3 第二梯队：本仓库 / 工具均不可用时 → Windows File Recovery
 
 > **适用**：**MFT 损坏过于严重，连本仓库 / Python / exe 都无法运行**。退回微软商店的

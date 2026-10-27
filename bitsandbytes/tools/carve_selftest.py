@@ -79,7 +79,22 @@ def build(variant, items):
     return bytes(body), offs
 
 
-def run(variant, items, keep=False):
+def score(out, items):
+    """把一个输出目录按「内容是否 byte-identical」打分"""
+    byname = dict(items)
+    exact, partial = [], []
+    for f in sorted(glob.glob(os.path.join(out, '*'))):
+        blob = io.open(f, 'rb').read()
+        match = [n for n, v in byname.items() if blob == v]
+        if match:
+            exact.append(match[0])
+        else:
+            partial.append((os.path.basename(f), len(blob)))
+    missing = [n for n in byname if n not in exact]
+    return exact, partial, missing
+
+
+def run(variant, items, keep=False, gui_exe=None):
     d = os.path.join(WORK, variant)
     if os.path.isdir(d) and not keep:
         shutil.rmtree(d, ignore_errors=True)
@@ -91,32 +106,40 @@ def run(variant, items, keep=False):
     io.open(img, 'wb').write(data)
     subprocess.run([EXE, img, out], capture_output=True, text=True,
                    encoding='utf-8', errors='replace')
-    byname = dict(items)
-    exact, partial, missing = [], [], []
-    for f in sorted(glob.glob(os.path.join(out, '*'))):
-        blob = io.open(f, 'rb').read()
-        match = [n for n, v in byname.items() if blob == v]
-        if match:
-            exact.append(match[0])
-        else:
-            # 是某个原文件的真前缀/子串？算"残缺"
-            partial.append((os.path.basename(f), len(blob)))
-    for n in byname:
-        if n not in exact:
-            missing.append(n)
-    return exact, partial, missing, len(data)
+    exact, partial, missing = score(out, items)
+
+    gui = None
+    if gui_exe and os.path.isfile(gui_exe):
+        gout = os.path.join(d, 'out_gui')
+        if os.path.isdir(gout):
+            shutil.rmtree(gout, ignore_errors=True)
+        os.makedirs(gout, exist_ok=True)
+        # GUI 版走同一份内核；这里用它自己的无头自检入口跑同样的镜像
+        subprocess.run([gui_exe, '--selftest', img, gout], capture_output=True,
+                       encoding='utf-8', errors='replace')
+        gexact, gpartial, _gmissing = score(gout, items)
+        gui = (gexact, gpartial)
+    return exact, partial, missing, len(data), gui
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--keep', action='store_true')
+    ap.add_argument('--gui-exe', default=None,
+                    help='GUI 版 sector_carve_gui.exe；给了就再跑一遍，校验两个前端结果一致')
     a = ap.parse_args()
+    gui = a.gui_exe
+    if gui is None:
+        cand = os.path.join(os.path.dirname(EXE), 'sector_carve_gui.exe')
+        gui = cand if os.path.isfile(cand) else None
     items = corpus()
     print('语料: ' + ', '.join('%s(%dB)' % (n, len(d)) for n, d in items))
     exp = {'A': 6, 'B': 5, 'C': 5, 'D': 5}
     total_ok = 0
+    gui_ok = 0
+    gui_runs = 0
     for v in 'ABCD':
-        exact, partial, missing, n = run(v, items, a.keep)
+        exact, partial, missing, n, g = run(v, items, a.keep, gui)
         target = exp[v]
         ok = len(exact) >= target
         total_ok += 1 if ok else 0
@@ -124,7 +147,21 @@ def main():
         print('    完整: ' + (', '.join(exact) or '(none)'))
         print('    残缺: ' + (', '.join('%s=%dB' % (f, l) for f, l in partial) or '(none)'))
         print('    缺失: ' + (', '.join(missing) or '(none)'))
+        if g is not None:
+            gui_runs += 1
+            gexact, gpartial = g
+            same = sorted(gexact) == sorted(exact)
+            gui_ok += 1 if same else 0
+            print('    GUI 版: 完整 %d/%d %s（%s）' % (
+                len(gexact), 6, 'PASS' if same else 'FAIL',
+                '与 CLI 一致' if same else '与 CLI 不一致！'))
+            if not same:
+                print('      GUI 完整集: ' + (', '.join(gexact) or '(none)'))
     print('\n==== %d/4 变体通过 ====' % total_ok)
+    if gui_runs:
+        print('==== GUI 版与 CLI 结果一致: %d/%d ====' % (gui_ok, gui_runs))
+        if gui_ok != gui_runs:
+            raise SystemExit(1)
 
 
 if __name__ == '__main__':
