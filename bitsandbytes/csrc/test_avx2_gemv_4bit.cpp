@@ -33,18 +33,56 @@
 
 using namespace bnb_avx2_gemv;
 
+// Independent canonical codebooks, transcribed from the bitsandbytes specification
+// (the same numbers as cpu_ops.cpp's fp4_lut/nf4_lut and the CUDA kernels). They are
+// DELIBERATELY duplicated here instead of reusing kFp4/kNf4 from the header under test:
+// on 2026-10-27 kFp4 turned out to be a 0.0625 arithmetic progression instead of the
+// signed 5.208e-03 codebook, and the old "independent" reference read the kernel's own
+// table, so the two errors cancelled, the relative error stayed 0 and the test was green.
+// codebook_check() below now fails loudly if the header drifts from these.
+static const float kRefNf4[16] = {
+    -1.0f, -0.6961928009986877f, -0.5250730514526367f, -0.39491748809814453f,
+    -0.28444138169288635f, -0.18477343022823334f, -0.09105003625154495f, 0.0f,
+    0.07958029955625534f, 0.16093020141124725f, 0.24611230194568634f,
+    0.33791524171829224f, 0.44070982933044434f, 0.5626170039176941f,
+    0.7229568362236023f, 1.0f};
+static const float kRefFp4[16] = {
+    0.0f, 0.005208333333f, 0.66666667f, 1.0f, 0.33333333f, 0.5f, 0.16666667f, 0.25f,
+    -0.0f, -0.005208333333f, -0.66666667f, -1.0f, -0.33333333f, -0.5f, -0.16666667f, -0.25f};
+
+// A wrong kernel codebook must fail here, not cancel out in the relative error.
+static bool codebook_check() {
+    int bad = 0;
+    for (int i = 0; i < 16; ++i) {
+        if (std::fabs(kFp4[i] - kRefFp4[i]) > 1e-9f) {
+            printf("[codebook] FP4 code %2d: kernel %.9g != spec %.9g\n", i,
+                   (double)kFp4[i], (double)kRefFp4[i]);
+            ++bad;
+        }
+        if (std::fabs(kNf4[i] - kRefNf4[i]) > 1e-9f) {
+            printf("[codebook] NF4 code %2d: kernel %.9g != spec %.9g\n", i,
+                   (double)kNf4[i], (double)kRefNf4[i]);
+            ++bad;
+        }
+    }
+    printf("[codebook] kernel tables vs independent spec tables: %s (%d mismatches)\n",
+           bad ? "MISMATCH" : "OK", bad);
+    return bad == 0;
+}
+
 static double now_ms(void) {
     struct timespec ts;
     timespec_get(&ts, TIME_UTC);
     return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
 }
 
-// Scalar reference, written from the format description rather than by reusing the
-// kernel's helpers, so the two cannot be wrong in the same way.
+// Scalar reference written from the format description. It uses kRefFp4/kRefNf4 (the
+// independent transcription above), NOT the kernel's kFp4/kNf4, so a wrong codebook in
+// the kernel cannot hide behind a matching reference.
 static void ref_gemv(const float* A, const unsigned char* B, const float* absmax,
                      double* out, long long N, long long K, long long ldb,
                      long long blocksize, bool fp4) {
-    const float* lut = fp4 ? kFp4 : kNf4;
+    const float* lut = fp4 ? kRefFp4 : kRefNf4;
     for (long long n = 0; n < N; ++n) {
         double acc = 0.0;
         for (long long k = 0; k < K; ++k) {
@@ -67,7 +105,9 @@ static bool frozen_order_check() {
     float absmax[1] = {1.f};
     float out[1] = {0.f};
     gemv_4bit_m1<false>(A, B, absmax, out, 1, 4, 2, 4);
-    const double want = (double)kNf4[1] + kNf4[0] + kNf4[15] + kNf4[3];
+    // 期望值用**独立转录**的 kRefNf4（不是被测内核的 kNf4）：码本与 nibble 顺序
+    // 任一写错都必须在这里 FAIL。
+    const double want = (double)kRefNf4[1] + kRefNf4[0] + kRefNf4[15] + kRefNf4[3];
     const bool ok = std::fabs((double)out[0] - want) < 1e-6;
     printf("[frozen order] out=%.9f want=%.9f (%s)\n", (double)out[0], want,
            ok ? "OK" : "WRONG NIBBLE ORDER");
@@ -76,6 +116,7 @@ static bool frozen_order_check() {
 
 int main(void) {
     printf("=== standalone AVX2 4-bit GEMV (contribution candidate) ===\n\n");
+    if (!codebook_check()) return 1;
     if (!frozen_order_check()) return 1;
 
     const long long N = 4096, K = 8192, blocksize = 64;

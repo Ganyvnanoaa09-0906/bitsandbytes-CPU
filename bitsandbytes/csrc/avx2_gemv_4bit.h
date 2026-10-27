@@ -85,10 +85,23 @@ static const float kNf4[16] = {
     0.33791524171829224f, 0.44070982933044434f, 0.5626170039176941f,
     0.7229568362236023f, 1.0f};
 
-// FP4 as bitsandbytes defines it (2 exponent, 1 mantissa, signed).
+// FP4 as bitsandbytes defines it: 2 exponent bits, 1 mantissa bit, SIGNED, including the
+// sub-normal 5.208e-03 code.  Must match the canonical table used by the production CPU
+// kernel (cpu_ops.cpp: fp4_lut) and by the CUDA kernels (kernels.cu:17,
+// gemm_4bit_common.cuh:39/47, triton/kernels_4bit.py:228).
+//
+// 🔴 2026-10-27 【真实缺陷修复】这里原先是一张 0.0625 等差的**无符号**表
+//    {0, 0.0625, 0.125, ..., 0.9375}：16 个码没有一个带负号、量级也全错
+//    （上游 code 11 = -1.0，原表写成 +0.6875），误差与信号同量级（≈78%）。
+//    而且**自测结构上抓不到**：test_avx2_gemv_4bit.cpp 里那句"独立参考实现"
+//    (const float* lut = fp4 ? kFp4 : kNf4;) 直接复用了这张表 ⇒ 码本写错时两边
+//    同时错、相对误差恒为 0、测试必绿。该测试现已改用自己的一份规范码本，并断言
+//    两者逐项一致（码本漂移会直接 FAIL）。
+//    影响面：本头文件不在任何构建里（CMakeLists/setup.py 零命中），生产走 cpu_ops.cpp
+//    的 fp4_lut，所以是"一个 #include 之遥"的定时炸弹，不是线上事故。
 static const float kFp4[16] = {
-    0.0f, 0.0625f, 0.125f, 0.1875f, 0.25f, 0.3125f, 0.375f, 0.4375f,
-    0.5f, 0.5625f, 0.625f, 0.6875f, 0.75f, 0.8125f, 0.875f, 0.9375f};
+    0.0f, 0.005208333333f, 0.66666667f, 1.0f, 0.33333333f, 0.5f, 0.16666667f, 0.25f,
+    -0.0f, -0.005208333333f, -0.66666667f, -1.0f, -0.33333333f, -0.5f, -0.16666667f, -0.25f};
 
 // Build the 4 byte-planes of the 16-entry LUT so pshufb can look it up.
 static inline void lut_planes(const float* lut, __m128i& p0, __m128i& p1,
