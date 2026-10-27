@@ -1,3 +1,0 @@
-[vqvae] images=14432 params=6.55M batch=4 size=384
-[vqvae step 20] loss=0.4012 rec=0.3634 vq=0.0378 2.98s rss=0.93GB
-[vqvae step 40] loss=0.2879 rec=0.2189 vq=0.0691 3.45s rss=1.19GB

@@ -100,3 +100,50 @@ q3bit_gemm.so
 # 探针运行日志（不进版本库）
 _igpu_*.log
 
+
+
+# ============================================================
+# 仓库卫生（2026-10-27）：实验产物一律不进版本库
+# 已有一批历史产物（881 个文件）从 tree 移出，归档在仓库外：
+#   D:\work\_repo_archive_2026-10-27\   （i5build 用 junction 指回，脚本里的绝对路径照旧可用）
+# 结论仍然进 README / docs_cpu / 研究报告，不进仓库。
+# ============================================================
+i5build/
+_backup_p0/
+tinysd_lora/
+.autopilot/
+runs/
+wandb/
+
+# 运行日志 / 错误输出 / 重定向输出
+*.log
+*.err
+*.out
+
+# 图片：生成结果、对比图、预览图（要展示的图放 docs 或 release，不进代码库）
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.bmp
+*.ppm
+
+# 探针/调试产物
+*.exe
+*.pdb
+*.ilk
+*.obj
+*.isa
+*.hsail
+*.co
+*.il
+
+# 改代码前的手工备份
+*.pre_*
+*.PRE_*
+*_backup.json
+*.600step_backup.json
+
+# 空目录占位不需要
+!.gitkeep

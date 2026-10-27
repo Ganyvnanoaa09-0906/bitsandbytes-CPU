@@ -1,17 +1,0 @@
-====================================================================================
-AnimateDiff 端到端出片（生成 → 超分 → mp4）
-====================================================================================
-输出目录: D:\work\cloud_results\anime_e2e
-[gen] 构建 AnimateDiff 管线（adapter=animatediff-motion-adapter-v1-5-2）
-Loading weights:   0%|          | 0/196 [00:00<?, ?it/s]Loading weights: 100%|██████████| 196/196 [00:00<00:00, 6525.41it/s]
-The config attributes {'motion_activation_fn': 'geglu', 'motion_attention_bias': False, 'motion_cross_attention_dim': None} were passed to MotionAdapter, but are not expected and will be ignored. Please verify your config.json configuration file.
-There are modules in UNetMotionModel that should be kept in float32: []. Casting directly with `to()` can lead to inconsistent results; set `torch_dtype` in `from_pretrained()` instead to keep these modules in float32.
-[load] pipeline built in 12.8s (unet 1313M params)
-[gen] attention_slicing 已关闭（实测 VAE 快 1.71×）
-[gen] 管线就绪 25.0 s
-[gen] scheduler=DPMSolverMultistepScheduler
-[gen] 256x256 x8f x20步 cfg=7.5 = 544.1 s (27.21 s/步, 每帧 68.02 s)
-  [gen] 8 帧 (256, 256, 3)  std=56.8  帧间差分=14.02  VALID
-[gen] 8 帧 -> D:\work\cloud_results\anime_e2e\lr_frames
-
-总耗时 570.4 s   结果: PASS
