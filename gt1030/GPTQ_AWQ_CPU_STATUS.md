@@ -38,3 +38,22 @@ python gt1030/gptq_awq_cpu.py --format gptq
 python gt1030/gptq_awq_cpu.py --format awq
 ```
 日志：`research/bench_results/gptq_cpu*.log`、`awq_cpu*.log`。
+## 控制量化（2026-10-27，lead 建议）
+
+同一 `layers.0.self_attn.q_proj`，同一 group128，自己压 int4 再反量化：
+
+| 组 | weight rel | 单层 y rel |
+|---|---|---|
+| control 对称（zero=8） | 0.1397 | 0.1014 |
+| control 非对称（min/max zero） | 0.1137 | 0.0829 |
+| **GPTQ checkpoint** | **0.1737** | **0.1265** |
+| AWQ checkpoint（REVERSE_ORDER） | 0.4638 | 0.2687 |
+| AWQ checkpoint（no reverse） | 1.1603 | 1.1043 |
+
+- **GPTQ 与 control 同量级**（0.17 vs 0.14），说明 in/out 打包、qzeros+1、group 轴**基本正确**；
+  剩余差是 GPTQ 实际量化误差 + base revision，不是纯解包崩。
+- **AWQ 仍明显错**（0.46 vs control 0.11–0.14）；去掉 REVERSE_ORDER 更差（1.16）⇒ 问题不在
+  reverse，而在 qzeros/scales/pack 约定（或 checkpoint 用了不同 zero 约定）。
+- 控制组表明 lead 估的“0.02–0.04”过于乐观：**g128 对称 int4 实测 wrel≈0.14**。
+- 单层 y rel GPTQ 0.126 >5e-3，仍不能算通过；全模型 logits0.53 也说明 base/量化 checkpoint
+  不能直接这样对拍。
