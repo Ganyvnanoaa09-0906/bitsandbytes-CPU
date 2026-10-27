@@ -70,3 +70,13 @@ python gt1030/gptq_awq_cpu.py --format awq
   (a) 实现等价性：AWQ **PASS（0.0）**；GPTQ 待官方参考。
   (b) 质量：用 ppl/KL（int4 正常 +2~6% ppl、KL0.05~0.2），本轮未测。
 - 仍**不宣称 #2 通过**：GPTQ 官方等价性、fused GEMV/decode≥5×/内存未完成。
+## GPTQ 红旗排除（2026-10-27）
+
+RTN control yrel0.1014 < GPTQ checkpoint0.1265，查了两个可能：
+- `desc_act=False`；`g_idx` 分段 [0,0,...,1,...6] 顺序；非量化权重（embedding/input_layernorm）与 base 一致
+  （embedding maxdiff 3e-8）⇒ **不是 act-order/g_idx，也不是 base revision**。
+- 同一 x、同一 base 连测 5 个随机种子：control yrel 0.084–0.159，GPTQ 0.117–0.206，**每次都差20–30%**
+  ⇒ **不是采样噪声**。
+⇒ 剩余可能：我们的 GPTQ 反量化与官方仍有细节差异，或该 checkpoint 的 GPTQ 对随机 x 本就比 RTN 差
+  （GPTQ 为校准分布优化，随机 x 不一定占优）。**需 AutoGPTQ/optimum 纯 torch 参考做 0.0 对拍**；
+  在拿到之前不宣称 GPTQ 实现通过。
