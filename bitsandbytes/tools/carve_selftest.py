@@ -17,6 +17,7 @@ import argparse
 import glob
 import io
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -135,6 +136,34 @@ def run(variant, items, keep=False, gui_exe=None):
     return exact, partial, missing, len(data), gui
 
 
+def check_filters(items):
+    """--ext / --min-size 过滤：断言「只导出该导的」，而不是「至少导出了这些」。
+
+    返回 [(说明, 是否通过, 实际文件名列表)]
+    """
+    img = os.path.join(WORK, 'img_A.bin')
+    if not os.path.isfile(img):
+        return []
+    cases = [
+        ('--ext jpg',            ['--ext', 'jpg'],            2),
+        ('--ext png,gif',        ['--ext', 'png,gif'],        2),
+        ('--min-size 3000',      ['--min-size', '3000'],      2),
+    ]
+    out = []
+    for label, flags, want_n in cases:
+        d = os.path.join(WORK, 'filter_' + re.sub(r'[^a-z0-9]+', '_', label))
+        if os.path.isdir(d):
+            shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(d, exist_ok=True)
+        subprocess.run([EXE, img, d] + flags, capture_output=True, text=True,
+                       encoding='utf-8', errors='replace')
+        names = sorted(os.listdir(d))
+        exact, _partial, _missing = score(d, items)
+        ok = (len(names) == want_n) and (len(exact) == want_n)
+        out.append((label, ok, names))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--keep', action='store_true')
@@ -178,6 +207,17 @@ def main():
     if gui_runs:
         print('==== GUI 版与 CLI 结果一致: %d/%d ====' % (gui_ok, gui_runs))
         if gui_ok != gui_runs:
+            raise SystemExit(1)
+
+    # --ext / --min-size：必须精确匹配，多导出或少导出都算失败
+    filt = check_filters(items)
+    if filt:
+        fok = sum(1 for _l, ok, _n in filt if ok)
+        print('\n---- 过滤（--ext / --min-size）----')
+        for label, ok, names in filt:
+            print('  %-18s %s  实际: %s' % (label, 'PASS' if ok else 'FAIL', ', '.join(names) or '(空)'))
+        print('==== 过滤用例通过: %d/%d ====' % (fok, len(filt)))
+        if fok != len(filt):
             raise SystemExit(1)
 
 

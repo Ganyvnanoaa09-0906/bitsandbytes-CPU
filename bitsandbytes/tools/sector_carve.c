@@ -107,6 +107,10 @@ static FmtKind sniff(const unsigned char* b, size_t cur, size_t len) {
 }
 
 static int g_carved = 0;
+/* --ext / --min-size: keep scripting sane on big images (e.g. only photos, skip tiny junk) */
+static const char* g_extWant = NULL;   /* lowercase, comma separated, NULL = all */
+static DWORDLONG g_minSize = 0;        /* 0 = no lower bound */
+static int g_filtered = 0;             /* matched but skipped by the filter */
 
 /* 把源的文件指针移动到绝对偏移 off（用于准确重读文件头）。 */
 static BOOL seek(HANDLE h, DWORDLONG off) {
@@ -253,6 +257,23 @@ static int gifFileSize(const unsigned char* b, size_t len, DWORDLONG* outSize,
     }
 }
 
+/* does the detected extension pass --ext? (jpg/jpeg treated as the same class) */
+static int extWanted(const char* ext) {
+    const char* p = g_extWant;
+    if (!p || !*p) return 1;
+    while (*p) {
+        const char* q = p;
+        size_t n;
+        while (*q && *q != ',') q++;
+        n = (size_t)(q - p);
+        if (n && strlen(ext) == n && _strnicmp(p, ext, n) == 0) return 1;
+        if (n == 3 && _strnicmp(p, "jpg", 3) == 0 && _stricmp(ext, "jpeg") == 0) return 1;
+        if (n == 4 && _strnicmp(p, "jpeg", 4) == 0 && _stricmp(ext, "jpg") == 0) return 1;
+        p = (*q == ',') ? q + 1 : q;
+    }
+    return 0;
+}
+
 static DWORDLONG extractFile(HANDLE hSrc, FmtKind k, DWORDLONG fileStart, const wchar_t* outdir) {
     if (!seek(hSrc, fileStart)) return 0;
 
@@ -395,6 +416,13 @@ static DWORDLONG extractFile(HANDLE hSrc, FmtKind k, DWORDLONG fileStart, const 
         }
     }
 
+    /* filtered out: still return the length so the scanner skips the whole file
+       instead of re-hitting the same header */
+    if (!extWanted(ext) || (g_minSize && (DWORDLONG)size < g_minSize)) {
+        g_filtered++;
+        free(buf);
+        return (DWORDLONG)size;
+    }
     wchar_t path[MAX_PATH*2];
     _snwprintf_s(path, MAX_PATH*2, _TRUNCATE, L"%ls\\carved_%06d.%hs", outdir, g_carved, ext);
     HANDLE h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -515,7 +543,8 @@ static HANDLE openSource(const wchar_t* src, DWORDLONG* total) {
 int wmain(int argc, wchar_t** argv) {
     setlocale(LC_ALL, "");
 #ifdef _MSC_VER
-    _setmode(_fileno(stdout), _O_U16TEXT);
+    /* console -> UTF-16 (Chinese output works); redirected/piped -> UTF-8 so scripts can grep */
+    _setmode(_fileno(stdout), _isatty(_fileno(stdout)) ? _O_U16TEXT : _O_U8TEXT);
 #endif
     if (argc < 3) {
         wprintf(L"用法: sector_carve <源> <输出目录>\n");
@@ -525,8 +554,41 @@ int wmain(int argc, wchar_t** argv) {
         wprintf(L"      sector_carve E:\\d_drive.img F:\\carved\n");
         return 1;
     }
-    const wchar_t* src = argv[1];
-    const wchar_t* outdir = argv[2];
+    const wchar_t* src = NULL;
+    const wchar_t* outdir = NULL;
+    static char extBuf[256];
+    int ai;
+
+    /* --ext jpg,png   --min-size 100k   (options may appear anywhere) */
+    for (ai = 1; ai < argc; ai++) {
+        if (_wcsicmp(argv[ai], L"--ext") == 0 && ai + 1 < argc) {
+            int t;
+            WideCharToMultiByte(CP_ACP, 0, argv[++ai], -1, extBuf, 256, NULL, NULL);
+            for (t = 0; extBuf[t]; t++)
+                if (extBuf[t] >= 'A' && extBuf[t] <= 'Z') extBuf[t] = (char)(extBuf[t] + 32);
+            g_extWant = extBuf;
+        } else if (_wcsicmp(argv[ai], L"--min-size") == 0 && ai + 1 < argc) {
+            const wchar_t* u = argv[++ai];
+            unsigned long long v = wcstoull(u, NULL, 10);
+            size_t L2 = wcslen(u);
+            wchar_t last = L2 ? u[L2 - 1] : 0;
+            if (last == L'k' || last == L'K') v *= 1024ULL;
+            else if (last == L'm' || last == L'M') v *= 1024ULL * 1024ULL;
+            else if (last == L'g' || last == L'G') v *= 1024ULL * 1024ULL * 1024ULL;
+            g_minSize = (DWORDLONG)v;
+        } else if (argv[ai][0] == L'-') {
+            wprintf(L"[error] unknown option: %ls\n", argv[ai]);
+            return 1;
+        } else if (!src) {
+            src = argv[ai];
+        } else if (!outdir) {
+            outdir = argv[ai];
+        }
+    }
+    if (!src || !outdir) {
+        wprintf(L"[error] need <source> <outdir>\n");
+        return 1;
+    }
     CreateDirectoryW(outdir, NULL);
 
     DWORDLONG total = 0;
@@ -540,6 +602,8 @@ int wmain(int argc, wchar_t** argv) {
 
     CloseHandle(h);
     wprintf(L"\n[DONE] 共恢复 %d 个文件到 %ls\n", g_carved, outdir);
+    if (g_filtered)
+        wprintf(L"[*] skipped by --ext/--min-size filter: %d\n", g_filtered);
     if (g_carved == 0)
         wprintf(L"[提示] 未命中任何已知格式。可能源无这类文件，或需扩大格式表。\n");
     return 0;
