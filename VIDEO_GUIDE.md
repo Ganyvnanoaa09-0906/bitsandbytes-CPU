@@ -359,3 +359,67 @@ RealESRGAN_x4plus.pth           (67.0 MB, 16.70M 参数, 23 块)  ← 256+ 输�
    拿 512×512 的测量外推到 192×192 的场景，会得到差 7 倍的错误结论。
 
 （完整清单见 report §10.147.5、§10.153.2、§10.157.4）
+
+---
+
+## 7. 端到端管线 `video_e2e.py`（2026-10-27 落库）+ 运动诊断
+
+`video_e2e.py` 把"生成 → 时序指标 → 后处理 → 落盘"串成**一条可复现的 Stage 化管线**，
+每个 stage 一个独立子进程（避免两个大模型同进程触发 `0xC0000005`），并写出
+`config.json / plan.json / metrics.json`，用**数字**判 PASS/FAIL 而不是退出码。
+
+### 7.1 三条命令（在仓库根执行）
+
+```powershell
+# ① 推理链路：128²、2 块 × 8 帧 = 16 帧、DPM 6 步、CFG 7.5 → 指标 → FSRCNN → gif+mp4
+python video_e2e.py smoke --profile infer --root runs\smokeA4
+
+# ② 带自训 LoRA 生成（.pt 自动转 safetensors；也可直接给 .safetensors）
+python video_e2e.py gen --mode independent --res 128 --frames 16 --chunk 8 `
+  --steps 6 --scheduler dpm --lora runs\my_lora\ckpt_last.pt --out runs\loraA
+
+# ③ 连续镜头（滑窗，带 overlap 混合；seam 指标会按 sliding 判据检查）
+python video_e2e.py gen --mode sliding --res 128 --frames 24 --chunk 8 --overlap 2 `
+  --steps 6 --scheduler dpm --out runs\slideA
+```
+
+前置条件：
+- 组件脚本（`sliding_window.py` / `independent_chunks.py` / `temporal_metrics.py` / `post_process.py`）
+  已随本分支落在**仓库根**；
+- 训练工具 `video_mvp/` 是外部目录：默认 `..ideo_mvp`，或用环境变量
+  `VIDEO_E2E_TOOLS=D:\work\video_mvp` 指定；训练数据用 `--data` 或 `VIDEO_E2E_DATA`；
+- 纪律不变：**同一时刻只跑一个大模型进程**（见 §0 ①），把 `enable_attention_slicing` 关掉（§0 ②）。
+
+### 7.2 判据（`metrics.json` 里的字段）
+
+| 字段 | 含义 | 什么时候算失败 |
+|---|---|---|
+| `frames.std` | 帧内像素标准差 | ≤3 ⇒ 近纯色/退化 |
+| `frames.frame_diff` / `temporal.mad` | 帧间平均绝对差 | ≤0.1 ⇒ 静态 |
+| `temporal.best_shift` | 全帧搜索的最佳位移 | 有位移 ⇒ 有整体运动 |
+| `white.slope_per_frame` + `white.r2` | 高光过曝趋势 | slope>0.05 **且 R²>0.5** 才算漂移（旧版只看 slope，在低分辨率噪声片上会误报，已修） |
+| `boundary.ratio` | 滑窗接缝 MAD / 镜内 MAD | sliding 模式 >1.5 ⇒ 接缝可见（independent 的硬切不算失败） |
+| `post.verify.ok` | mp4 读回校验 | false ⇒ 落盘失败 |
+
+### 7.3 运动诊断（2026-10-27，同权重同 seed 的 A/B）
+
+| 配方 | 调度器 / 步数 | CFG | 帧间 MAD | 白像素 | 结论 |
+|---|---|---|---|---|---|
+| **基线（无 LoRA）** | **DPM / 6** | 7.5 | **18.1** | 6.1–6.4% | **连贯动画：头转、表情、头发都在动** ✅ |
+| 基线（旧 smoke A） | DPM / 6 | 7.5 | 15.2 | 0.14 / 0.51 | 同一配方，旧判据因阈值误判 |
+| 基线 | DDIM / 12 | 6.0 | 3.85 | — | **几乎静止**（确定性采样收敛到平均帧） |
+| 自训 temporal LoRA（rank8，1000 步） | DPM / 6 | 7.5 | **9.1（−49%）** | **25.9%** | 运动减半 + 过曝变形 ⇒ **有害** |
+| 同上 | DDIM / 12 | 6.0 | 3.85 | — | 静止（夜间那条"无运动"就是这一类测量） |
+
+要点：
+1. **调度器决定运动**：同一份权重，DDIM 12 步几乎是静止图，DPM-Solver 6 步会动。
+   评测视频"有没有运动"不要用 DDIM。
+2. **训练闭环的采样器曾经没有 CFG**：`sample_check.py` 只做无条件 epsilon，等效 cfg=1.0，
+   出的是彩色噪声 —— 夜里据此下的"motion_probe 无运动"结论无效。现已补 `--cfg`（默认 6.0）。
+3. **temporal-only LoRA（rank8/1000 步）会损害运动**：只动 168 个时序层时，最省事的降损方式就是
+   让各帧预测一致 ⇒ 静态化 + 过曝。换 `--lora_scope spatial`（只动空间层、不碰时序）是可验证的替代。
+4. 官方 AnimateDiff 的初始噪声是**逐帧独立**的（diffusers 0.40 `prepare_latents`），
+   "共享一张噪声"不是修复方向：实测配合确定性采样会得到 8 帧完全相同（frame_diff 0.64）。
+5. 运动模块本身没问题：adapter 567/567 张量逐一对上（max|diff|=0），扰动一帧其它帧输出变化 0.15–0.44。
+
+完整证据与复现：`D:\work\collab\shared\VIDEO_MOTION_DIAGNOSIS_2026-10-27.md`。
