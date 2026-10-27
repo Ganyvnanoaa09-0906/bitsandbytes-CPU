@@ -947,8 +947,20 @@ sector_mirror.exe 1 E:\d_drive.img      :: legacy: physical disk number 1
 - **Target ≠ source / `C:`** (anti-secondary-damage); **sparse mirror** (all-zero as holes);
 - **admin required**; **Ctrl+C** keeps the written portion.
 
+**Resume** (a multi-hour mirror should not restart from zero after a power cut):
+
+- **GUI**: progress goes into `<image>.progress`; reopen, keep "断点续传 / resume" checked and
+  press Start again to continue (a clean finish deletes the progress file, so a fresh run starts
+  from zero as expected);
+- **CLI**: `sector_mirror.exe D: E:\d_drive.img --resume`;
+- **Self-check** (no admin, no real disk needed): `sector_mirror_gui.exe --selftest`, log at
+  `%TEMP%\sm_resume_selftest.log` — verifies offset detection, byte-identical continuation, and
+  that an out-of-range checkpoint is rejected.
+
 #### 9.2.4 Recover (on a healthy machine after the mirror)
 
+- First try this repo's built-in **`mft_recover`** (9.2.6, exact rebuild from MFT records:
+  names, sizes, content) or **`sector_carve`** (9.2.5, signature carve for a dead MFT); or
 - **TestDisk** (portable) from `d_drive.img`; or **7-Zip** extract `.img`; or
   **Windows File Recovery** deep scan (`winfr` supports image recovery).
 
@@ -965,12 +977,87 @@ sector_carve.exe E: D:\carved_mom
 ```
 
 - **Formats**: PNG/JPEG/GIF/ZIP(auto-detects docx/xlsx/pptx)/PDF/MP4 — streamed cross-block.
+- **Filtering** (saves a lot of time/space on big images): `--ext jpg,png` keeps only those
+  types, `--min-size 100k` drops smaller results (k/m/g suffixes accepted), e.g.
+  `sector_carve.exe D:\usb.img D:\carved --ext jpg,png --min-size 20k`.
+- **ZIP / OOXML lengths are computed structurally** (local header -> central directory ->
+  EOCD), so several zips/docx/xlsx/pptx in one image no longer swallow each other (the old
+  implementation took the last `PK\x05\x06` in its buffer, which turned a 3KB docx into a
+  461KB blob).
+- **One hard limit**: files under ~700 bytes are stored **resident** inside their `$MFT` record,
+  and the last 2 bytes of each record sector are replaced by the fixup value. Signature carving
+  cannot recover those 2 bytes, so such files are byte-exact only through `mft_recover` (9.2.6,
+  which applies the fixup). `sector_carve` is byte-exact for **non-resident** (>1KB) files.
 - **GUI `sector_carve_gui.exe` (recommended)** — double-click, no command line.
 - **Zero writes to the source**; **never write the outdir back to the damaged drive**.
 
 > **Measured**: on an MFT-damaged 7.5GB USB stick, mirror + carve recovered **3200+ files**
 > (photos/zip/PDF/MP4/Word/Excel/PPT); PNG 99.6% open, docx 10/10 valid, MP4 complete;
 > the GUI physical-drive scan recovers **~95%** usable.
+
+#### 9.2.6 Metadata recovery `mft_recover` (built-in; matches winfr's regular mode)
+
+> When the **MFT itself is still readable** (even after files were deleted and directory
+> entries vanished), this rebuilds files from the `$FILE_NAME` / size / data-runlist stored in
+> their `$MFT` records — that is winfr's regular mode, but read-only, working directly on an
+> image or a drive letter, **no NTFS mount required**, preserving original names and exact sizes.
+
+```bat
+:: usage: mft_recover <image|drive> [outdir] [--all] [--debug]
+mft_recover.exe D:\usb_mom.img D:\recovered          :: deleted files only (default)
+mft_recover.exe D:\usb_mom.img D:\recovered --all    :: also export the live ones
+mft_recover.exe D:\usb_mom.img --debug               :: stats + per-record decisions only
+mft_recover.exe \\.\F: D:\recovered                  :: scan a drive directly (admin)
+```
+
+- **GUI `mft_recover_gui.exe` (recommended, double-click)**: pick the image (drag & drop also works), or a drive from the
+  drop-down) → pick the output directory → click Start; progress bar, log and a Stop button.
+  It **refuses to run when the output is on the same drive as the source** (that would overwrite
+  what you are recovering) and self-elevates when scanning a physical drive.
+- **Output layout**: by default the **original directory tree is rebuilt** from the parent
+  reference stored in `$FILE_NAME` — `<outdir>\deleted\<dirs>\<name>` (live ones under
+  `live\`), unresolvable parents go to `deleted\_orphan\`, and name collisions get a ` (2)`
+  suffix instead of overwriting. `--flat` switches back to flat
+  `del_<record#>_<name>` / `live_<record#>_<name>` names.
+- **Recovers**: resident small files (including 0-byte files), non-resident large files (copied
+  cluster by cluster via the runlist, sparse runs zero-filled), UTF-16 (e.g. Chinese) names, and
+  the original directory tree.
+- **Filtering**: `--include "*.jpg;*.png"` keeps only matches, `--exclude "*.tmp"` drops them.
+  `*` and `?` are supported, patterns are `;`-separated, and **both the file name and the rebuilt
+  relative path are matched** (so `--include "photos\*"` works). The GUI exposes this as row ③.
+- **Does not recover (yet)**: records overwritten/zeroed, compressed or encrypted data streams,
+  and files whose attributes were split into extension records via `$ATTRIBUTE_LIST`.
+- **Which one first**: **MFT readable → `mft_recover`** (names + exact sizes); **MFT destroyed →
+  `sector_carve`** signature mode (no names, header/trailer heuristics). Run both and merge.
+
+> **Self-test**: `python tools\mft_selftest.py` (needs WSL + ntfs-3g) builds five real NTFS
+> volumes (default geometry / 8KB clusters / 1KB clusters / 4KB sectors / one deliberately
+> zeroed record) and verifies every recovered file by SHA-256 — all PASS means the recovery is
+> byte-exact, not merely the right size.
+
+#### 9.2.7 Self-checks (run these after changing the tools)
+
+The tools ship with self-tests: no damaged hardware, no real disk needed.
+
+```bat
+:: mirror: resume logic (offset detection / identical continuation / oversized checkpoint rejected)
+sector_mirror_gui.exe --selftest
+
+:: signature carve: real corpus + 4 corruption variants, scored by byte-identity
+python tools\carve_selftest.py
+
+:: metadata recovery: 5 real NTFS volumes (default / 8KB clusters / 1KB clusters / 4KB sectors / damaged record)
+python tools\mft_selftest.py
+
+:: end-to-end decision tree: MFT readable -> mft_recover; MFT destroyed -> sector_carve
+python tools\recovery_pipeline_selftest.py
+```
+
+- the three python harnesses need **WSL + ntfs-3g** (they build real volumes with `mkfs.ntfs`);
+- `mft_selftest.py` also drives the GUI build (`mft_recover_gui.exe --selftest`) and re-tests the
+  legacy `--flat` naming;
+- `carve_selftest.py` also compares the **GUI against the CLI** on every variant, because those two
+  front-ends still carry separate copies of the carving engine.
 
 ### 9.3 Tier 2: Windows File Recovery (when repo/tool unavailable)
 

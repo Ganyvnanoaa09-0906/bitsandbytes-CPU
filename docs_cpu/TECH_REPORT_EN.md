@@ -639,6 +639,10 @@ MSVC `/TP /we4556`, measured 4/4 PASS with exit code 0; Linux side:
 - **Clear negative findings**: bf16 disabled on AVX2; base-weight 8-bit/bf16 storage
   for **full training** is counterproductive (but true quantized storage + LSQ
   scale-only learning achieves memory reduction, see §3.5).
+6. **A built-in data-recovery toolchain** (`sector_mirror` / `mft_recover` / `sector_carve`, each
+   with a GUI): bad-sector mirroring with resume, deleted-file recovery from `$MFT` records
+   (names, sizes, directory tree), and signature carving; three real-volume harnesses (7/7,
+   4/4, end-to-end PASS) show the recovery is **byte-exact**, not merely "produces files".
 - **Cross-platform**: Windows/Linux (x86_64/aarch64) build + torch-free self-test ready.
 
 **Outlook**:
@@ -796,6 +800,86 @@ boundary.
 - GPU / DirectML (WSL 9P / physical disk / GPU) paths — no GPU, R5 WSL broken, physical
   disk missing; only the CPU-fallback/non-crash path was verified. `gpu_scheduler`'s actual
   iGPU scheduling needs a GPU machine.
+
+---
+
+## 8. Built-in data-recovery toolchain (sector_mirror / mft_recover / sector_carve)
+
+> It started with a real problem: a USB stick whose files had been deleted / whose disk had
+> dropped off. The goal was not "wrap winfr in a shell" but to be **safe on damaged hardware and
+> able to prove the recovered bytes are exact**.
+
+### 8.1 The three tools and the decision tree
+
+| Tool | What it does | When to use it |
+|---|---|---|
+| `sector_mirror.exe` / `sector_mirror_gui.exe` | Raw-sector mirror of a whole disk: retry 3x, then shrink the granularity (1MB -> 64KB -> 4KB) and zero-fill what cannot be read; all-zero blocks become sparse holes; **both CLI and GUI support resume** (`<image>.progress`) | **Always first**: mirror, then work on the image; the damaged disk is only read |
+| `mft_recover.exe` / `mft_recover_gui.exe` | Rebuild deleted files from `$MFT` records: original name, exact size, **original directory tree**; `--all` also exports live files, `--flat` for the legacy flat naming, `--include/--exclude` name filters, `--debug` per-record decisions | **MFT still readable** (the usual "oops I deleted it" case) |
+| `sector_carve.exe` / `sector_carve_gui.exe` | Signature carving: PNG/JPEG/GIF/ZIP (auto-detects docx/xlsx/pptx)/PDF/MP4, streamed across blocks; `--ext` / `--min-size` filters | **MFT destroyed**, or the record was overwritten |
+
+One-line rule: **MFT readable -> `mft_recover` (names + tree); MFT destroyed -> `sector_carve`
+(content only). Run both and merge if unsure.**
+
+### 8.2 Implementation notes (each one was a real bug)
+
+- **`$MFT` is itself a non-resident file**: its own `$DATA` runlist has to be parsed before any
+  record can be walked, and a fragmented MFT means accumulating record-number -> offset over runs.
+- **A cluster holds `cluster/recSize` records** (4KB cluster + 1KB record = 4 per cluster): a
+  cluster-wise walk must visit every record inside the cluster. The first version read only the
+  first record of each cluster and therefore saw 18 of 76 records - **three quarters of the files
+  were invisible, including all the deleted ones we cared about**.
+- **`$FILE_NAME` is a resident attribute**: the name length lives at `attr + valueoff + 0x40`.
+  Using `attr + 0x40` reads timestamp/size fields instead, which showed up as "records found,
+  names are garbage, 0 files exported".
+- **The fixup (update sequence) must be applied**: the last 2 bytes of every record sector are
+  replaced by the USA value. The flip side is why **signature carving can never recover a resident
+  file (< ~700B) exactly** - its content lives inside the record and those 2 bytes are gone.
+- **The directory tree comes from the parent reference**: the first 8 bytes of a `$FILE_NAME` value
+  are a file reference to the parent directory (low 48 bits = record number). Walking up rebuilds
+  `deleted\<original dirs>\<name>`; unresolvable parents land in `_orphan\`, name collisions get
+  a ` (2)` suffix.
+- **ZIP/OOXML lengths must be walked structurally**: the old code took the *last* `PK\x05\x06` in
+  its buffer, so with several zips/Office files in one image a 3KB docx was carved as a 461KB blob
+  and swallowed the zip next to it.
+- **GIF lengths come from a block walk**: the old "first 0x3B byte" ended real GIFs at the first
+  0x3B that happened to appear in image data (4289B -> 608B).
+
+### 8.3 Verifiability (this is what separates "it runs" from "it works")
+
+| Harness | Coverage | Result |
+|---|---|---|
+| `tools/mft_selftest.py` | 5 real NTFS volumes (default / 8KB clusters / 1KB clusters / 4KB sectors / one zeroed record), a 96MB 500-file volume, and a volume whose **`$MFT` is forced into 2 runs**; every file compared by sha256; also drives the GUI build and the legacy `--flat` naming | **7/7 PASS** |
+| `tools/carve_selftest.py` | real corpus (2 real JPEGs + PNG/GIF/PDF/ZIP) plus 4 corruption variants, scored by byte-identity; also asserts **GUI == CLI** and the exact `--ext/--min-size` counts | **4/4 + 4/4 + 3/3** |
+| `tools/recovery_pipeline_selftest.py` | end-to-end decision tree: a 64MB volume with 9 real files (incl. docx/xlsx/pptx), all deleted -> branch A `mft_recover` 9/9 byte-exact; then the `$MFT` data area (77,824 bytes) is zeroed -> branch B `mft_recover` cleanly reports 0 and `sector_carve` returns 9/9 byte-exact | **PASS** |
+| `sector_mirror_gui.exe --selftest` | resume logic only: offset detection, byte-identical continuation, oversized checkpoint rejected | **PASS** |
+
+Performance reference: a 256MB volume with 5,084 records / 2,500 files is rebuilt tree-wise in
+**3.56 s** (~1.4 ms per file; the cost is file creation, not record parsing).
+
+### 8.4 Known limits
+
+- **Compressed / encrypted streams** (`$DATA` non-resident flag 2/3) are skipped and counted; no
+  LZNT1 and no EFS support.
+- Files whose attributes were split into extension records via `$ATTRIBUTE_LIST` are skipped too.
+- `mft_recover` does not scan `$I30` directory indexes, so a file whose **record was overwritten**
+  cannot get its name back (carve its content instead).
+- `sector_carve` has no names and does not rebuild directories (the metadata is gone), naming output
+  `carved_%06d.<ext>`.
+- Resident files (< ~700B): byte-exact through `mft_recover` while the MFT lives; after the MFT is
+  destroyed, signature carving is structurally 2 bytes off.
+
+### 8.5 Fixed in this round (recovery tools only)
+
+| Problem | Root cause | Fix |
+|---|---|---|
+| `mft_recover` missed 3/4 of the records | cluster-wise walk read only the first record per cluster | iterate `cluster/recSize` records per cluster (regression: geom8k scenario) |
+| garbage names, 0 files exported | `$FILE_NAME` name offset ignored the attribute's `valueoff` | `attr + valueoff + 0x40/0x41/0x42` |
+| CLI silently exported 0 after the shared-core refactor | `mft_open` did `memset(ctx)`, wiping the caller's callbacks and output dir | only initialise the fields the core owns |
+| 3KB docx carved as 461KB | ZIP end = **last** `PK\x05\x06` in the buffer | sequential zip walk (local -> central -> EOCD) |
+| carve GUI still used the old GIF/ZIP logic | the GUI carries its own copy of the engine and both fixes had only touched the CLI | parsers ported byte-for-byte + `carve_selftest.py` now asserts GUI/CLI parity |
+| carve output not greppable | unconditional `_O_U16TEXT` | UTF-16 on a console, UTF-8 when redirected |
+| mirror GUI had no resume | only the CLI had `--resume` | GUI writes `<image>.progress` + checkbox; resume must use `OPEN_ALWAYS` (`CREATE_ALWAYS` truncates the half-written image first) |
+| `sector_mirror_gui --selftest` crashed with 0xC0000005 | `__argv/__wargv` are NULL in a GUI-subsystem process | use `CommandLineToArgvW` |
 
 ---
 

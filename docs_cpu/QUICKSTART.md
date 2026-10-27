@@ -888,8 +888,18 @@ sector_mirror.exe 1 E:\d_drive.img
 - **稀疏镜像**：全 0 扇区写成「稀疏空洞」，不占 U 盘实际空间；
 - **管理员权限** + **Ctrl+C 中断**（已写部分保留）。
 
+**断点续传**（镜像跑几个小时被打断也不用从头再来）：
+
+- **GUI 版**：进度自动写进 `<镜像>.progress`；重新打开后保持勾选「断点续传」再点开始，
+  就从断点继续（上次干净完成则断点文件已自动删除，正常从头镜像）；
+- **CLI 版**：`sector_mirror.exe D: E:\d_drive.img --resume`；
+- **自检**（不需要管理员、不需要真盘）：`sector_mirror_gui.exe --selftest`，日志在
+  `%TEMP%\sm_resume_selftest.log`，会验证「断点识别 / 续拷字节一致 / 超长断点被拒绝」。
+
 #### 9.2.4 恢复（镜像完成后，在完好机器上操作）
 
+- 先用本仓库自带的 **`mft_recover`**（§9.2.6，按 MFT 记录精确还原名字/大小/内容）或
+  **`sector_carve`**（§9.2.5，MFT 已毁时的签名恢复）；或
 - 用 **TestDisk**（便携版）从 `d_drive.img` 恢复分区 / 文件；或
 - 用 **7-Zip** 提取 `.img`（若文件系统尚可读）；或
 - 用 **Windows File Recovery** 对镜像深度扫描（`winfr` 支持从镜像恢复）。
@@ -909,12 +919,78 @@ sector_carve.exe E: D:\carved_mom
 ```
 
 - **支持格式**：PNG/JPEG/GIF/ZIP(自动识别 docx/xlsx/pptx)/PDF/MP4 —— 流式跨块提取。
+- **过滤**（大镜像上很省时间/空间）：`--ext jpg,png` 只保留这些类型；`--min-size 100k`
+  跳过小于该尺寸的结果（支持 k/m/g 后缀）。例：
+  `sector_carve.exe D:\usb.img D:\carved --ext jpg,png --min-size 20k`。
+- **ZIP / OOXML 长度是「按结构算」出来的**：顺序走 local header → 中央目录 → EOCD，
+  所以同一镜像里有多个 zip/docx/xlsx/pptx 时不会互相吞并（旧实现是找缓冲区内最后一个
+  `PK\x05\x06`，实测会把 3KB 的 docx 切成 461KB 的大块）。
+- **一个硬限制**：小于约 700 字节的小文件会被 NTFS 直接**驻留**在 `$MFT` 记录里，记录末尾
+  2 字节被 fixup 值替换 —— 纯签名扫描天生读不全这 2 字节。这类文件**只能靠 §9.2.6 的
+  `mft_recover`**（它会过 fixup）精确还原；`sector_carve` 只对**非驻留**（>1KB）文件字节精确。
 - **GUI 版 `sector_carve_gui.exe`（推荐）**：双击即用，无需命令行。
 - **零写入原盘** + **输出目录禁止写回受损盘**。
 
 > **实测参考**：MFT 已损坏的 U 盘（7.5GB）经 sector_mirror 镜像 + sector_carve 扫，
 > 恢复 **3200+ 个文件**（照片/压缩包/PDF/MP4/Word/Excel/PPT）；PNG 99.6% 可打开、
 > docx 10/10 有效、MP4 完整；GUI 直扫物理盘恢复 **~95% 可用**。
+
+#### 9.2.6 元数据恢复 `mft_recover`（自带，可打平 winfr 的 regular 模式）
+
+> **用途**：**MFT 本身还在**（哪怕文件已被删除、目录项已消失），按 `$MFT` 记录里的
+> `$FILE_NAME` / 大小 / 数据运行列表**精确还原**——这就是 winfr 的 regular 模式，但本工具
+> **只读**、**直接吃镜像或盘符**、**不需要挂载 NTFS**，还能按原始名字 + 精确大小输出。
+
+```bat
+:: 用法：mft_recover <镜像/盘符> [输出目录] [--all] [--debug]
+mft_recover.exe D:\usb_mom.img D:\recovered          :: 只还原「已删除」的文件
+mft_recover.exe D:\usb_mom.img D:\recovered --all    :: 连没删的一起导出
+mft_recover.exe D:\usb_mom.img --debug               :: 只统计 + 逐条打印判定（排查用）
+mft_recover.exe \\.\F: D:\recovered                  :: 直接扫盘符（需管理员）
+```
+
+- **GUI 版 `mft_recover_gui.exe`（推荐，双击即用）**：选镜像（或用盘符下拉框直接选盘，也可把镜像/输出目录直接**拖进窗口**）→
+  选输出目录 → 点「开始恢复」，带进度条 / 日志 / 随时停止；**输出目录和源在同一盘时直接
+  拒绝执行**，防止把恢复出的文件写回待恢复的盘；扫物理盘会自动申请管理员权限。
+- **输出布局**：默认**按 `$FILE_NAME` 里的父目录引用还原原始目录树** ——
+  `<输出目录>\deleted\<原目录>\<原名>`（未删除的放 `live\`）；父链断了的放
+  `deleted\_orphan\`；同名文件自动加 ` (2)` 后缀，不会互相覆盖。
+  `--flat` 可退回扁平命名 `del_<记录号>_<原名>` / `live_<记录号>_<原名>`（记录号可回查 `--debug`）。
+- **能还原**：驻留小文件（含 0 字节文件）、非驻留大文件（按 runlist 逐簇拷贝，稀疏段补 0）、
+  UTF-16 中文文件名、原始目录结构。
+- **过滤**：`--include "*.jpg;*.png"` 只恢复匹配的、`--exclude "*.tmp"` 跳过匹配的；支持 `*`
+  和 `?`，多个模式用 `;` 分隔，**文件名和还原后的路径都参与匹配**（所以 `--include "照片\*"`
+  也可以）。GUI 版对应 ③ 那一行输入框。
+- **还不能还原**：记录已被覆写/清零的文件、压缩或加密的数据流、属性被
+  `$ATTRIBUTE_LIST` 拆到 extension record 的超多属性文件。
+- **先跑哪个**：**MFT 还能读 → 先 `mft_recover`**（有名字、大小精确）；**MFT 已毁 →
+  `sector_carve` 签名恢复**（没名字、靠文件头尾特征）。两个可以都跑，结果取并集。
+
+> **自测**：`python tools\mft_selftest.py`（需要 WSL + ntfs-3g）会造 5 个真 NTFS 卷
+> （默认几何 / 8KB 簇 / 1KB 簇 / 4KB 扇区 / 人为清零一条记录），逐文件核对 sha256，
+> **全 PASS** 才说明恢复是字节级正确的，而不是「大小差不多」。
+
+#### 9.2.7 工具自检（改完代码 / 出问题先跑这些）
+
+工具本身带自测台，不需要坏硬件、不需要真盘：
+
+```bat
+:: 镜像：断点续传逻辑（断点识别 / 续拷一致 / 超长断点被拒绝）
+sector_mirror_gui.exe --selftest
+
+:: 签名恢复：用真实素材 + 4 种损坏变体验证「恢复出来是不是字节一致」
+python tools\carve_selftest.py
+
+:: 元数据恢复：5 个真 NTFS 卷（默认/8KB 簇/1KB 簇/4KB 扇区/坏记录）
+python tools\mft_selftest.py
+
+:: 端到端决策链：MFT 在 -> mft_recover；MFT 毁 -> sector_carve
+python tools\recovery_pipeline_selftest.py
+```
+
+- `carve_selftest.py` / `mft_selftest.py` / `recovery_pipeline_selftest.py` 需要 **WSL + ntfs-3g**（用 `mkfs.ntfs` 造真卷）；
+- `mft_selftest.py` 还会顺带跑 GUI 版（`mft_recover_gui.exe --selftest`）与 `--flat` 老格式回归；
+- `carve_selftest.py` 会顺带比对 **GUI 版与 CLI 版结果是否一致**（两个前端共用一套内核逻辑，防止改一处漏一处）。
 
 ### 9.3 第二梯队：本仓库 / 工具均不可用时 → Windows File Recovery
 

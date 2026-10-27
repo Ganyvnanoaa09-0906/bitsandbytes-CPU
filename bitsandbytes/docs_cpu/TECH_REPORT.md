@@ -18,6 +18,9 @@ Intel i5-10400 6C12T 12GB）**环境下，对 bitsandbytes 的 CPU 后端进行�
 4. 面向 AVX2 的 Windows 无 CUDA 编译管线 + **Linux（x86_64/aarch64）跨平台构建 + torch-free 自检**；
 5. 明确的**负面结论**：AVX2 上 bf16 GEMM 卡死、基座权重降精度存储**全量训练**路径负收益
    （但真量化存储 + LSQ 只学标度可实现压缩内存，见 §3.5）。
+6. **内置数据恢复工具链**（`sector_mirror` / `mft_recover` / `sector_carve`，各带 GUI 版）：
+   坏道镜像 + 断点续传、按 `$MFT` 记录还原名字/大小/目录树、签名恢复；三套真卷自测台
+   （7/7、4/4、端到端 PASS）证明恢复是**字节级正确**，而不是「能产出文件」。
 
 ---
 
@@ -745,6 +748,74 @@ naive 慢 107x，torch oneDNN/MKL 工业级墙），故底层加速到头，走�
 ### 备注（环境不可测）
 - GPU/DirectML(WSL 9P / 物理盘 / 显卡)相关路径在 R5 不可测（无 GPU / R5 WSL 坏 / 物理盘缺失），
   仅验证了 CPU 回退/不崩路径；`gpu_scheduler` 的核显实际调度需 GPU 机验证。
+
+---
+
+## 8. 内置数据恢复工具链（sector_mirror / mft_recover / sector_carve）
+
+> 起因很现实：一块误删/掉盘的 U 盘要救回来。目标不是"包一层 winfr 的壳"，而是**敢在坏盘上用，
+> 并且能证明自己字节级是对的**。
+
+### 8.1 三件套与决策树
+
+| 工具 | 做什么 | 什么时候用 |
+|---|---|---|
+| `sector_mirror.exe` / `sector_mirror_gui.exe` | 按原始扇区把整盘镜像出来：坏道重试 3 次后逐级降粒度抢救（1MB→64KB→4KB），读不出的填 0；全 0 块写成稀疏洞；CLI 与 GUI **都支持断点续传**（`<镜像>.progress`） | **第一步，永远先镜像**：后面所有操作都在镜像上做，受损盘只读 |
+| `mft_recover.exe` / `mft_recover_gui.exe` | 按 `$MFT` 记录还原：原名 + 精确大小 + **原始目录树**；`--all` 连未删的一起导、`--flat` 旧扁平命名、`--include/--exclude` 名字过滤、`--debug` 逐条判定 | **MFT 还在**（绝大多数"误删"场景） |
+| `sector_carve.exe` / `sector_carve_gui.exe` | 签名恢复：PNG/JPEG/GIF/ZIP（自动识别 docx/xlsx/pptx）/PDF/MP4，流式跨块；`--ext` / `--min-size` 过滤 | **MFT 已毁**，或目标文件的记录被覆盖 |
+
+一句话决策：**MFT 能读 → `mft_recover`（有名字有目录）；MFT 已毁 → `sector_carve`（只有内容）。
+两个都可以跑，结果取并集。**
+
+### 8.2 关键实现细节（每一条都对应一个真 bug）
+
+- **`$MFT` 自己也是非驻留文件**：必须先解析它自身的 `$DATA` runlist 才能遍历记录；MFT 碎片化时
+  按 run 表累加「记录号 → 卷内偏移」。
+- **一个簇里有 `cluster/recSize` 条记录**（4KB 簇 + 1KB 记录 = 每簇 4 条）：按簇遍历必须过簇内
+  每一条。第一版只读簇首，76 条记录里只看得到 18 条，**漏掉 3/4 的文件（包括全部目标文件）**。
+- **`$FILE_NAME` 是驻留属性**：属性头 0x18 字节，名字长度在 `属性起点 + valueoff + 0x40`；
+  写成 `属性起点 + 0x40` 读到的是时间戳/大小字段，表现为"记录找到了、名字是垃圾、导出 0 个"。
+- **fixup（更新序列）必须还原**：每个扇区末 2 字节被 USA 值替换，不还原就无法正确解析属性。
+  反过来，**这也是签名扫描救不回小于约 700B 驻留文件的原因**——内容就在记录里，末 2 字节已被替换。
+- **用父目录引用还原目录树**：`$FILE_NAME` 值前 8 字节是父目录的文件引用（低 48 位 = 记录号），
+  顺父链上溯即可重建 `deleted\<原目录>\<原名>`；父链断了落 `_orphan\`，同名加 ` (2)` 后缀。
+- **ZIP/OOXML 长度必须按结构走**：旧实现取"缓冲区里最后一个 `PK\x05\x06`"，同一镜像里有多个
+  zip/Office 文件时会一路吞到别人的 EOCD 上（实测 3KB 的 docx 被切成 461KB，并把中间的 zip 一起吃掉）。
+- **GIF 长度按块遍历**：旧实现"找第一个 0x3B 字节"会把真实 GIF 截在图像数据里偶现的 0x3B 上
+  （4289B → 608B）。
+
+### 8.3 可验证性（这才是和"能跑"的区别）
+
+| 自测台 | 覆盖 | 结果 |
+|---|---|---|
+| `tools/mft_selftest.py` | 5 个真 NTFS 卷（默认 / 8KB 簇 / 1KB 簇 / 4KB 扇区 / 人为清零一条记录）+ 96MB/500 文件批量场景 + **把 `$MFT` 撑裂成 2 段**的碎片化场景；每个文件按 sha256 比对；顺带跑 GUI 版与 `--flat` 老格式回归 | **7/7 PASS** |
+| `tools/carve_selftest.py` | 真实素材（2 真 jpg + png/gif/pdf/zip）+ 4 种损坏变体；按"内容是否 byte-identical"打分；同时校验 **GUI 与 CLI 结果一致**、`--ext/--min-size` 过滤的精确数量 | **4/4 + 4/4 + 3/3** |
+| `tools/recovery_pipeline_selftest.py` | 端到端决策树：64MB 真卷装 9 个真文件（含 docx/xlsx/pptx）→ 全部删除 → 分支 A `mft_recover` 9/9 字节一致；把 `$MFT` 数据区 77,824 字节整段清零 → 分支 B `mft_recover` 干净报 0、`sector_carve` 9/9 字节一致 | **PASS** |
+| `sector_mirror_gui.exe --selftest` | 断点续传纯逻辑：断点识别 / 续拷字节一致 / 超长断点被拒绝 | **PASS** |
+
+性能参考：5084 条记录 / 2500 个文件的 256MB 卷，树状还原 **3.56 s**（约 1.4 ms/文件，瓶颈在创建
+文件而不是解析记录）。
+
+### 8.4 已知边界（写清楚比吹牛有用）
+
+- **压缩 / 加密数据流**（`$DATA` 非驻留标志 2/3）保守跳过并计入统计，不解 LZNT1、不解 EFS；
+- 属性被 `$ATTRIBUTE_LIST` 拆到 extension record 的文件同样保守跳过；
+- `mft_recover` 不扫 `$I30` 目录索引，因此**记录已被覆盖**的文件拿不回名字（此时只能靠 carve 捞内容）；
+- `sector_carve` 没有名字、也不重建目录（元数据已毁，本来就无从得知），输出统一为 `carved_%06d.<ext>`；
+- 小于约 700B 的驻留文件：MFT 在时 `mft_recover` 字节精确；MFT 毁后签名扫描**注定差那 2 字节**。
+
+### 8.5 本轮修掉的问题（恢复工具部分）
+
+| 问题 | 根因 | 修复 |
+|---|---|---|
+| `mft_recover` 少看 3/4 记录 | 按簇遍历只读簇首记录 | 每簇遍历 `cluster/recSize` 条（geom8k 场景做回归） |
+| `mft_recover` 名字全垃圾、导出 0 | `$FILE_NAME` 名字偏移漏了属性头的 `valueoff` | `attr + valueoff + 0x40/0x41/0x42` |
+| CLI 静默导出 0（抽出共享内核后） | `mft_open` 里 `memset(ctx)` 把调用方设的回调/输出目录一起清了 | 只初始化内核自己拥有的字段 |
+| `sector_carve` 把 3KB docx 切成 461KB | ZIP 结束 = 缓冲区里**最后一个** `PK\x05\x06` | 按 zip 结构顺序解析（local → central → EOCD） |
+| GUI 版 carve 仍用旧 GIF/ZIP 逻辑 | GUI 自带一份内核副本，前两次修复只改了 CLI | 解析器按字节搬进 GUI + `carve_selftest.py` 增加 GUI/CLI 一致性断言 |
+| `sector_carve` 输出无法 grep | 无条件 `_O_U16TEXT` | 控制台 UTF-16、重定向 UTF-8 |
+| `sector_mirror_gui` 无断点续传 | 只有 CLI 有 `--resume` | GUI 写 `.progress` + 勾选框；续跑必须用 `OPEN_ALWAYS`（`CREATE_ALWAYS` 会先截断半截镜像） |
+| `sector_mirror_gui --selftest` 崩 0xC0000005 | GUI 子系统下 `__argv/__wargv` 为空 | 改用 `CommandLineToArgvW` |
 
 ---
 
