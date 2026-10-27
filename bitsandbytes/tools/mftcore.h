@@ -58,6 +58,7 @@ typedef struct {
     const wchar_t* outdir;          /* NULL = 只统计不导出 */
     int exportAll;                  /* 1 = 连未删除的文件也导出 */
     int debug;                      /* 1 = 逐条记录打印判定 */
+    int flatTree;                   /* 1 = 扁平命名 del_<idx>_<name>；0 = 按父目录引用还原目录结构 */
 
     /* ---- 回调（可为 NULL） ---- */
     void (*logfn)(void* ud, const wchar_t* msg);
@@ -231,6 +232,105 @@ static int mft_dumpNonResident(MftCtx* c, const MftRun* runs, int nRuns,
     return 1;
 }
 
+/* ================= 目录结构重建 =================
+ * $FILE_NAME 的值里前 8 字节是「父目录的文件引用」：低 48 位就是父目录的 MFT 记录号，
+ * 高 16 位是序列号（复用记录的校验）。有了它就能顺着父链把原始路径拼回来，
+ * 于是恢复出来的文件能回到 deleted\<原目录树>，而不是一堆扁平的名字。
+ */
+#define MFT_ROOT_IDX 5u            /* 根目录 "." 固定是记录 5 */
+#define MFT_MAX_DEPTH 32
+
+/* 记录号 -> 卷内字节偏移（按 $MFT 的 run 表累加；MFT 碎片化也能算对） */
+static int mft_recordOffset(MftCtx* c, unsigned long long idx, unsigned long long* outOff) {
+    int i;
+    unsigned long long acc = 0;
+    for (i = 0; i < c->nMftRuns; i++) {
+        unsigned long long runBytes, cap;
+        if (c->mftRuns[i].sparse || c->mftRuns[i].clusters <= 0) continue;
+        runBytes = (unsigned long long)c->mftRuns[i].clusters * c->cluster;
+        cap = runBytes / c->recSize;
+        if (idx < acc + cap) {
+            *outOff = (unsigned long long)c->mftRuns[i].lcn * c->cluster + (idx - acc) * c->recSize;
+            return 1;
+        }
+        acc += cap;
+    }
+    return 0;
+}
+
+/* 读某条记录的 $FILE_NAME：拿名字 + 父目录记录号 + 是否目录 */
+static int mft_readDirEntry(MftCtx* c, unsigned long long idx, wchar_t* name, int cap,
+                            unsigned long long* parentIdx, int* isDir) {
+    unsigned char* rec;
+    unsigned long long off;
+    DWORD recSize = (DWORD)c->recSize;
+    int ok = 0, bestScore = -1;
+    name[0] = 0;
+    *parentIdx = (unsigned long long)-1;
+    *isDir = 0;
+    if (idx == MFT_ROOT_IDX) return 1;              /* 根目录本身没有名字 */
+    if (!mft_recordOffset(c, idx, &off)) return 0;
+    rec = (unsigned char*)malloc((size_t)recSize);
+    if (!rec) return 0;
+    if (mft_readAt(c->hSrc, off, rec, recSize) && memcmp(rec, "FILE", 4) == 0 &&
+        mft_applyFixup(rec, recSize, c->bps)) {
+        DWORD o = mft_rd16(rec + 0x14);
+        *isDir = (mft_rd16(rec + 0x16) & 0x02) != 0;
+        while (o + 8 <= recSize) {
+            unsigned int t = mft_rd32(rec + o);
+            DWORD l = mft_rd32(rec + o + 4);
+            if (t == MFT_ATTR_END || l == 0 || o + l > recSize) break;
+            if (t == MFT_A_FILE_NAME && rec[o + 8] == 0) {
+                WORD voff = mft_rd16(rec + o + 0x14);
+                DWORD vbase = o + (DWORD)voff;
+                if (voff && vbase + 0x42 <= recSize) {
+                    int nlen = (int)rec[vbase + 0x40];
+                    int ns = (int)rec[vbase + 0x41];
+                    int score = 0;
+                    if (nlen > 0 && nlen < cap && vbase + 0x42 + (DWORD)nlen * 2 <= recSize)
+                        score = (ns == 3) ? 4 : (ns == 1) ? 3 : (ns == 0) ? 2 : 1;
+                    if (score > bestScore) {
+                        int i;
+                        for (i = 0; i < nlen; i++) name[i] = (wchar_t)mft_rd16(rec + vbase + 0x42 + i * 2);
+                        name[nlen] = 0;
+                        *parentIdx = mft_rd64(rec + vbase) & 0x0000FFFFFFFFFFFFull;
+                        bestScore = score;
+                        ok = 1;
+                    }
+                }
+            }
+            o += l;
+        }
+    }
+    free(rec);
+    return ok;
+}
+
+/* 顺父链拼相对目录（"sub\\deep"，不含结尾反斜杠；根目录下返回空串） */
+static int mft_buildRelPath(MftCtx* c, unsigned long long parentIdx, wchar_t* out, int cap, int depth) {
+    wchar_t pname[MFT_MAX_NAME];
+    unsigned long long pparent = 0;
+    int isDir = 0;
+    if (depth > MFT_MAX_DEPTH) return 0;            /* 防环/防损坏链 */
+    if (parentIdx == MFT_ROOT_IDX || parentIdx == 0) { out[0] = 0; return 1; }
+    if (!mft_readDirEntry(c, parentIdx, pname, MFT_MAX_NAME, &pparent, &isDir)) return 0;
+    if (!mft_buildRelPath(c, pparent, out, cap, depth + 1)) return 0;
+    if (out[0]) wcscat_s(out, (size_t)cap, L"\\");
+    wcscat_s(out, (size_t)cap, pname);
+    return 1;
+}
+
+/* 目标文件已存在时加 " (2)" 后缀，避免同名文件互相覆盖 */
+static void mft_uniquePath(const wchar_t* dir, const wchar_t* name, wchar_t* out, int cap) {
+    int i;
+    _snwprintf_s(out, (size_t)cap, _TRUNCATE, L"%ls\\%ls", dir, name);
+    if (GetFileAttributesW(out) == INVALID_FILE_ATTRIBUTES) return;
+    for (i = 2; i < 1000; i++) {
+        _snwprintf_s(out, (size_t)cap, _TRUNCATE, L"%ls\\%ls (%d)", dir, name, i);
+        if (GetFileAttributesW(out) == INVALID_FILE_ATTRIBUTES) return;
+    }
+}
+
 /* ================= 处理一条记录 ================= */
 static void mft_handleRecord(MftCtx* c, unsigned long long recIdx, unsigned long long recOff,
                              const unsigned char* rec) {
@@ -246,6 +346,7 @@ static void mft_handleRecord(MftCtx* c, unsigned long long recIdx, unsigned long
     unsigned long long dataSize = 0;
     int nonResident = -1;                        /* -1 = 没有可用的 $DATA */
     DWORD resOff = 0, resLen = 0;
+    unsigned long long parentRef = (unsigned long long)-1;
 
     c->records++;
     if (!r) return;
@@ -286,6 +387,7 @@ static void mft_handleRecord(MftCtx* c, unsigned long long recIdx, unsigned long
                     name[nlen] = 0;
                     haveName = (nlen > 0);
                     bestScore = score;
+                    parentRef = mft_rd64(r + vbase) & 0x0000FFFFFFFFFFFFull;
                 }
             }
         } else if (type == MFT_A_DATA && attrNameLen == 0) {
@@ -335,11 +437,28 @@ static void mft_handleRecord(MftCtx* c, unsigned long long recIdx, unsigned long
     c->named++;
 
     if (c->outdir) {
-        wchar_t safe[MFT_MAX_NAME], path[MAX_PATH * 2];
+        wchar_t safe[MFT_MAX_NAME], path[MAX_PATH * 2], dir[MAX_PATH * 2];
         int ok = 0;
         mft_sanitize(name, safe, MFT_MAX_NAME);
-        _snwprintf_s(path, MAX_PATH * 2, _TRUNCATE, L"%ls\\%ls_%06llu_%ls",
-                     c->outdir, deleted ? L"del" : L"live", recIdx, safe);
+        if (c->flatTree) {
+            _snwprintf_s(path, MAX_PATH * 2, _TRUNCATE, L"%ls\\%ls_%06llu_%ls",
+                         c->outdir, deleted ? L"del" : L"live", recIdx, safe);
+            mft_makeDir(c->outdir);
+        } else {
+            wchar_t rel[MAX_PATH * 2];
+            rel[0] = 0;
+            if (parentRef == (unsigned long long)-1 ||
+                !mft_buildRelPath(c, parentRef, rel, MAX_PATH * 2, 0))
+                wcscpy_s(rel, MAX_PATH * 2, L"_orphan");   /* 父链断了：单独放到 _orphan */
+            _snwprintf_s(dir, MAX_PATH * 2, _TRUNCATE, L"%ls\\%ls",
+                         c->outdir, deleted ? L"deleted" : L"live");
+            if (rel[0]) {
+                wcscat_s(dir, MAX_PATH * 2, L"\\");
+                wcscat_s(dir, MAX_PATH * 2, rel);
+            }
+            mft_makeDir(dir);
+            mft_uniquePath(dir, safe, path, MAX_PATH * 2);
+        }
         if (nonResident == 0) {
             HANDLE h = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
                                    FILE_ATTRIBUTE_NORMAL, NULL);

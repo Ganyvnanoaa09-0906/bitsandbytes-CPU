@@ -8,9 +8,10 @@
  * 真正的解析逻辑在 mftcore.h，GUI 版（mft_recover_gui.c）用的是同一份实现。
  *
  * 用法：
- *   mft_recover <镜像文件或盘符> [输出目录] [--all] [--debug]
+ *   mft_recover <镜像文件或盘符> [输出目录] [--all] [--debug] [--flat]
  *     --all     连未删除的文件也一并导出（默认只导已删除的）
  *     --debug   逐条记录打印判定过程（排查某个文件为什么没出来时用）
+ *     --flat    扁平输出（del_<记录号>_<原名>），默认按 $FILE_NAME 的父目录引用重建目录树
  *
  * 例：
  *   mft_recover.exe D:\usb.img D:\recovered
@@ -56,13 +57,15 @@ static int cliProgress(void* ud, unsigned long long done, unsigned long long tot
 }
 
 static void usage(void) {
-    wprintf(L"用法: mft_recover <镜像文件或盘符> [输出目录] [--all] [--debug]\n"
+    wprintf(L"用法: mft_recover <镜像文件或盘符> [输出目录] [--all] [--debug] [--flat]\n"
             L"  mft_recover.exe D:\\usb.img D:\\recovered         只还原已删除的文件\n"
             L"  mft_recover.exe D:\\usb.img D:\\recovered --all   连未删除的一起导出\n"
             L"  mft_recover.exe D:\\usb.img --debug               只统计 + 逐条打印判定\n"
             L"  mft_recover.exe \\\\.\\F: D:\\recovered            直接扫盘符（需管理员）\n"
             L"\n"
-            L"输出命名: del_<记录号>_<原名> / live_<记录号>_<原名>\n"
+            L"默认输出（保留目录结构）: <输出目录>\\deleted\\<原目录>\\<原名>\n"
+            L"                          <输出目录>\\live\\<原目录>\\<原名>   (--all 时)\n"
+            L"  --flat 改成扁平输出:    del_<记录号>_<原名> / live_<记录号>_<原名>\n"
             L"输出目录必须放在**另一块完好的盘**上，绝对不要写回受损盘。\n");
 }
 
@@ -70,7 +73,7 @@ int wmain(int argc, wchar_t** argv) {
     MftCtx ctx;
     const wchar_t* src;
     const wchar_t* outdir = NULL;
-    int exportAll = 0, debug = 0, i, rc;
+    int exportAll = 0, debug = 0, flat = 0, i, rc;
 
     /* 控制台用 UTF-16（中文正常），重定向到文件/管道时用 UTF-8（脚本能直接 grep） */
     g_tty = _isatty(_fileno(stdout));
@@ -88,6 +91,7 @@ int wmain(int argc, wchar_t** argv) {
     for (i = 2; i < argc; i++) {
         if (_wcsicmp(argv[i], L"--all") == 0 || _wcsicmp(argv[i], L"--live") == 0) exportAll = 1;
         else if (_wcsicmp(argv[i], L"--debug") == 0) debug = 1;
+        else if (_wcsicmp(argv[i], L"--flat") == 0) flat = 1;
         else if (argv[i][0] == L'-') {
             wprintf(L"[错误] 不认识的选项: %ls\n", argv[i]);
             return 1;
@@ -108,6 +112,7 @@ int wmain(int argc, wchar_t** argv) {
     ctx.outdir = outdir;
     ctx.exportAll = exportAll;
     ctx.debug = debug;
+    ctx.flatTree = flat;
     ctx.logfn = cliLog;
     ctx.progfn = cliProgress;
 

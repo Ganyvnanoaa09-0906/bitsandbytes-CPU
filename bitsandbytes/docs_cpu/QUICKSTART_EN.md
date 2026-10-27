@@ -993,13 +993,15 @@ mft_recover.exe \\.\F: D:\recovered                  :: scan a drive directly (a
   drop-down) → pick the output directory → click Start; progress bar, log and a Stop button.
   It **refuses to run when the output is on the same drive as the source** (that would overwrite
   what you are recovering) and self-elevates when scanning a physical drive.
-- **Output names**: `del_<record#>_<original name>` / `live_<record#>_<original name>`; the
-  record number maps back to `--debug` output.
+- **Output layout**: by default the **original directory tree is rebuilt** from the parent
+  reference stored in `$FILE_NAME` — `<outdir>\deleted\<dirs>\<name>` (live ones under
+  `live\`), unresolvable parents go to `deleted\_orphan\`, and name collisions get a ` (2)`
+  suffix instead of overwriting. `--flat` switches back to flat
+  `del_<record#>_<name>` / `live_<record#>_<name>` names.
 - **Recovers**: resident small files (including 0-byte files), non-resident large files (copied
   cluster by cluster via the runlist, sparse runs zero-filled), UTF-16 (e.g. Chinese) names.
 - **Does not recover (yet)**: records overwritten/zeroed, compressed or encrypted data streams,
-  files whose attributes were split into extension records via `$ATTRIBUTE_LIST`, and the
-  directory hierarchy (output is flat — names and content are kept, paths are not rebuilt).
+  and files whose attributes were split into extension records via `$ATTRIBUTE_LIST`.
 - **Which one first**: **MFT readable → `mft_recover`** (names + exact sizes); **MFT destroyed →
   `sector_carve`** signature mode (no names, header/trailer heuristics). Run both and merge.
 

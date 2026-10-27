@@ -168,13 +168,13 @@ def check_recovered(outdir, expect, states, label, allow_missing=()):
     allow = {os.path.basename(x) for x in allow_missing}
     got = []
     if os.path.isdir(outdir):
-        for fn in sorted(os.listdir(outdir)):
-            p = os.path.join(outdir, fn)
-            if not os.path.isfile(p):
-                continue
-            m = re.match(r"^(del|live)_(\d{6})_(.+)$", fn)
-            base = m.group(3) if m else fn
-            got.append((base, sha256_file(p), os.path.getsize(p), fn))
+        for root, _dirs, files in os.walk(outdir):
+            for fn in sorted(files):
+                p = os.path.join(root, fn)
+                rel = os.path.relpath(p, outdir)
+                m = re.match(r"^(del|live)_(\d{6})_(.+)$", fn)
+                base = m.group(3) if m else fn
+                got.append((base, sha256_file(p), os.path.getsize(p), rel))
     lines = []
     ok = True
     used = set()
@@ -195,7 +195,7 @@ def check_recovered(outdir, expect, states, label, allow_missing=()):
         else:
             used.add(hit)
             gbase, ghs, gsz, gfn = got[hit]
-            name_ok = (base in gbase) or (gbase in base)
+            name_ok = (base in gbase) or (gbase in base) or (gbase.endswith(base))
             lines.append("  OK   %-18s (%d B) -> %s%s" % (base, sz, gfn, "" if name_ok else "  [名字不符]"))
             if not name_ok:
                 ok = False
@@ -296,6 +296,22 @@ def main():
                 ok = ok and ok_gui
         else:
             lines.append("  GUI 版: 跳过（没找到 mft_recover_gui.exe）")
+        # --flat 模式（老的扁平命名 del_<idx>_<name>）：必须还可用，别为了目录树把旧格式弄丢
+        outf = os.path.join(case_dir, "out_flat")
+        rf = run_tool(exe, img, outf, ["--flat"])
+        if rf.returncode != 0:
+            ok = False
+            lines.append("  FAIL --flat 返回码 %d" % rf.returncode)
+        else:
+            ok_flat, lines_flat = check_recovered(outf, expect, {"deleted"}, case + "/flat")
+            lines.append("  --flat（扁平命名）:")
+            lines.extend(lines_flat)
+            ok = ok and ok_flat
+            flat_names = sorted(os.listdir(outf)) if os.path.isdir(outf) else []
+            if not all(re.match(r"^(del|live)_\d{6}_", n) for n in flat_names):
+                ok = False
+                lines.append("  FAIL --flat 输出不是扁平命名: %r" % flat_names)
+
         # --all 模式：未删除的文件也要能按名字还原
         outall = os.path.join(case_dir, "out_all")
         rall = run_tool(exe, img, outall, ["--all"])
