@@ -1,0 +1,25 @@
+name: repo-hygiene
+
+# 防止实验产物再进仓库（2026-10-27 仓库卫生配套检查）。
+# 背景：仓库在 GitHub 上曾涨到 129 MB，大头是图片/日志/探针 exe/反汇编 dump 被提交了几个月。
+# 现在 tree 已清干净、.gitignore 也覆盖了这些类别，但 .gitignore 拦不住 `git add -f`、
+# 移动的目录、或工具把输出写到源码旁边。这个工作流就是兜底。
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Tracked files must contain no experiment artifacts
+        run: python tools/check_repo_hygiene.py
