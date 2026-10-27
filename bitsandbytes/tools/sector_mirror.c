@@ -128,6 +128,34 @@ static int ListDrives(wchar_t drives[][4], DWORDLONG* sizes, int* diskNos, int m
     return n;
 }
 
+/* 抗坏道读：整块失败时逐级缩小粒度抢救（1MB → 64KB → 4KB），读不出的填 0 并记坏区。 */
+static DWORD SalvageRead(HANDLE h, BYTE* buf, DWORD want, DWORDLONG off, FILE* badmap, DWORDLONG* badOut) {
+    DWORD got = 0, o, q, part, sp, br, sb;
+    const DWORD szMid = 65536, szSmall = 4096;
+    LARGE_INTEGER li;
+    for (o = 0; o < want; o += szMid) {
+        part = (want - o < szMid) ? (want - o) : szMid;
+        li.QuadPart = (LONGLONG)(off + o);
+        if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN)) break;
+        br = 0;
+        if (ReadFile(h, buf + o, part, &br, NULL) && br == part) { got += part; continue; }
+        for (q = 0; q < part; q += szSmall) {
+            sp = (part - q < szSmall) ? (part - q) : szSmall;
+            li.QuadPart = (LONGLONG)(off + o + q);
+            if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN)) break;
+            sb = 0;
+            if (ReadFile(h, buf + o + q, sp, &sb, NULL) && sb == sp) {
+                got += sp;
+            } else {
+                memset(buf + o + q, 0, sp);
+                if (badmap) fprintf(badmap, "%016llx %u\n", (unsigned long long)(off + o + q), sp);
+                if (badOut) *badOut += sp;
+            }
+        }
+    }
+    return got;
+}
+
 int wmain(int argc, wchar_t** argv) {
     InitConsole();
 
@@ -236,14 +264,31 @@ int wmain(int argc, wchar_t** argv) {
     DWORDLONG copied = 0;      /* 实际写入镜像的字节数 */
     DWORDLONG scanned = 0;     /* 扫描到的源字节数（用于进度/盘内偏移）*/
     DWORDLONG total = diskSize;
+    DWORDLONG badBytes = 0;
+    FILE* fpBad = NULL;
     ULONGLONG lastPrint = GetTickCount64();
     while (1) {
         DWORD br = 0;
         if (!ReadFile(hSrc, buf, bufSize, &br, NULL)) {
             DWORD err = GetLastError();
             if (err == ERROR_HANDLE_EOF) break;
-            wprintf(L"\n[警告] 读失败（err=%lu），已扫描 %llu MB 停止。\n", err, (ULONGLONG)(scanned / 1048576));
-            break;
+            {   /* 重试 3 次，再逐级缩小粒度抢救 */
+                int rt;
+                for (rt = 0; rt < 3; ++rt) {
+                    LARGE_INTEGER lr; lr.QuadPart = (LONGLONG)scanned;
+                    SetFilePointerEx(hSrc, lr, NULL, FILE_BEGIN);
+                    br = 0;
+                    if (ReadFile(hSrc, buf, bufSize, &br, NULL)) break;
+                }
+                if (rt == 3) {
+                    LARGE_INTEGER lr; lr.QuadPart = (LONGLONG)scanned;
+                    SetFilePointerEx(hSrc, lr, NULL, FILE_BEGIN);
+                    br = SalvageRead(hSrc, buf, bufSize, scanned, fpBad, &badBytes);
+                    if (br == 0) { memset(buf, 0, bufSize); br = bufSize; }
+                    wprintf(L"\n[坏块] 偏移 %llu MB 存在不可读区（累计 %llu MB），已填充并继续。\n",
+                            (ULONGLONG)(scanned / 1048576), (ULONGLONG)(badBytes / 1048576));
+                }
+            }
         }
         if (br == 0) break;
         scanned += br;
