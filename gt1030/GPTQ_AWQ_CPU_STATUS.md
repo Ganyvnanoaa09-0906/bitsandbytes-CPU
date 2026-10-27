@@ -93,3 +93,19 @@ RTN control yrel0.1014 < GPTQ checkpoint0.1265，查了两个可能：
 - (a) 实现等价性：AWQ PASS；GPTQ 待官方参考。
 - (b) 质量：**有 PPL 数据**（AWQ +8.66%、GPTQ +15.4%），未做 KL。
 - (c) fused GEMV/decode≥5×/内存≈4bit：**未做** ⇒ **#2 仍不宣称通过**。
+## wikitext-2 PPL（2026-10-27，协议修正）
+
+之前 2.4854 是**合成短重复文本**的 PPL，不是 wikitext，不能与文献比；废弃。
+wikitext-2 test、5 chunks×2048（10,235 预测 token，token-weighted exp(Σnll/Σtok)）：
+
+| 模型 | PPL | vs base |
+|---|---|---|
+| base fp16 | **15.3273** | — |
+| GPTQ | **17.6099** | **+14.89%** |
+| AWQ | **17.9206** | **+16.92%** |
+
+- base 15.33 落在 Qwen2.5-0.5B 正常 12–18 区间，协议核对通过。
+- int4 退化高于文献 +2~6%，但 0.5B 小模型退化本就更大；生成连贯、无灾难性退化。
+- KL 未测（为释放 CPU 给 iGPU，未继续跑）。
+- 偏差：协议要求 ≥40 chunks，本机 CPU 跑 40 chunks 超 40min 未完成，先用 5 chunks；
+  绝对值可比性有限，**不宣称达到文献区间**。
