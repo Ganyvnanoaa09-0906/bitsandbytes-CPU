@@ -2120,17 +2120,21 @@ void quantize_4bit_cpu_impl(
 // Measured (K=4096, real Qwen3-8B weights, OMP=4):
 //   inner loop   2.85x   GEMV 2.33x (24.4 / 22.9 / 19.4 GB/s vs 9.9 / 9.7 / 8.9)
 //   end to end   1.65x (2.731 vs 1.660 token/s)
-//   perplexity   7.6010 -> 7.6341 (+0.44%) — 这一行 2026-10-27 被审计纠正过口径，
-//                别再当成"v3 的困惑度证据"：
-//                  * 该测量是在**研究版**取数（`membw/bench_nf4_v3.py`，块长 63、M=64），
-//                    而**交付版** v3 的守卫是 `M == 1 && blocksize == 64`（见本文件下方
-//                    gemv_4bit_inference_cpu_impl），M=64 根本不进 v3，走的是 m0 += 4
-//                    分支 ⇒ 这份 PPL 测的不是交付路径；
-//                  * 交付版 v3 的数值证据是**误差界**而非 PPL：发布物实测 vs float64 参考
-//                    rel_rms ≈ 2e-7 / 单次 GEMV（115 行差分，含 padding/边界/NaN 用例）
-//                    ⇒ logit 误差 ~1e-6 ⇒ ppl 影响 ~1e-6（0.0001%），比 +0.44% 小四个
-//                    数量级 ⇒ **+0.44% 数学上不可能来自 v3 的数值差异**（是协议/测量伪影）；
-//                  * 若要给交付路径的 PPL 证据，必须用 `PPL_CHUNK=1`（M=1）跑。
+//   perplexity   7.6010 -> 7.6341 (+0.44%) — 2026-10-27 审计定稿口径如下，
+//                这几行**不是 v3 的困惑度证据**（证据路径不覆盖交付路径）：
+//                  * 该 PPL 的 v3 那一列是 `NF4_KERNEL=v3` 走**外部研究 DLL**
+//                    (`membw/kvariant_lut2.dll:gemv_nf4_v3`，见 `load_qwen8b_nf4.py`)，
+//                    不是本文件的内置路径；本文件的内置 v3 只在
+//                    `M == 1 && blocksize == 64 && K % 64 == 0` 时生效，M=64 走 m0 += 4；
+//                  * `ppl_check.py` 的块步长 `CHUNK` 实际取 `ids[i:i+CHUNK+1]` ⇒ forward 的
+//                    **M = CHUNK+1**（默认 64 ⇒ M=65），与文档里"块长 63/M=64"也对不上；
+//                    ⇒ 那份 PPL 既非内置 v3，也完全没覆盖 decode 的 M=1 路径；
+//                  * 交付路径的证据是**误差界**：发布物 float64 差分 rel_rms 1.9e-7~4.3e-7
+//                    (115 用例，含 padding/边界/NaN/inf)，与本文 L2 4.4e-07 一致
+//                    ⇒ logit ~1e-6 ⇒ ppl ≲1e-6（0.0001%），比 +0.44% 小四个数量级
+//                    ⇒ **+0.44% 不来自 v3 数值差异，其来源未解释**；
+//                  * 若要实测交付路径：必须 M==1 逐 token decode 且走内置 kernel；
+//                    另注意 8 token 贪心是超敏判据（逐位置一致率约 91%），不宜当质量判据。
 //                码本未动、除求和顺序外逐位正确，这一点不变。
 //
 // The k order inside a 64-element group comes out scrambled, so the activation
