@@ -267,6 +267,47 @@ int wmain(int argc, wchar_t** argv) {
     DWORDLONG badBytes = 0;
     FILE* fpBad = NULL;
     ULONGLONG lastPrint = GetTickCount64();
+    wchar_t progPath[MAX_PATH * 2];
+
+
+    /* ===== 断点续跑：<目标>.progress 记录已扫描字节，--resume 从断点继续 ===== */
+    {
+        DWORDLONG resumeOff = 0;
+        BOOL doResume = FALSE;
+        int ai;
+        FILE* fpr;
+        FILE* fpw;
+        LARGE_INTEGER li;
+        for (ai = 3; ai < argc; ++ai)
+            if (_wcsicmp(argv[ai], L"--resume") == 0) doResume = TRUE;
+        _snwprintf(progPath, MAX_PATH * 2, L"%s.progress", destFull);
+        if (doResume) {
+            fpr = _wfopen(progPath, L"r");
+            if (fpr) {
+                unsigned long long v = 0;
+                if (fwscanf(fpr, L"%llu", &v) == 1 && v > 0 && (diskSize == 0 || v <= diskSize))
+                    resumeOff = (DWORDLONG)v;
+                fclose(fpr);
+            }
+            if (resumeOff) {
+                li.QuadPart = (LONGLONG)resumeOff;
+                if (SetFilePointerEx(hSrc, li, NULL, FILE_BEGIN) &&
+                    SetFilePointerEx(hDst, li, NULL, FILE_BEGIN)) {
+                    scanned = resumeOff;
+                    wprintf(L"[*] --resume：从 %llu MB 处继续\n", (ULONGLONG)(resumeOff / 1048576));
+                } else {
+                    wprintf(L"[!] --resume：断点定位失败，从头开始\n");
+                    scanned = 0;
+                }
+            } else {
+                wprintf(L"[*] --resume：无可用断点（%s），从头开始\n", progPath);
+            }
+        }
+        /* 首次写一个 0 断点，保证中断后至少有文件可读（正常结束会删掉） */
+        fpw = _wfopen(progPath, L"w");
+        if (fpw) { fwprintf(fpw, L"%llu\n", (unsigned long long)scanned); fclose(fpw); }
+    }
+
     while (1) {
         DWORD br = 0;
         if (!ReadFile(hSrc, buf, bufSize, &br, NULL)) {
@@ -318,6 +359,15 @@ int wmain(int argc, wchar_t** argv) {
                     (ULONGLONG)(copied / 1048576),
                     allZero ? L"   [跳过全0块]" : L"");
             lastPrint = now;
+            {   /* 断点落盘（5 秒节流） */
+                static ULONGLONG lastSave = 0;
+                ULONGLONG now2 = GetTickCount64();
+                if (now2 - lastSave > 5000) {
+                    FILE* fpw2 = _wfopen(progPath, L"w");
+                    if (fpw2) { fwprintf(fpw2, L"%llu\n", (unsigned long long)scanned); fclose(fpw2); }
+                    lastSave = now2;
+                }
+            }
         }
     }
     wprintf(L"\n[*] 镜像完成: 扫描 %llu 字节, 实际写入 %llu 字节到 %s\n", scanned, copied, destFull);
