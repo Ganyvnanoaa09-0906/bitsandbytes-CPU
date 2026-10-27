@@ -117,6 +117,73 @@ static BOOL seek(HANDLE h, DWORDLONG off) {
 /* ---------------- 提取一个文件（流式跨块，从 fileStart 重读） ----------------
  * 从源 fileStart 处重读，累积直至该格式的【确定终止标记】，写出到 outdir。
  * 返回文件大小（字节），返回 0 表示提取失败/超限。 */
+
+/* ---------------- GIF 结构解析：走到 trailer(0x3B) 得到精确文件长度 ----------------
+   1 = 完整(*outSize 有效)，0 = 数据还不够（继续读），-1 = 结构非法。 */
+static int gifFileSize(const unsigned char* b, size_t len, DWORDLONG* outSize,
+                       DWORDLONG* outSafe) {
+    size_t p = 0;
+    size_t gt;
+    int gct;
+    for (;;) {
+        if (p + 13 > len) return 0;
+        if (memcmp(b + p, "GIF8", 4) != 0) return -1;
+        gct = (b[p + 10] & 0x80) ? 1 : 0;
+        p += 13;
+        if (gct) {
+            gt = (size_t)3 << ((b[p - 3] & 0x07) + 1);
+            if (p + gt > len) return 0;
+            p += gt;
+        }
+        break;
+    }
+    for (;;) {
+        unsigned char blk;
+        if (outSafe) *outSafe = (DWORDLONG)p;   /* 最近一个完整块边界 */
+        if (p + 1 > len) return 0;
+        blk = b[p];
+        if (blk == 0x3B) { *outSize = (DWORDLONG)p + 1; return 1; }
+        if (blk == 0x21) {                 /* 扩展块 */
+            p += 2;                        /* 0x21 + label */
+            for (;;) {
+                size_t n;
+                if (p + 1 > len) return 0;
+                n = b[p];
+                p += 1;
+                if (n == 0) break;
+                if (p + n > len) return 0;
+                p += n;
+            }
+            continue;
+        }
+        if (blk == 0x2C) {                 /* 图像描述符 */
+            int lct;
+            size_t lt;
+            if (p + 10 > len) return 0;
+            lct = (b[p + 9] & 0x80) ? 1 : 0;
+            p += 10;
+            if (lct) {
+                lt = (size_t)3 << ((b[p - 1] & 0x07) + 1);
+                if (p + lt > len) return 0;
+                p += lt;
+            }
+            p += 1;                        /* LZW 最小码长 */
+            if (p > len) return 0;
+            for (;;) {
+                size_t n;
+                if (p + 1 > len) return 0;
+                n = b[p];
+                p += 1;
+                if (n == 0) break;
+                if (p + n > len) return 0;
+                p += n;
+            }
+            continue;
+        }
+        return -1;
+    }
+}
+
 static DWORDLONG extractFile(HANDLE hSrc, FmtKind k, DWORDLONG fileStart, const wchar_t* outdir) {
     if (!seek(hSrc, fileStart)) return 0;
 
@@ -146,10 +213,20 @@ static DWORDLONG extractFile(HANDLE hSrc, FmtKind k, DWORDLONG fileStart, const 
                 if (!memcmp(buf + i, tail, 8)) { endPos = fileStart + i + 8; hitTail = TRUE; break; }
             break;
         }
-        case FMT_GIF:
-            for (size_t i = 0; i < len; i++)
-                if (buf[i] == 0x3B) { endPos = fileStart + i + 1; hitTail = TRUE; break; }
+        case FMT_GIF: {
+            /* 按 GIF 结构解析（块遍历）拿到精确长度；比"猜 0x3B"可靠得多。 */
+            DWORDLONG gsz = 0, gsafe = 0;
+            int gr = gifFileSize(buf, len, &gsz, &gsafe);
+            if (gr == 1) {
+                endPos = fileStart + gsz;
+                hitTail = TRUE;
+            } else if (gr == -1) {
+                /* 中段损坏：用最后成功走到的块边界收尾，绝不吞掉后续文件 */
+                if (gsafe > 13) { endPos = fileStart + gsafe; hitTail = TRUE; }
+                else break;
+            }
             break;
+        }
         case FMT_JPEG: {
             /* JPEG 尾 = 文件里最后一个 FF D9。流式：每块内更新 lastEoi；一旦后面
                出现下一个文件头(FF D8 FF / PNG),即判当前 JPEG 在 lastEoi 结束。
