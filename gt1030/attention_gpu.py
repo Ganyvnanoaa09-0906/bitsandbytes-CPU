@@ -71,8 +71,9 @@ QP = ctypes.c_void_p(int(queue.int_ptr))
 KERNELS = r'''
 __kernel void split_q(__global const half* qkv, __global half* q, int T, int D, int nh, int nkv) {
     int i = get_global_id(0);
-    if (i >= (int)(get_global_size(0))) return;
-    int total = T * D * nh * 8;
+    // total = B*nh*T*D 就是启动的 global size。原来硬编码 *8（只对 B=8 成立），
+    // B!=8 时线程数超出缓冲区 -> 越界写坏相邻 buffer，静默破坏整条链路。
+    int total = (int)(get_global_size(0));
     if (i >= total) return;
     int d = i % D, t = (i / D) % T, hp = i / (D * T);   // hp in [0, B*nh)
     int b = hp / nh, h = hp % nh;
@@ -96,7 +97,7 @@ __kernel void softmax_causal(__global const half* s, __global half* p, int T, fl
     int bh = get_group_id(1), row = get_group_id(0);
     int lid = get_local_id(0), lsz = get_local_size(0);
     int n = row + 1;
-    __local float vals[256];
+    __local float vals[1024];
     __local float red[256];
     __global const half* line = s + (bh * T + row) * T;
     __global half* out = p + (bh * T + row) * T;

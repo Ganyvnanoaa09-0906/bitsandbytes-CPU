@@ -287,8 +287,8 @@ the full trade-off tables, including negative results.
 - **manylinux_2_17 wheel**: the AVX-512 library inside it is single-threaded (the parallel
   build is only for the native `manylinux_2_39` wheel). On AVX-512 machines set
   `BNB_CPU_DISABLE_AVX512=1` to run the AVX2 OpenMP path.
-- **aarch64**: there is no PyPI wheel yet; build from the sdist (`build_linux.sh`) or use the
-  Termux instructions in `docs_cpu/TERMUX_GUIDE.md`.
+- **aarch64**: there is no PyPI wheel yet; build from the sdist (`build_linux.sh`) or follow the
+  Termux guide [`TERMUX_GUIDE.md`](https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/blob/HEAD/bitsandbytes/TERMUX_GUIDE.md).
 - **macOS**: no wheel is published and the CPU backend is not tested there; the sdist build may
   work with clang + OpenMP, but treat it as unsupported.
 - 3-bit (and 2-bit dequant-only) is **experimental**: the API and kernels are covered
@@ -306,6 +306,23 @@ bash build_linux.sh --selftest            # also build + run the torch-free C se
 # Windows (MSVC, manual build, no CMake)
 build_manual\build_manual.bat amd         # run inside "x64 Native Tools Command Prompt"
 ```
+
+### Termux (Android / ARM64)
+
+On-device builds work; there is no aarch64 PyPI wheel, so build from the sdist:
+
+```bash
+pkg update && pkg install -y clang libomp make python
+bash build_termux.sh                 # -> bitsandbytes/libbitsandbytes_cpu.so
+bash build_termux.sh --selftest      # also build + run the torch-free C self-test
+```
+
+Three Termux-specific traps the script already handles: the compiler is `clang++` (there is no
+`g++`), OpenMP needs `pkg install libomp`, and `-march=native` is unsafe under Android's clang.
+The script is also what the automated flow uses to build on a phone **driven from a PC over ADB**
+— see [`TERMUX_GUIDE.md`](https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/blob/HEAD/bitsandbytes/TERMUX_GUIDE.md)
+for the phone-side preparation, the ADB/wireless-debugging path, the ARM64 kernel notes and the
+verification matrix.
 
 Two special wheel builds used by this project are documented in
 [`docs_cpu/WHEEL_PLATFORM_NOTES.md`](https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/blob/HEAD/bitsandbytes/docs_cpu/WHEEL_PLATFORM_NOTES.md):

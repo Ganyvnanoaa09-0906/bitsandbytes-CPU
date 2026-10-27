@@ -10,6 +10,7 @@ Goal: loss trajectory difference < 0.005 after 50 steps; then move optimizer/hea
 from __future__ import annotations
 
 import math
+import os
 import sys
 import time
 
@@ -28,7 +29,7 @@ M, MD, FF, WROW = FM.M, FM.MD, FM.FF, FM.WROW
 B, T, NH, NKV, HD = FMeta.B, FMeta.T, FMeta.NH, FMeta.NKV, FMeta.HD
 V = 1024
 A = FMeta.A
-TOKENS = r'D:\work\bitsandbytes-CPU\i5build\ar_mgit\samples_step2000.tokens.pt'
+TOKENS = os.environ.get('TOKENS_FILE', r'D:\work\bitsandbytes-CPU\i5build\ar_mgit\samples_step2000.tokens.pt')
 ROWS = 8 * 256
 
 

@@ -96,3 +96,7 @@ q3bit_kernel.dll
 q3bit_kernel.so
 q3bit_gemm.dll
 q3bit_gemm.so
+
+# 探针运行日志（不进版本库）
+_igpu_*.log
+
