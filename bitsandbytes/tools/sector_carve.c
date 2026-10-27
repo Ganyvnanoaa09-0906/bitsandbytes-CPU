@@ -120,6 +120,75 @@ static BOOL seek(HANDLE h, DWORDLONG off) {
 
 /* ---------------- GIF 结构解析：走到 trailer(0x3B) 得到精确文件长度 ----------------
    1 = 完整(*outSize 有效)，0 = 数据还不够（继续读），-1 = 结构非法。 */
+
+/* ------------------------------------------------------------------ */
+/* ZIP end offset: walk the structure (local header -> central dir -> EOCD) */
+/* The old code took the LAST "PK\x05\x06" in the buffer, which swallows   */
+/* everything up to somebody else's EOCD when one image contains several    */
+/* zips / Office files (measured: a 3KB docx came back as a 461KB blob and  */
+/* ate the bundle.zip sitting between them). Sequential parsing is exact.   */
+/*   returns 1 = EOCD found, *outSize = total length                        */
+/*           0 = need more data                                             */
+/*          -1 = unexpected layout (e.g. data descriptor); *outSafe is the  */
+/*               last known-complete boundary (0 = none).                   */
+/* ------------------------------------------------------------------ */
+static unsigned int z_rd32(const unsigned char* b, size_t o) {
+    return (unsigned int)b[o] | ((unsigned int)b[o + 1] << 8) |
+           ((unsigned int)b[o + 2] << 16) | ((unsigned int)b[o + 3] << 24);
+}
+static unsigned int z_rd16(const unsigned char* b, size_t o) {
+    return (unsigned int)b[o] | ((unsigned int)b[o + 1] << 8);
+}
+
+static int zipFileSize(const unsigned char* b, size_t len, DWORDLONG* outSize, DWORDLONG* outSafe) {
+    size_t p = 0, safe = 0;
+    int entries = 0;
+    *outSize = 0;
+    *outSafe = 0;
+    for (;;) {
+        unsigned int sig;
+        if (p + 4 > len) return 0;
+        sig = z_rd32(b, p);
+        if (sig == 0x04034B50u) {                        /* local file header */
+            unsigned int flags, compSize, nameLen, extraLen;
+            if (p + 30 > len) return 0;
+            flags = z_rd16(b, p + 6);
+            compSize = z_rd32(b, p + 18);
+            nameLen = z_rd16(b, p + 26);
+            extraLen = z_rd16(b, p + 28);
+            if (p + 30 + nameLen + extraLen > len) return 0;
+            if (flags & 0x08u) { *outSafe = safe; return -1; }   /* sizes in data descriptor */
+            p += 30 + nameLen + extraLen + (size_t)compSize;
+            if (p > len) return 0;
+            safe = p;
+            entries++;
+            continue;
+        }
+        if (sig == 0x02014B50u) {                        /* central directory entry */
+            unsigned int nameLen, extraLen, commentLen;
+            if (p + 46 > len) return 0;
+            nameLen = z_rd16(b, p + 28);
+            extraLen = z_rd16(b, p + 30);
+            commentLen = z_rd16(b, p + 32);
+            if (p + 46 + nameLen + extraLen + commentLen > len) return 0;
+            p += 46 + nameLen + extraLen + commentLen;
+            safe = p;
+            continue;
+        }
+        if (sig == 0x06054B50u) {                        /* EOCD */
+            unsigned int commentLen;
+            if (entries == 0) { *outSafe = 0; return -1; }   /* stray EOCD, no entries before it */
+            if (p + 22 > len) return 0;
+            commentLen = z_rd16(b, p + 20);
+            if (p + 22 + commentLen > len) return 0;
+            *outSize = (DWORDLONG)(p + 22 + (size_t)commentLen);
+            return 1;
+        }
+        *outSafe = safe;
+        return -1;
+    }
+}
+
 static int gifFileSize(const unsigned char* b, size_t len, DWORDLONG* outSize,
                        DWORDLONG* outSafe) {
     size_t p = 0;
@@ -253,15 +322,23 @@ static DWORDLONG extractFile(HANDLE hSrc, FmtKind k, DWORDLONG fileStart, const 
             break;
         }
         case FMT_ZIP: {
-            /* ZIP 尾 = EOCD（PK\x05\x06）。取【最后一个】——实测真实磁盘上的 zip
-               多为独立文件，其真正 EOCD 就是文件里最后一个；取最后一个在真实 U 盘
-               镜像上 zip 全 valid。弊端：连续无缝 zip(罕见)会粘连，可接受。
-               OOXML(docx/xlsx/pptx) 命名不受此影响。 */
-            DWORDLONG lastEocd = 0;
-            for (size_t i = 0; i + 22 <= len; i++)
-                if (buf[i]==0x50 && buf[i+1]==0x4B && buf[i+2]==0x05 && buf[i+3]==0x06)
-                    lastEocd = fileStart + i + 22;
-            if (lastEocd) { endPos = lastEocd; hitTail = TRUE; }
+            /* ZIP tail = EOCD, but it must be reached by walking the structure:
+               taking the last "PK\x05\x06" in the buffer swallows neighbouring files
+               when one image holds several zips / Office documents (measured: a 3KB
+               docx carved as 461KB and consumed the zip next to it). OOXML
+               (docx/xlsx/pptx) is zip too, so this fixes those as well. */
+            DWORDLONG zsz = 0, zsafe = 0;
+            int zr = zipFileSize(buf, len, &zsz, &zsafe);
+            if (zr == 1) {
+                endPos = fileStart + zsz;
+                hitTail = TRUE;
+            } else if (zr == -1 && zsafe > 0) {
+                /* broken structure (e.g. data descriptor): stop at the last complete
+                   boundary instead of swallowing whatever follows */
+                endPos = fileStart + zsafe;
+                hitTail = TRUE;
+            }
+            /* zr == 0: need more data, keep reading */
             break;
         }
         case FMT_MP4: {

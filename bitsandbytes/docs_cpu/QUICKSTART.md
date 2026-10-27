@@ -919,6 +919,9 @@ sector_carve.exe E: D:\carved_mom
 ```
 
 - **支持格式**：PNG/JPEG/GIF/ZIP(自动识别 docx/xlsx/pptx)/PDF/MP4 —— 流式跨块提取。
+- **ZIP / OOXML 长度是「按结构算」出来的**：顺序走 local header → 中央目录 → EOCD，
+  所以同一镜像里有多个 zip/docx/xlsx/pptx 时不会互相吞并（旧实现是找缓冲区内最后一个
+  `PK\x05\x06`，实测会把 3KB 的 docx 切成 461KB 的大块）。
 - **一个硬限制**：小于约 700 字节的小文件会被 NTFS 直接**驻留**在 `$MFT` 记录里，记录末尾
   2 字节被 fixup 值替换 —— 纯签名扫描天生读不全这 2 字节。这类文件**只能靠 §9.2.6 的
   `mft_recover`**（它会过 fixup）精确还原；`sector_carve` 只对**非驻留**（>1KB）文件字节精确。

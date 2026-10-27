@@ -977,6 +977,10 @@ sector_carve.exe E: D:\carved_mom
 ```
 
 - **Formats**: PNG/JPEG/GIF/ZIP(auto-detects docx/xlsx/pptx)/PDF/MP4 — streamed cross-block.
+- **ZIP / OOXML lengths are computed structurally** (local header -> central directory ->
+  EOCD), so several zips/docx/xlsx/pptx in one image no longer swallow each other (the old
+  implementation took the last `PK\x05\x06` in its buffer, which turned a 3KB docx into a
+  461KB blob).
 - **One hard limit**: files under ~700 bytes are stored **resident** inside their `$MFT` record,
   and the last 2 bytes of each record sector are replaced by the fixup value. Signature carving
   cannot recover those 2 bytes, so such files are byte-exact only through `mft_recover` (9.2.6,

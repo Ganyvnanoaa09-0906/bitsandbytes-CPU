@@ -7,9 +7,9 @@ QUICKSTART 写的是：
 
 这个脚本就在真 NTFS 卷上把两条路都跑一遍，证明文档没说错：
 
-  1. WSL 造一个 64MB 真 NTFS 卷，写入 6 个真文件（2 张真 JPEG + 2 PNG + 1 GIF + 1 ZIP），
+  1. WSL 造一个 64MB 真 NTFS 卷，写入 9 个真文件（2 真 JPEG + 2 PNG + GIF + ZIP + docx/xlsx/pptx），
      删掉它们（数据扇区仍在，MFT 记录被标记为已删除）
-  2. 分支 A（MFT 活着）：mft_recover 恢复 -> 6 个文件必须逐字节一致
+  2. 分支 A（MFT 活着）：mft_recover 恢复 -> 9 个文件必须逐字节一致
   3. 分支 B（MFT 被毁）：把 $MFT 自己的数据区整段清零（模拟 MFT 被覆盖），
      - mft_recover 必须「不崩、报 0 个导出」（它只做元数据恢复，元数据没了就只能说没有）
      - sector_carve 必须按签名把内容捞回来，逐字节一致
@@ -104,6 +104,34 @@ def make_sources(src_dir):
         frames.append(fr)
     frames[0].save(gif, "GIF", save_all=True, append_images=frames[1:], duration=80, loop=0)
     made.append(gif)
+    # OOXML：docx/xlsx/pptx 本质是 zip，carve 靠里面的目录前缀（word/ xl/ ppt/）分类，
+    # 所以这里用 zipfile 手工造结构合法的三种文件，既不用额外依赖，也能验到「自动识别」这一步。
+    ooxml = {
+        "report.docx": ("word/document.xml",
+                        '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/'
+                        'wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>pipeline selftest</w:t>'
+                        '</w:r></w:p></w:body></w:document>'),
+        "sheet.xlsx": ("xl/workbook.xml",
+                       '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/'
+                       'spreadsheetml/2006/main"><sheets><sheet name="S1" sheetId="1"/></sheets></workbook>'),
+        "slides.pptx": ("ppt/presentation.xml",
+                        '<?xml version="1.0"?><p:presentation xmlns:p="http://schemas.openxmlformats.org/'
+                        'presentationml/2006/main"><p:sldIdLst/></p:presentation>'),
+    }
+    for name, (inner, xml) in ooxml.items():
+        dst = os.path.join(src_dir, name)
+        with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("[Content_Types].xml",
+                       '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/'
+                       'package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/>'
+                       '</Types>')
+            z.writestr(inner, xml)
+            # 用不可压缩的随机字节撑到 2.5KB：deflate 会把重复文本压到几百字节，
+            # 那样文件又会变回「驻留」，MFT 一毁内容就没了（第一版就是这样栽的）
+            z.writestr(zipfile.ZipInfo("docProps/pad.bin"), os.urandom(2500),
+                       compress_type=zipfile.ZIP_STORED)
+        made.append(dst)
+
     zp = os.path.join(src_dir, "bundle.zip")
     with zipfile.ZipFile(zp, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("hello.txt", "pipeline selftest\n" * 400)
@@ -208,7 +236,7 @@ def main():
     case = args.workdir
     shutil.rmtree(case, ignore_errors=True)
     print("=" * 74)
-    print("步骤 1/4 造卷：64MB 真 NTFS + 6 个真文件（2 JPEG / 2 PNG / GIF / ZIP），然后整个删掉")
+    print("步骤 1/4 造卷：64MB 真 NTFS + 9 个真文件（2 JPEG / 2 PNG / GIF / ZIP / docx / xlsx / pptx），然后整个删掉")
     print("=" * 74)
     try:
         img, originals = build_volume(case)
@@ -220,7 +248,7 @@ def main():
     fail = 0
 
     print("\n" + "=" * 74)
-    print("步骤 2/4 分支 A：MFT 还活着 -> mft_recover（应 6/6 字节精确、带目录树）")
+    print("步骤 2/4 分支 A：MFT 还活着 -> mft_recover（应 9/9 字节精确、带目录树）")
     print("=" * 74)
     out_a = os.path.join(case, "out_mft")
     r = run([mft, img, out_a])
@@ -261,6 +289,13 @@ def main():
         if h in want:
             hit_c[want[h]] = (rel, sz)
     print("  扫出 %d 个文件，其中 %d 个与原始 sha256 一致" % (len(got_c), len(hit_c)))
+    exts = {os.path.splitext(rel)[1].lower() for rel, _p, _h, _s in got_c}
+    want_exts = {".docx", ".xlsx", ".pptx"}
+    if want_exts.issubset(exts):
+        print("  OK   OOXML 自动识别：docx/xlsx/pptx 都按 zip 内容正确改名")
+    else:
+        print("  FAIL OOXML 识别不全：期望 %s，实际 %s" % (sorted(want_exts), sorted(exts)))
+        fail += 1
     for name in sorted(originals):
         if name in hit_c:
             print("    OK   %-16s -> %s" % (name, hit_c[name][0]))
@@ -269,7 +304,7 @@ def main():
     if len(hit_c) != len(want):
         print("  FAIL 分支 B 只捞回 %d/%d 个文件" % (len(hit_c), len(want)))
         print("       （注意：驻留文件的内容存在 $MFT 记录里，MFT 一旦被毁，签名扫描本就救不回来；")
-        print("        夹具里的文件都做成了非驻留，所以这里应该 6/6）")
+        print("        夹具里的文件都做成了非驻留，所以这里应该 9/9）")
         fail += 1
 
     print("\n" + "=" * 74)
