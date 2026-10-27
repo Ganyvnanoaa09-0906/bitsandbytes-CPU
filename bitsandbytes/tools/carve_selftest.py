@@ -19,13 +19,19 @@ import io
 import os
 import shutil
 import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
 
 from PIL import Image
 import zipfile
 
-EXE = r'D:\work\bitsandbytes-CPU\bitsandbytes\tools\sector_carve.exe'
-WORK = r'F:\weibo_cos\carve_test2'
-IMAGES = r'F:\weibo_cos\images'
+# 可移植：默认用与本脚本同目录的 sector_carve.exe；工作目录用临时目录；
+# 真实 jpg 语料找不到就用 PIL 生成，所以发布包里换了机器也能跑。
+EXE = os.environ.get('CARVE_EXE') or os.path.join(HERE, 'sector_carve.exe')
+WORK = os.environ.get('CARVE_SELFTEST_DIR') or os.path.join(tempfile.gettempdir(), 'carve_selftest')
+IMAGES = os.environ.get('CARVE_IMAGES') or r'F:\weibo_cos\images'
 
 
 def corpus():
@@ -33,8 +39,15 @@ def corpus():
     os.makedirs(WORK, exist_ok=True)
     items = []
 
-    # 两张最小真 jpg
-    js = sorted(glob.glob(os.path.join(IMAGES, '*.jpg')), key=os.path.getsize)[:2]
+    # 两张 jpg：优先用真实照片（真编码器的 marker 更刁钻），没有就用 PIL 生成
+    js = sorted(glob.glob(os.path.join(IMAGES, '*.jpg')), key=os.path.getsize)[:2] \
+        if os.path.isdir(IMAGES) else []
+    if len(js) < 2:
+        js = []
+        for i in range(2):
+            p = os.path.join(WORK, 'gen_src%d.jpg' % i)
+            Image.new('RGB', (240 + 40 * i, 180), (30 + 50 * i, 90, 200)).save(p, 'JPEG', quality=88)
+            js.append(p)
     for i, p in enumerate(js):
         items.append(('real%d.jpg' % i, io.open(p, 'rb').read()))
 
@@ -132,6 +145,10 @@ def main():
     if gui is None:
         cand = os.path.join(os.path.dirname(EXE), 'sector_carve_gui.exe')
         gui = cand if os.path.isfile(cand) else None
+    if not os.path.isfile(EXE):
+        print('找不到 sector_carve.exe: %s' % EXE)
+        print('先编译: cl /nologo /O2 /W3 /utf-8 sector_carve.c /link advapi32.lib')
+        raise SystemExit(2)
     items = corpus()
     print('语料: ' + ', '.join('%s(%dB)' % (n, len(d)) for n, d in items))
     exp = {'A': 6, 'B': 5, 'C': 5, 'D': 5}

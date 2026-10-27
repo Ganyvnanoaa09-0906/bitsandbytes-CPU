@@ -131,6 +131,8 @@ Copy-Item "docs_cpu\*.md" $stageDocs -Force
 $stageTools = Join-Path $stage "tools"
 New-Item -ItemType Directory -Force -Path $stageTools | Out-Null
 Copy-Item "tools\sector_mirror.c","tools\sector_mirror_gui.c","tools\sector_carve.c","tools\sector_carve_gui.c","tools\mftcore.h","tools\mft_recover.c","tools\mft_recover_gui.c","tools\mft_recover_gui.manifest" $stageTools -Force
+# self-check harnesses (pure Python; the NTFS ones need WSL + ntfs-3g)
+Copy-Item "tools\carve_selftest.py","tools\mft_selftest.py","tools\recovery_pipeline_selftest.py" $stageTools -Force
 
 # ---- 4) compile disaster-recovery tools (vendor-neutral, /MT static CRT -> system dlls only) ----
 Write-Host "[6/..] Compiling disaster tools (sector_mirror.exe / sector_mirror_gui.exe) ..." -ForegroundColor Cyan
@@ -201,6 +203,8 @@ compiled with MSVC, so you can **extract and use it directly** -- no local C++ t
                      `sector_carve_gui.exe` (carve, GUI no-cmd), `mft_recover.exe` (deleted-file
                      recovery from $MFT records, CLI), `mft_recover_gui.exe` (same, GUI no-cmd)
 - `LICENSE`, `README.md`
+                     plus `carve_selftest.py` / `mft_selftest.py` / `recovery_pipeline_selftest.py`:
+                     self-check harnesses (the NTFS ones build real volumes via WSL + ntfs-3g)
 
 ## Install / use
 1. Unzip into any folder.
