@@ -109,3 +109,12 @@ wikitext-2 test、5 chunks×2048（10,235 预测 token，token-weighted exp(Σnl
 - KL 未测（为释放 CPU 给 iGPU，未继续跑）。
 - 偏差：协议要求 ≥40 chunks，本机 CPU 跑 40 chunks 超 40min 未完成，先用 5 chunks；
   绝对值可比性有限，**不宣称达到文献区间**。
+## 判读边界（2026-10-27，最终）
+
+- **5 chunks/10,235 token 只够看量级，不够判优劣**：GPTQ +14.89% vs AWQ +16.92% 的 2.03% 差在 5 chunk 上
+  约在噪声内，**不能说“GPTQ 优于 AWQ”**；要下此结论至少 20 chunk。
+- 早期合成短文本的 PPL 2.7008/2.8683 与 +8.66%/+15.40% **全部作废**，只保留 wikitext 的
+  base15.3273 / GPTQ17.6099 / AWQ17.9206。
+- AWQ 的 layernorm 差 0.48–0.93 是**正常 scale 融合**，nonquant 必须整组从 checkpoint 取（已踩实）。
+- bias 72 个 = 24层×3，与 base 3e-8 一致，没丢。
+- 实现等价性：AWQ 官方 rel0.0 PASS；GPTQ 待 auto-gptq 纯 Python 对拍（**等 iGPU 空档再跑**）。
