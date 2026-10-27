@@ -9,9 +9,12 @@
  *
  * 用法：
  *   mft_recover <镜像文件或盘符> [输出目录] [--all] [--debug] [--flat]
+ *              [--include "*.jpg;*.png"] [--exclude "*.tmp"]
  *     --all     连未删除的文件也一并导出（默认只导已删除的）
  *     --debug   逐条记录打印判定过程（排查某个文件为什么没出来时用）
  *     --flat    扁平输出（del_<记录号>_<原名>），默认按 $FILE_NAME 的父目录引用重建目录树
+ *     --include 只恢复匹配这些通配的（分号分隔多个；文件名和还原后的路径都参与匹配）
+ *     --exclude 跳过匹配这些通配的
  *
  * 例：
  *   mft_recover.exe D:\usb.img D:\recovered
@@ -66,6 +69,7 @@ static void usage(void) {
             L"默认输出（保留目录结构）: <输出目录>\\deleted\\<原目录>\\<原名>\n"
             L"                          <输出目录>\\live\\<原目录>\\<原名>   (--all 时)\n"
             L"  --flat 改成扁平输出:    del_<记录号>_<原名> / live_<记录号>_<原名>\n"
+            L"  --include \"*.jpg;*.png\" 只恢复匹配的；--exclude \"*.tmp\" 跳过匹配的\n"
             L"输出目录必须放在**另一块完好的盘**上，绝对不要写回受损盘。\n");
 }
 
@@ -74,6 +78,8 @@ int wmain(int argc, wchar_t** argv) {
     const wchar_t* src;
     const wchar_t* outdir = NULL;
     int exportAll = 0, debug = 0, flat = 0, i, rc;
+    const wchar_t* includePat = NULL;
+    const wchar_t* excludePat = NULL;
 
     /* 控制台用 UTF-16（中文正常），重定向到文件/管道时用 UTF-8（脚本能直接 grep） */
     g_tty = _isatty(_fileno(stdout));
@@ -92,6 +98,8 @@ int wmain(int argc, wchar_t** argv) {
         if (_wcsicmp(argv[i], L"--all") == 0 || _wcsicmp(argv[i], L"--live") == 0) exportAll = 1;
         else if (_wcsicmp(argv[i], L"--debug") == 0) debug = 1;
         else if (_wcsicmp(argv[i], L"--flat") == 0) flat = 1;
+        else if (_wcsicmp(argv[i], L"--include") == 0 && i + 1 < argc) includePat = argv[++i];
+        else if (_wcsicmp(argv[i], L"--exclude") == 0 && i + 1 < argc) excludePat = argv[++i];
         else if (argv[i][0] == L'-') {
             wprintf(L"[错误] 不认识的选项: %ls\n", argv[i]);
             return 1;
@@ -113,6 +121,8 @@ int wmain(int argc, wchar_t** argv) {
     ctx.exportAll = exportAll;
     ctx.debug = debug;
     ctx.flatTree = flat;
+    ctx.includePat = includePat;
+    ctx.excludePat = excludePat;
     ctx.logfn = cliLog;
     ctx.progfn = cliProgress;
 

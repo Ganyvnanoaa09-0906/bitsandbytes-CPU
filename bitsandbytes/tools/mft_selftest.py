@@ -257,6 +257,13 @@ def run_tool(exe, img, outdir, extra=()):
     return r
 
 
+def count_files(d):
+    n = 0
+    for _root, _dirs, files in os.walk(d):
+        n += len(files)
+    return n
+
+
 def run_gui_selftest(gui, img, outdir, extra=()):
     """GUI 版的无头自检入口：--selftest <img> <outdir>，走的是同一份 mftcore.h"""
     if os.path.isdir(outdir):
@@ -330,9 +337,10 @@ def main():
     cases = list(CASES)
     if args.only:
         cases = [c for c in args.only.split(",") if c]
-    for extra in ("damaged", "scale", "frag"):
-        if extra not in cases:
-            cases.append(extra)
+    if not args.only:                      # --only 时严格只跑指定场景，不自动追加
+        for extra in ("damaged", "scale", "frag"):
+            if extra not in cases:
+                cases.append(extra)
 
     results = {}
     for case in cases:
@@ -430,6 +438,44 @@ def main():
             if not all(re.match(r"^(del|live)_\d{6}_", n) for n in flat_names):
                 ok = False
                 lines.append("  FAIL --flat 输出不是扁平命名: %r" % flat_names)
+
+        # --include / --exclude：只恢复匹配的（winfr /n 的等价物）
+        # 关键是要断言「没多导出」——只看期望文件在不在，把所有文件都导出来也会 PASS。
+        exp_txt = {k: v for k, v in expect.items()
+                   if v[2] == "deleted" and k.lower().endswith(".txt")}
+        outi = os.path.join(case_dir, "out_inc")
+        ri = run_tool(exe, img, outi, ["--include", "*.txt"])
+        if ri.returncode != 0:
+            ok = False
+            lines.append("  FAIL --include 返回码 %d" % ri.returncode)
+        else:
+            ok_inc, lines_inc = check_recovered(outi, exp_txt, {"deleted"}, case + "/include")
+            lines.append("  --include \"*.txt\"（应只导出 %d 个 .txt）:" % len(exp_txt))
+            lines.extend(lines_inc)
+            got_n = count_files(outi)
+            if got_n != len(exp_txt):
+                ok = False
+                lines.append("  FAIL --include 导出了 %d 个文件，期望正好 %d 个"
+                             % (got_n, len(exp_txt)))
+            ok = ok and ok_inc
+
+        exp_nobin = {k: v for k, v in expect.items()
+                     if v[2] == "deleted" and not k.lower().endswith(".bin")}
+        oute = os.path.join(case_dir, "out_exc")
+        re_ = run_tool(exe, img, oute, ["--exclude", "*.bin"])
+        if re_.returncode != 0:
+            ok = False
+            lines.append("  FAIL --exclude 返回码 %d" % re_.returncode)
+        else:
+            ok_exc, lines_exc = check_recovered(oute, exp_nobin, {"deleted"}, case + "/exclude")
+            lines.append("  --exclude \"*.bin\"（应只导出非 .bin 的 %d 个）:" % len(exp_nobin))
+            lines.extend(lines_exc)
+            got_n2 = count_files(oute)
+            if got_n2 != len(exp_nobin):
+                ok = False
+                lines.append("  FAIL --exclude 导出了 %d 个文件，期望正好 %d 个"
+                             % (got_n2, len(exp_nobin)))
+            ok = ok and ok_exc
 
         # --all 模式：未删除的文件也要能按名字还原
         outall = os.path.join(case_dir, "out_all")

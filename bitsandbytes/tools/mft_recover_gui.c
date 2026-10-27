@@ -62,9 +62,10 @@
 #define IDC_PROGRESS   1011
 #define IDC_PCT        1012
 #define IDC_LOG        1013
+#define IDC_INC        1014
 
 static HWND g_hwnd = NULL, g_src, g_out, g_drives, g_chkAll, g_chkDbg;
-static HWND g_btnStart, g_btnStop, g_progress, g_pct, g_log;
+static HWND g_btnStart, g_btnStop, g_progress, g_pct, g_log, g_inc;
 static HANDLE g_thread = NULL;
 static int g_scale = 100;        /* 布局缩放百分比：96 DPI = 100，125% 缩放 = 125 */
 static HFONT g_font = NULL;
@@ -208,6 +209,7 @@ static int ThreadProgress(void* ud, unsigned long long done, unsigned long long 
 typedef struct {
     wchar_t src[MAX_PATH * 2];
     wchar_t out[MAX_PATH * 2];
+    wchar_t inc[256];           /* --include 的通配（空 = 全部） */
     int exportAll;
     int debug;
 } RecoverJob;
@@ -221,6 +223,7 @@ static DWORD WINAPI RecoverThread(LPVOID param) {
     ctx.outdir = job->out;
     ctx.exportAll = job->exportAll;
     ctx.debug = job->debug;
+    ctx.includePat = job->inc[0] ? job->inc : NULL;
     ctx.logfn = ThreadLog;
     ctx.progfn = ThreadProgress;
 
@@ -383,6 +386,7 @@ static void DoStart(HWND hwnd) {
     if (!job) return;
     wcscpy_s(job->src, MAX_PATH * 2, src);
     wcscpy_s(job->out, MAX_PATH * 2, out);
+    GetWindowTextW(g_inc, job->inc, 256);
     job->exportAll = (SendMessageW(g_chkAll, BM_GETCHECK, 0, 0) == BST_CHECKED);
     job->debug = (SendMessageW(g_chkDbg, BM_GETCHECK, 0, 0) == BST_CHECKED);
 
@@ -430,32 +434,37 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_out = MakeEdit(hwnd, IDC_OUT, 12, 136, 420, 24, 0);
         MakeButton(hwnd, IDC_BROWSE_OUT, L"浏览…", 440, 136, 110, 24);
 
-        g_chkAll = MakeCheck(hwnd, IDC_ALL, L"也导出未删除的文件 (--all)", 12, 170, 240, 22);
-        g_chkDbg = MakeCheck(hwnd, IDC_DEBUGCHK, L"输出逐条判定 (--debug)", 270, 170, 220, 22);
+        MakeStatic(hwnd, L"③ 只恢复匹配的文件（可选：*.jpg;*.png，留空=全部）", 12, 170, 520, 18);
+        g_inc = MakeEdit(hwnd, IDC_INC, 12, 190, 300, 24, 0);
+        MakeStatic(hwnd, L"支持 * ?，多个用 ; 分隔", 320, 194, 230, 18);
 
-        g_btnStart = MakeButton(hwnd, IDC_START, L"开始恢复", 12, 200, 120, 32);
-        g_btnStop = MakeButton(hwnd, IDC_STOP, L"停止", 144, 200, 90, 32);
+        g_chkAll = MakeCheck(hwnd, IDC_ALL, L"也导出未删除的文件 (--all)", 12, 222, 240, 22);
+        g_chkDbg = MakeCheck(hwnd, IDC_DEBUGCHK, L"输出逐条判定 (--debug)", 270, 222, 220, 22);
+
+        g_btnStart = MakeButton(hwnd, IDC_START, L"开始恢复", 12, 252, 120, 32);
+        g_btnStop = MakeButton(hwnd, IDC_STOP, L"停止", 144, 252, 90, 32);
         EnableWindow(g_btnStop, FALSE);
-        g_pct = MakeStatic(hwnd, L"就绪", 246, 208, 300, 20);
+        g_pct = MakeStatic(hwnd, L"就绪", 246, 260, 300, 20);
 
         g_progress = CreateWindowExW(0, PROGRESS_CLASSW, L"",
-                                     WS_CHILD | WS_VISIBLE, S(12), S(242), S(538), S(18),
+                                     WS_CHILD | WS_VISIBLE, S(12), S(292), S(538), S(18),
                                      hwnd, (HMENU)(INT_PTR)IDC_PROGRESS, inst, NULL);
         SendMessageW(g_progress, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
 
         g_log = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
                                 WS_CHILD | WS_VISIBLE | WS_VSCROLL |
                                 ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
-                                S(12), S(270), S(538), S(190), hwnd, (HMENU)(INT_PTR)IDC_LOG,
+                                S(12), S(320), S(538), S(150), hwnd, (HMENU)(INT_PTR)IDC_LOG,
                                 inst, NULL);
         ApplyFont(g_log);
-        MakeStatic(hwnd, L"只读源盘；输出不要写回受损盘。恢复前请先镜像。", 12, 466, 538, 18);
+        MakeStatic(hwnd, L"只读源盘；输出不要写回受损盘。恢复前请先镜像。", 12, 480, 538, 18);
 
         FillDrives(g_drives);
         DragAcceptFiles(hwnd, TRUE);   /* 把镜像/输出目录直接拖进窗口 */
         LogAppend(L"[*] 就绪。选镜像 + 输出目录，点「开始恢复」。\n"
                   L"    （也可以把镜像文件、输出目录直接拖进这个窗口）\n"
-                  L"    默认只导已删除的文件；要连没删的一起导出，勾上 --all。\n");
+                  L"    默认只导已删除的文件；要连没删的一起导出，勾上 --all。\n"
+                  L"    只想捞某类文件（比如 *.jpg）就填 ③ 那一行。\n");
         return 0;
     }
     case WM_APP_LOG: {
@@ -610,7 +619,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, LPWSTR cmdLine, int nShow)
     wc.lpszClassName = L"MftRecoverGui";
     RegisterClassW(&wc);
 
-    r.left = 0; r.top = 0; r.right = S(570); r.bottom = S(512);
+    r.left = 0; r.top = 0; r.right = S(570); r.bottom = S(528);
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
     g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"MFT Recover — NTFS 元数据恢复（GUI）",
                              (WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX) | WS_VISIBLE,

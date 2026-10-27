@@ -999,7 +999,11 @@ mft_recover.exe \\.\F: D:\recovered                  :: scan a drive directly (a
   suffix instead of overwriting. `--flat` switches back to flat
   `del_<record#>_<name>` / `live_<record#>_<name>` names.
 - **Recovers**: resident small files (including 0-byte files), non-resident large files (copied
-  cluster by cluster via the runlist, sparse runs zero-filled), UTF-16 (e.g. Chinese) names.
+  cluster by cluster via the runlist, sparse runs zero-filled), UTF-16 (e.g. Chinese) names, and
+  the original directory tree.
+- **Filtering**: `--include "*.jpg;*.png"` keeps only matches, `--exclude "*.tmp"` drops them.
+  `*` and `?` are supported, patterns are `;`-separated, and **both the file name and the rebuilt
+  relative path are matched** (so `--include "photos\*"` works). The GUI exposes this as row ③.
 - **Does not recover (yet)**: records overwritten/zeroed, compressed or encrypted data streams,
   and files whose attributes were split into extension records via `$ATTRIBUTE_LIST`.
 - **Which one first**: **MFT readable → `mft_recover`** (names + exact sizes); **MFT destroyed →

@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <wctype.h>
 
 #define MFT_MAX_RUNS 4096
 #define MFT_MAX_NAME 512
@@ -59,6 +60,8 @@ typedef struct {
     int exportAll;                  /* 1 = 连未删除的文件也导出 */
     int debug;                      /* 1 = 逐条记录打印判定 */
     int flatTree;                   /* 1 = 扁平命名 del_<idx>_<name>；0 = 按父目录引用还原目录结构 */
+    const wchar_t* includePat;      /* 只恢复匹配这些通配的文件名（NULL = 全部）；多个用 ; 分隔 */
+    const wchar_t* excludePat;      /* 跳过匹配这些通配的文件名；多个用 ; 分隔 */
 
     /* ---- 回调（可为 NULL） ---- */
     void (*logfn)(void* ud, const wchar_t* msg);
@@ -86,6 +89,7 @@ typedef struct {
     unsigned long long named;
     unsigned long long recovered;
     unsigned long long skipped;
+    unsigned long long filtered;    /* 名字没通过 --include/--exclude 的 */
     unsigned long long bytes;
 } MftCtx;
 
@@ -229,6 +233,62 @@ static int mft_dumpNonResident(MftCtx* c, const MftRun* runs, int nRuns,
     }
     free(buf);
     CloseHandle(h);
+    return 1;
+}
+
+/* ================= 名字过滤（winfr /n 的等价物） =================
+ * 支持 * 和 ? 的通配、大小写不敏感、多个模式用分号分隔：
+ *   --include "*.jpg;*.png"   --exclude "*.tmp;~*"
+ * 先在文件名上匹配；目录树模式下也会在还原出的相对路径上匹配一次（方便写 "照片\*"）。
+ */
+static int mft_wildOne(const wchar_t* pat, const wchar_t* s) {
+    while (*pat) {
+        if (*pat == L'*') {
+            while (*pat == L'*') pat++;
+            if (!*pat) return 1;
+            for (; *s; s++) if (mft_wildOne(pat, s)) return 1;
+            return 0;
+        } else if (*pat == L'?') {
+            if (!*s) return 0;
+            pat++;
+            s++;
+        } else {
+            if (towlower(*pat) != towlower(*s)) return 0;
+            pat++;
+            s++;
+        }
+    }
+    return *s == 0;
+}
+
+/* 分号分隔的多模式列表；空列表或不传 => 1（全部匹配） */
+static int mft_wildList(const wchar_t* list, const wchar_t* s) {
+    wchar_t pat[MFT_MAX_NAME];
+    const wchar_t* p = list;
+    if (!list || !*list) return 1;
+    while (*p) {
+        int n = 0;
+        while (*p && *p != L';' && n < MFT_MAX_NAME - 1) pat[n++] = *p++;
+        pat[n] = 0;
+        if (n > 0 && mft_wildOne(pat, s)) return 1;
+        if (*p == L';') p++;
+    }
+    return 0;
+}
+
+/* 名字/相对路径是否该恢复 */
+static int mft_nameAllowed(MftCtx* c, const wchar_t* name, const wchar_t* relPath) {
+    const wchar_t* fname = name;
+    const wchar_t* p;
+    /* 取最后的路径分量，让 --include "*.jpg" 能同时匹配文件名 */
+    for (p = name; *p; p++) if (*p == L'\\' || *p == L'/') fname = p + 1;
+    if (!mft_wildList(c->includePat, fname) &&
+        !(relPath && relPath[0] && mft_wildList(c->includePat, relPath)))
+        return 0;
+    if (c->excludePat && *c->excludePat) {
+        if (mft_wildList(c->excludePat, fname)) return 0;
+        if (relPath && relPath[0] && mft_wildList(c->excludePat, relPath)) return 0;
+    }
     return 1;
 }
 
@@ -437,19 +497,27 @@ static void mft_handleRecord(MftCtx* c, unsigned long long recIdx, unsigned long
     c->named++;
 
     if (c->outdir) {
-        wchar_t safe[MFT_MAX_NAME], path[MAX_PATH * 2], dir[MAX_PATH * 2];
+        wchar_t safe[MFT_MAX_NAME], path[MAX_PATH * 2], dir[MAX_PATH * 2], rel[MAX_PATH * 2];
         int ok = 0;
         mft_sanitize(name, safe, MFT_MAX_NAME);
+        /* 先把相对目录算出来，过滤才能同时匹配「文件名」和「路径」两种写法
+         * （--include "*.jpg" 和 --include "照片\*" 都要能用） */
+        rel[0] = 0;
+        if (!c->flatTree) {
+            if (parentRef == (unsigned long long)-1 ||
+                !mft_buildRelPath(c, parentRef, rel, MAX_PATH * 2, 0))
+                wcscpy_s(rel, MAX_PATH * 2, L"_orphan");   /* 父链断了：单独放到 _orphan */
+        }
+        if (!mft_nameAllowed(c, name, rel)) {
+            c->filtered++;
+            free(r);
+            return;
+        }
         if (c->flatTree) {
             _snwprintf_s(path, MAX_PATH * 2, _TRUNCATE, L"%ls\\%ls_%06llu_%ls",
                          c->outdir, deleted ? L"del" : L"live", recIdx, safe);
             mft_makeDir(c->outdir);
         } else {
-            wchar_t rel[MAX_PATH * 2];
-            rel[0] = 0;
-            if (parentRef == (unsigned long long)-1 ||
-                !mft_buildRelPath(c, parentRef, rel, MAX_PATH * 2, 0))
-                wcscpy_s(rel, MAX_PATH * 2, L"_orphan");   /* 父链断了：单独放到 _orphan */
             _snwprintf_s(dir, MAX_PATH * 2, _TRUNCATE, L"%ls\\%ls",
                          c->outdir, deleted ? L"deleted" : L"live");
             if (rel[0]) {
@@ -609,9 +677,9 @@ static int mft_walk(MftCtx* c) {
 
 static void mft_summary(MftCtx* c) {
     mft_logf(c, L"[统计] 槽位=%llu 有效记录=%llu 已删除=%llu 目录=%llu 有名字的文件=%llu "
-                L"导出=%llu 跳过(压缩/属性列表/无数据)=%llu 字节=%llu\n",
+                L"导出=%llu 跳过(压缩/属性列表/无数据)=%llu 名字过滤=%llu 字节=%llu\n",
              c->records, c->seen, c->deleted, c->dirs, c->named,
-             c->recovered, c->skipped, c->bytes);
+             c->recovered, c->skipped, c->filtered, c->bytes);
 }
 
 static void mft_close(MftCtx* c) {
