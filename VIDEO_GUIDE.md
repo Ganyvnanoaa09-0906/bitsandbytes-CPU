@@ -461,6 +461,29 @@ python video_e2e.py train --data D:\work\video_mvp\data\data_win_S128_T8.pt `
    注：sliding 模式**没有 LoRA 加载入口**（设计如此，见 VIDEO_E2E_PIPELINE_PLAN §2.1）；
    要带自训 LoRA 请用 `--mode independent`。
 
+### 7.4 视频 LCM 加速：**不推荐**（2026-10-27 实测，负结果）
+
+动机：256² 质量档 24.5 s/帧，想用 LCM-LoRA 4 步把速度拉起来（SD1.5 单图实测能省 3.7–4.4×）。
+
+结论先给：**LCM 在视频上能跑快，但会把运动抹掉，图像档才划算。**
+
+| 配置（8 帧） | 时间 | 秒/帧 | frame_diff | diff/std | 整体运动 | 观感 |
+|---|---|---|---|---|---|---|
+| 256² DPM 6 步 + CFG 7.5（基线） | 196 s | 24.5 | 14.22 | 0.247 | **有**（shift dy=8, 残差 0.893） | 会动 |
+| 256² LCM 4 步（官方 AnimateDiffPipeline） | **84.6 s** | **10.6** | 9.44 | 0.170 | **无**（所有帧残差比 1.000） | **几乎静止** |
+| 128² LCM 4 步 | 51.7 s | 6.5 | 15.85 | 0.276 | 无 | 抽象、细节差 |
+
+顺带两个排查结论，避免下次踩坑：
+1. **LCM 本身没问题**：官方 `StableDiffusionPipeline` + LCM-LoRA（fuse 进 UNet）+ `LCMScheduler.from_config`
+   在 512² 单图 4 步出图完全正常（`video_mvp\runs\lcm_canonical\A_lcm_4step_512.png`）。
+2. **但手搓 denoise 循环 + LCM 会出彩色噪声**（128/256/512 单帧都复现），原因不明；
+   要试 LCM 就用官方 `AnimateDiffPipeline`，别自己拼循环。fuse 路径也记一下：
+   diffusers 0.40 的 `UNet2DConditionModel` 没有 `load_lora_weights`/`merge_and_unload`，
+   得借 `StableDiffusionPipeline.load_lora_weights` + `fuse_lora()`，再把 `base_layer.*` 拆包成普通 UNet。
+
+**所以视频质量档仍用 DPM 6 步 + CFG 7.5**；LCM 省下的 2.3× 时间换来的是"静止图"，
+对这个任务不划算。
+
 演示产物（不进仓库，仓库卫生守卫会拦图片/视频）：
 `D:\work\video_mvp\demo_2026-10-27\`
 
