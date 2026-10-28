@@ -9,6 +9,10 @@
   （同一配置两次测到 231.3 和 98.9）
   而热衰减实测是 1.00x ⇒ 不是热，是同进程内的某种累积效应
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import sys, time
 import numpy as np
 import pyopencl as cl
