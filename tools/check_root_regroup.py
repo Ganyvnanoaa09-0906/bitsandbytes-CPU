@@ -364,6 +364,12 @@ def main():
     ok = report(st, None if a.baseline else a.baseline_json, root=a.root)
     if a.json:
         payload = dict(st, commit=git_head(a.root), root=os.path.abspath(a.root))
+        try:
+            payload['tree'] = subprocess.run(['git', '-C', a.root, 'rev-parse', 'HEAD^{tree}'],
+                                             capture_output=True, text=True, encoding='utf-8',
+                                             errors='replace').stdout.strip()
+        except Exception:
+            payload['tree'] = None
         payload['unresolved'] = [list(x) for x in st['unresolved']]
         open(a.json, 'w', encoding='utf-8').write(json.dumps(payload, ensure_ascii=False, indent=2))
         print('\n已写 %s' % a.json)
