@@ -241,6 +241,13 @@ def main():
         except SyntaxError:
             continue
         if n_edits:
+            # 被改写的 importer 可能不在 scripts/ 下（如 gt1030/），它需要仓库根在 sys.path 才能
+            # import scripts.<theme>.*；移动集合内的文件已各自插过 bootstrap，这里只补外部文件。
+            if 'scripts' + os.sep not in target and '_root = _os.path.dirname' not in new_text:
+                try:
+                    new_text = insert_bootstrap(new_text)
+                except SyntaxError:
+                    pass
             io.open(target, 'w', encoding='utf-8', newline='').write(new_text)
             changed += 1
     print('已改写 %d 个文件里的引用（不含新建的 __init__.py）' % changed)

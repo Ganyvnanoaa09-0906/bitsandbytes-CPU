@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 """wire_fused_v2.py — 把 v2 融合核（strided SwiGLU + in-place add_scale）接进 bnb"""
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import io, os
 
 T = r'D:\work\bitsandbytes-CPU\bitsandbytes'

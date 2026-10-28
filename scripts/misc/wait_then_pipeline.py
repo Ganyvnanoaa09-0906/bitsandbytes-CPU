@@ -4,6 +4,10 @@
 清洗是长时间任务（~1 小时），管线（去重 → token 化新图 → 合并）又要 1 小时。
 串起来自动跑，不必人工轮询。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import os, subprocess, sys, time
 
 ROOT = r'D:\work\bitsandbytes-CPU'
