@@ -21,7 +21,7 @@
    - 反向转置融合：比 oneDNN fp32 慢 2.4×，**决定暂不替换**（记录于 §7.144）；
    - Linear 层逐层融合经逐层 + OpenMP 持久线程池实测**不划算**，决定保留"解包 + torch
      F.linear"（§7.145）。
-5. **CPU MoE 基线**（`moe_cpu_bench.py`，`bench_results/moe_baseline.md`）：
+5. **CPU MoE 基线**（`scripts/misc/moe_cpu_bench.py`，`bench_results/moe_baseline.md`）：
    - EFST 通过 HF transformers 5.16 新式**融合 3D 张量专家**实测：tiny Mixtral 2 个专家组、
      可训 4,318,016 → 65,536、17.5 ms/step、loss 10.33→10.21；
    - 合成 53.48M MoE：fp32 88.6ms/0.199GB vs 3-bit 175.9ms/0.033GB（-83%，慢 2×）；

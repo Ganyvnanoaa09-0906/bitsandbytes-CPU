@@ -253,7 +253,7 @@ the router), freeze the rest, significantly compressing trainable parameters and
 | Model tested | randomly initialized 3-layer Qwen3Next hybrid (3 × 3D tensor expert groups × 8 experts) |
 | After top-2 selection | trainable 725,712 → 143,600 (19.8%) |
 | 60-step training | loss -23%, normal convergence |
-| Self-test | `efst_selftest.py` → **PASSED** (moe expert detection + LoRA injection + fwd/bwd) |
+| Self-test | `scripts/misc/efst_selftest.py` → **PASSED** (moe expert detection + LoRA injection + fwd/bwd) |
 
 **Mechanism**: `freeze_all` + `unfreeze_experts` (manual `expert_indices` or auto-select
 `top_k` via calibration data), `add_lora_to_experts` (LoRA into classic experts). For the

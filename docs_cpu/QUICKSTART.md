@@ -462,7 +462,7 @@ worksize 98304）实测 **1290 GFLOPS = GT 1030 理论值 1127 的 1.14×**；�
 **复跑脚本**（仓库根目录，需要 `pyopencl` + CLBlast 动态库）：
 
 ```bat
-py -3.11 clblast_colmajor_shapes.py     :: CLBlast 列主序修复 + 真实形状 GFLOPS 表
+py -3.11 scripts/misc/clblast_colmajor_shapes.py     :: CLBlast 列主序修复 + 真实形状 GFLOPS 表
 py -3.11 scripts/igpu/igpu_clblast_resident.py       :: 设备常驻单层训练步（先对拍、后计时）
 py -3.11 scripts/igpu/igpu_fp16_tune.py              :: fp16 纯运算调参（nacc/worksize/unroll 网格）
 ```

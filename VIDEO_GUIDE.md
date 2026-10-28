@@ -215,7 +215,7 @@ GET https://hf-mirror.com/api/models/<repo>                     # 列文件
 GET https://hf-mirror.com/<repo>/resolve/main/<path>            # 下文件
 ```
 
-用法示例：`python hf_pull_video.py`（拉 Wan2.1 的 config + tokenizer，并校验完整性）。
+用法示例：`python scripts/misc/hf_pull_video.py`（拉 Wan2.1 的 config + tokenizer，并校验完整性）。
 
 ### 4.1 Wan2.1-T2V-1.3B 的实况（**不是坏包**）
 
@@ -391,7 +391,7 @@ python video_e2e.py train --data D:\work\video_mvp\data\data_win_S128_T8.pt `
 ```
 
 前置条件：
-- 组件脚本（`sliding_window.py` / `independent_chunks.py` / `temporal_metrics.py` / `post_process.py`）
+- 组件脚本（`sliding_window.py` / `scripts/misc/independent_chunks.py` / `temporal_metrics.py` / `post_process.py`）
   已随本分支落在**仓库根**；
 - 训练工具 `video_mvp/` 是外部目录：默认 `..ideo_mvp`，或用环境变量
   `VIDEO_E2E_TOOLS=D:\work\video_mvp` 指定；训练数据用 `--data` 或 `VIDEO_E2E_DATA`；

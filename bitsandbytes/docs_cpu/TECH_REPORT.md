@@ -228,7 +228,7 @@ GEMV/GEMM，权重流量减半而 fp32 FMA 吞吐不变）在 C 侧已实现、�
 | 实测模型 | 随机初始化 Qwen3Next 3 层混合（3 个 3D tensor 专家组 × 8 专家） |
 | top-2 选择后 | 可训练 725,712 → 143,600（19.8%） |
 | 60 步训练 | loss 下降 23%，收敛正常 |
-| 自检 | `efst_selftest.py` → **PASSED**（moe 专家识别 + LoRA 注入 + 前向/反向） |
+| 自检 | `scripts/misc/efst_selftest.py` → **PASSED**（moe 专家识别 + LoRA 注入 + 前向/反向） |
 
 **机制**：`freeze_all` + `unfreeze_experts`（手动 `expert_indices` 或校准数据自动选
 `top_k`），`add_lora_to_experts`（经典专家注入 LoRA）。对 transformers 5.15+

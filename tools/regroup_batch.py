@@ -119,19 +119,33 @@ def main():
                     help='逗号分隔的多个前缀，合并成一批（如 train,eval,analyze）')
     ap.add_argument('--theme', default=None, help='目标子目录名，如 bench')
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--rest-safe', action='store_true',
+                    help='把根目录所有"零入边"文件成批移走（B5 收尾）')
+    ap.add_argument('--limit', type=int, default=0, help='每批最多移动多少个（0=不限）')
     ap.add_argument('--exclude-inbound', action='store_true',
                     help='只移动没有被其他脚本 import 的文件（有入边的库留到 B6 统一处理）')
     a = ap.parse_args()
 
-    prefix_list = ([a.prefix] if a.prefix else []) + ([x.strip() for x in a.prefixes.split(',')] if a.prefixes else [])
-    if not prefix_list:
-        raise SystemExit('需要 --prefix 或 --prefixes')
+    if a.rest_safe:
+        import json
+        safe = set(json.load(io.open(r'D:\work\video_mvp\regroup_safeset.json', encoding='utf-8'))['safe'])
+        files = [p for p in tracked(['*.py']) if os.sep not in p and '/' not in p
+                 and os.path.splitext(p)[0] in safe]
+        files = sorted(files)
+        if a.limit:
+            files = files[:a.limit]
+        prefix_list = []
+    else:
+        prefix_list = ([a.prefix] if a.prefix else []) + ([x.strip() for x in a.prefixes.split(',')] if a.prefixes else [])
+        if not prefix_list:
+            raise SystemExit('需要 --prefix / --prefixes / --rest-safe')
     if not a.theme:
         raise SystemExit('需要 --theme')
-    files = []
-    for pfx in prefix_list:
-        files += [p for p in tracked(['%s_*.py' % pfx]) if os.sep not in p and '/' not in p]
-    files = sorted(set(files))
+    if prefix_list:
+        files = []
+        for pfx in prefix_list:
+            files += [p for p in tracked(['%s_*.py' % pfx]) if os.sep not in p and '/' not in p]
+        files = sorted(set(files))
     if a.exclude_inbound:
         import json
         safe = set(json.load(io.open(r'D:\work\video_mvp\regroup_safeset.json', encoding='utf-8'))['safe'])

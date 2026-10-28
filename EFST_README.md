@@ -87,7 +87,7 @@ config = EFSTConfig(
    时显式传 ``EFSTConfig(allow_no_experts=True)``。
 
 回归测试：``python scripts/test/test_efst_regressions.py``（嵌套块 / 3D 张量专家 / 非 MoE 安全），
-与 ``efst_selftest.py``、``scripts/test/test_efst_full.py``、``scripts/verify/verify_efst_8bit.py`` 一起跑。
+与 ``scripts/misc/efst_selftest.py``、``scripts/test/test_efst_full.py``、``scripts/verify/verify_efst_8bit.py`` 一起跑。
 
 ## 3D 张量专家支持（transformers 5.15+ Qwen3Next/Qwen3.5）
 

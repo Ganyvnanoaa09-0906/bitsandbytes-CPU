@@ -29,16 +29,16 @@ paths              : 14114 条（与 token 严格同序）
 ## 二、处理链路与参数
 
 ```
-① 解压      extract_photobooks.py
+① 解压      scripts/misc/extract_photobooks.py
              Download 164 zip -> webp_sets (12268 张 webp)
              根目录 28 zip   -> photobook   (1376 张)
 
-② 清洗      fast_clean.py
+② 清洗      scripts/misc/fast_clean.py
              char2     : --res 1024 --square-mode crop  --detect ssdlite --blur-threshold 0.003
              clean_webp: --res 512  --crop-region upper --detect ssdlite --blur-threshold 0.0025
              （res 必须接近原生尺寸，见第四节）
 
-③ 去重      dedup_images.py（dHash, 汉明距离 <= 4）
+③ 去重      scripts/misc/dedup_images.py（dHash, 汉明距离 <= 4）
              char2 内部      移除 1898
              photobook 内部  移除  177
              扩充池跨池      移除 2852（全部来自 clean_webp，含一组 108 张完全相同）
@@ -116,7 +116,7 @@ paths              : 14114 条（与 token 严格同序）
 ### 4.3 webp 不需要单独转换
 
 PIL 12.3.0 的 webp 解码 = True（编码 False，但只需要读）。
-`fast_clean.py` 的扩展名列表本就含 `.webp`，所以「读 webp → 裁剪 → 存 jpg」一步完成。
+`scripts/misc/fast_clean.py` 的扩展名列表本就含 `.webp`，所以「读 webp → 裁剪 → 存 jpg」一步完成。
 
 ---
 

@@ -534,7 +534,7 @@ so concurrency gives 1.1-1.3x against 1.51x for sequential execution.
 **Scripts to reproduce** (repo root; needs `pyopencl` and the CLBlast shared library):
 
 ```bat
-py -3.11 clblast_colmajor_shapes.py     :: column-major fix + real-shape GFLOPS table
+py -3.11 scripts/misc/clblast_colmajor_shapes.py     :: column-major fix + real-shape GFLOPS table
 py -3.11 scripts/igpu/igpu_clblast_resident.py       :: device-resident single-layer step (check, then time)
 py -3.11 scripts/igpu/igpu_fp16_tune.py              :: fp16 pure-compute tuning (nacc/worksize/unroll)
 ```

@@ -1,6 +1,6 @@
 # CPU MoE 推理：内存预算 vs 吞吐曲线（2026-10-19）
 
-脚本：`moe_infer_cache_sweep.py`。这是 KTransformers「专家卸载 + 热缓存」思路的**resident
+脚本：`scripts/misc/moe_infer_cache_sweep.py`。这是 KTransformers「专家卸载 + 热缓存」思路的**resident
 量化对照基线**：专家统一存 3-bit（~11% fp32 专家内存），每层按 router 使用频率把 top-C
 个专家解包成 fp32 常驻缓存，其余专家每次调用按需解包（矩阵很快，oneDNN 跟着算）。
 

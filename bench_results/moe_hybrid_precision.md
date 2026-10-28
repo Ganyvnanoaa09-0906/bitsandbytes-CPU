@@ -1,6 +1,6 @@
 # MoE 混合精度：EFST 热专家 + 冷专家 3-bit（2026-10-19）
 
-脚本：`moe_hybrid_bench.py`。目标：在 scaled Mixtral（HF transformers 5.16 **融合 3D 张量专家**）
+脚本：`scripts/misc/moe_hybrid_bench.py`。目标：在 scaled Mixtral（HF transformers 5.16 **融合 3D 张量专家**）
 上验证「EFST 校准选热专家 → hot 保持 fp32、cold 量化 3-bit 按需解包」是否能拿到比全 3-bit
 更好的内存/速度折中。
 

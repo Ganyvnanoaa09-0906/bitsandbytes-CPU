@@ -61,13 +61,13 @@ ssdlite **漏检率 10%**、误报率 10%。它是合格的**粗筛**，但不�
 ### 去水印：砍掉了，而且它本来就没在跑
 
 `dewatermark.py` 第一行就 `from scipy import ndimage`，而**本环境没装 scipy** →
-`clean_pipeline.py` 里那个 `try/except` 静默把 `detect_boxes` 置成了 `None`
+`scripts/misc/clean_pipeline.py` 里那个 `try/except` 静默把 `detect_boxes` 置成了 `None`
 （实测打印 `detect_boxes = None`）。**也就是说你之前加不加 `--dewatermark` 完全没有区别，
 它一直是空转的。** 新脚本保留 `--dewatermark` 开关，但默认关闭，且依赖缺失时**显式打印警告**而不是静默跳过。
 
 ### 顺手修掉一个会静默丢数据的 bug
 
-旧 `clean_pipeline.py` 用 `basename` 作为输出文件名。而 `D:\work\output` 下**不同子目录存在大量同名帧**
+旧 `scripts/misc/clean_pipeline.py` 用 `basename` 作为输出文件名。而 `D:\work\output` 下**不同子目录存在大量同名帧**
 （`f000.png`、`f001.png`… 出现在几十个 `frames/` 目录里），于是互相覆盖：
 **670 张保留图只有 174 张真正落盘，且 metadata.jsonl 记录数（670）与实际文件数（174）不一致。**
 新脚本改为保留相对目录结构 → **718 张全部落盘，零覆盖**。
@@ -248,7 +248,7 @@ CLIP 的文本编码器对 danbooru 标签式长 prompt 本身就不擅长。
 
 | 文件 | 状态 |
 |---|---|
-| `fast_clean.py` | **重写**（批处理清洗，19.2× 提速） |
+| `scripts/misc/fast_clean.py` | **重写**（批处理清洗，19.2× 提速） |
 | `clip_score_eval.py` | **重写**（真 CLIP + 代理兜底） |
 | `scripts/train/train_ar_curriculum.py` | 改（逐步 jsonl / `--seed` / `--no_ckpt`） |
 | `training_report.py` | **新建**（loss 曲线 + 速度报告） |
@@ -262,7 +262,7 @@ $PY = "D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe"
 cd D:\work\bitsandbytes-CPU
 
 # --- 任务 A：清洗 918 张（~88 s）---
-& $PY fast_clean.py --data D:\work\output `
+& $PY scripts/misc/fast_clean.py --data D:\work\output `
     --out .autopilot\clean_fast_918 --batch 16 --detect ssdlite
 #   更快但不过滤"无人"：  --detect none   (~30 ms/张)
 #   高精度但很慢：        --detect keypoint (~3 s/张)

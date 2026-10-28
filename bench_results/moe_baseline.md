@@ -1,6 +1,6 @@
 # CPU MoE 训练基线（2026-10-19）
 
-脚本：`moe_cpu_bench.py`。范围说明：KTransformers 是**推理期**专家卸载服务器，本机没有
+脚本：`scripts/misc/moe_cpu_bench.py`。范围说明：KTransformers 是**推理期**专家卸载服务器，本机没有
 同台可比基线；这里建立的是**可复现的 CPU MoE 训练基线**（内存/吞吐/收敛 + EFST 集成），
 供后续与推理方案对照，而不是宣称"干翻 KTransformers"。
 

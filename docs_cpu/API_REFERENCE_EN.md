@@ -292,7 +292,7 @@ print(opt.state_bytes(), 'bytes for', p.numel(), 'params =',
 
 ```bash
 # scripts at the repo root; needs pyopencl + the CLBlast shared library
-py -3.11 clblast_colmajor_shapes.py     # real model shapes vs CPU
+py -3.11 scripts/misc/clblast_colmajor_shapes.py     # real model shapes vs CPU
 py -3.11 scripts/igpu/igpu_clblast_resident.py       # device-resident single-layer step
 ```
 
