@@ -53,6 +53,11 @@ def insert_bootstrap(src):
     insert_at = 0
     if lines and lines[0].startswith('#!'):
         insert_at = 1
+    # PEP 263：encoding 声明必须在第 1–2 行；bootstrap 要插在它之后，否则声明失效（看着也别扭）
+    for i in (insert_at, insert_at + 1):
+        if i < len(lines) and 'coding' in lines[i] and lines[i].lstrip().startswith('#'):
+            insert_at = i + 1
+            break
     body = tree.body
     idx = 0
     if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
