@@ -25,6 +25,9 @@ v2 判据：
   python tools/check_root_regroup.py --check --root D:\tmp\clone
 """
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -35,8 +38,10 @@ if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse
 import ast
+import io
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -242,7 +247,32 @@ def analyse(root, baseline_json=None):
                 fail_closed=fail_closed, fs_root_py=fs_root_py,
                 edges=len(real), instrumentation_edges=len(instrumentation),
                 local_edges=len(local), syntax_bad_files=syntax_bad,
-                unresolved=unresolved, exempt=exempt, idx_root=len(ir), idx_pkg=len(ip))
+                unresolved=unresolved, exempt=exempt, idx_root=len(ir), idx_pkg=len(ip),
+                lint_bootstrap=lint_bootstrap_bindings(root))
+
+
+def lint_bootstrap_bindings(root):
+    """S4a：静态 lint —— 任何文件使用 `_os.` / `_sys.` 却没有对应绑定 ⇒ 运行时必崩。
+
+    这是本次唯一能看见"文件内部缺陷"的检查（compileall / 边解析 / S1-S3 都看不见）：
+    `_root = _os.path.dirname(...)` 语法完全合法，只有真正执行到那一行才 NameError。
+    """
+    bad = []
+    for rel in tracked_py(root):
+        p = os.path.join(root, rel)
+        try:
+            text = io.open(p, encoding='utf-8-sig').read()
+        except OSError:
+            continue
+        uses_os = re.search(r'(?<![\w.])_os\s*\.', text) is not None
+        uses_sys = re.search(r'(?<![\w.])_sys\s*\.', text) is not None
+        if not (uses_os or uses_sys):
+            continue
+        bound = re.search(r'import\s+[^\n]*\bos\s+as\s+_os', text) is not None if uses_os else True
+        bound2 = re.search(r'import\s+[^\n]*\bsys\s+as\s+_sys', text) is not None if uses_sys else True
+        if not (bound and bound2):
+            bad.append(rel)
+    return bad
 
 
 def git_head(root):
@@ -275,6 +305,10 @@ def report(st, baseline_json=None, root=None):
         print('          本门禁无法枚举导入边，**拒绝报 PASS**（fail closed）。')
         return False
     print('  **无法解析的边**: %d' % len(st['unresolved']))
+    lint_bad = st.get('lint_bootstrap') or []
+    print('  bootstrap 绑定 lint（S4a）: %s' % ('OK' if not lint_bad else 'FAIL %d 个文件' % len(lint_bad)))
+    for rel in lint_bad[:10]:
+        print('    [LINT] %s 使用 _os/_sys 但缺绑定' % rel)
     print('  根目录相对导入（exempt）: %d' % len(st.get('exempt') or []))
     for f, m, l, n, why in (st.get('exempt') or [])[:10]:
         print('    [EXEMPT] %s:%d  .%s' % (f, n, m))
@@ -293,7 +327,8 @@ def report(st, baseline_json=None, root=None):
         new_bad = st['syntax_bad_files']
     if new_bad:
         print('  新增语法错误: %s' % ', '.join(new_bad))
-    return (len(st['unresolved']) == 0 and not new_bad)
+    return (len(st['unresolved']) == 0 and not new_bad
+            and not (st.get('lint_bootstrap') or []))
 
 
 def run_selftest(root, baseline_json):

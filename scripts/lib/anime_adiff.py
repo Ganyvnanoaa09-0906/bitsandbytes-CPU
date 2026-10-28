@@ -10,6 +10,9 @@ Usage:
 """
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -112,7 +115,7 @@ def main():
     print(f"[gen] {a.res}x{a.res} x{a.frames}f x{a.steps}step = {dt:.1f}s "
           f"({dt/a.steps:.1f}s/step)", flush=True)
 
-    import numpy
+    import numpy as np
     from PIL import Image
     os.makedirs(OUT_DIR, exist_ok=True)
     imgs = [Image.fromarray(np.asarray(f)).convert("RGB") for f in frames]

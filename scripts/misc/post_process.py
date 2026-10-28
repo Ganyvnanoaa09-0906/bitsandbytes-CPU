@@ -20,6 +20,9 @@ E2E-PATCH 列表（详见 PENDING_REPO_PORT.md）：
 """
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -36,7 +39,7 @@ import re
 import sys
 import time
 
-import numpy
+import numpy as np
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
@@ -138,14 +141,14 @@ def main():
     if a.restorer == "fsrcnn":
         # E2E-PATCH[P4]: 惰性 import + 惰性加载权重
         import torch
-        import torch.nn.functional
+        import torch.nn.functional as F
         from scripts.lib.detail_restore import load_sr
         torch.set_num_threads(a.threads)
         sr = load_sr()
         print("[cfg] FSRCNN x4 -> area decimate")
     else:
         import torch
-        import torch.nn.functional
+        import torch.nn.functional as F
         from scripts.lib.sr_cost import ANIME_6B, load as load_rrdb
         torch.set_num_threads(a.threads)
         if a.restorer == "esrgan6b":

@@ -18,6 +18,9 @@
 """
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -31,7 +34,7 @@ import hashlib
 import json
 import math
 import os
-import random
+import random as _rnd
 import sys
 import time
 from collections import OrderedDict
@@ -246,9 +249,9 @@ random.seed(args.seed)
 torch.manual_seed(args.seed)
 print(f"[env] method={args.method} threads={TH} torch={torch.__version__} seed={args.seed}")
 
-import bitsandbytes
+import bitsandbytes as bnb
 import psutil
-from PIL import Image
+from PIL import Image as _PIL
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
@@ -965,7 +968,7 @@ def _trainer_state():
       RNG 状态继续 ⇒ 实测「分段 vs 一口气」从续跑的第一个微步起就分岔（30/30 步全不同）。
       加上这两个之后，续跑才可能**逐位重现**一条未分段的训练。
     """
-    import random
+    import random as _rnd
     _st = {"step": global_step, "opt_steps": opt_steps,
            "cursor": global_cursor,          # ★ 数据游标（§10.133 真因 #2）
            "opt": opt.state_dict(), "sched": sched.state_dict(),
@@ -979,7 +982,7 @@ def _trainer_state():
     except NameError:
         pass
     try:
-        import numpy
+        import numpy as _np
         _st["rng_np"] = _np.random.get_state()
     except Exception:
         pass
@@ -1081,7 +1084,7 @@ if args.resume:
                 _rng_missing.append(_k)
         if "rng_py" in _st:
             try:
-                import random
+                import random as _rnd
                 _rnd.setstate(tuple(_st["rng_py"]))
                 _rng_restored.append("python random")
             except Exception as _e:
@@ -1090,7 +1093,7 @@ if args.resume:
             _rng_missing.append("rng_py")
         if "rng_np" in _st:
             try:
-                import numpy
+                import numpy as _np
                 _np.random.set_state(_st["rng_np"])
                 _rng_restored.append("numpy")
             except Exception:
@@ -1269,7 +1272,7 @@ def _controlnet_step(noisy, timesteps, emb, control_lat):
 #   跑完必须退出：探针步骤会做真的 `opt.step()`，会改模型状态 ⇒ 继续训练会污染曲线。
 if args.bw_probe > 0:
     sys.path.insert(0, r"D:\work\membw")
-    import bw_probe
+    import bw_probe as _bwp
 
     _bp_it = max(1, int(args.bw_probe))
 

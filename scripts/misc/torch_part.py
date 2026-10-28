@@ -46,6 +46,9 @@ ASCII only: the parent re-prints what it captures.
 """
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -97,7 +100,7 @@ if not WITH_BNB:
         check("T6 disk_balancer imports", False, f"{type(e).__name__}: {e}")
 
     try:
-        import latent_chunk_store
+        import latent_chunk_store as lcs
         check("T7 latent_chunk_store imports", True, os.path.basename(lcs.__file__))
     except Exception as e:  # noqa: BLE001
         check("T7 latent_chunk_store imports", False, f"{type(e).__name__}: {e}")
@@ -117,10 +120,10 @@ if not WITH_BNB:
 # ============================================================================
 print("  about to import bitsandbytes (this is where a double-OpenMP abort lands)")
 try:
-    import torch.nn
+    import torch.nn as nn
 
     sys.path.insert(0, os.path.join(HERE, "bitsandbytes"))
-    import bitsandbytes
+    import bitsandbytes as bnb
     check("T8 bitsandbytes imports alongside torch", True,
           os.path.dirname(getattr(bnb, "__file__", "") or ""))
 except Exception as e:  # noqa: BLE001

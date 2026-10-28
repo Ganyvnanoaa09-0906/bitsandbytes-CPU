@@ -10,6 +10,9 @@ device 侧的布局约定（跟 CPU 相反）：
 """
 from __future__ import annotations
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -21,13 +24,13 @@ if _root not in _sys.path:
 import sys
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-import numpy
+import numpy as np
 import torch
 
 
 def export_ckpt(model, path, step=0, extra=None):
     """model: ar_v2_multi.Model -> 写一个和 train_ar_v2 完全同格式的 ckpt"""
-    import gt1030.ar_v2_multi
+    import gt1030.ar_v2_multi as MM
     MD, FF, WROW, V = MM.MD, MM.FF, MM.WROW, model.head.V
     sd = {}
     # ---- token / pos embeddings（host 侧表格）----

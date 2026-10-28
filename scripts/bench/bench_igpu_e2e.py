@@ -12,6 +12,9 @@
 """
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -26,7 +29,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
-    import torch_directml
+    import torch_directml as dml
     HAS_DML = True
 except Exception:
     HAS_DML = False
@@ -58,7 +61,7 @@ def bench(fn, iters=6, warm=2):
 
 
 def run(dev, tag, T, grid, B):
-    import torch.nn.functional
+    import torch.nn.functional as F
     torch.manual_seed(0)
     try:
         m = build(T, grid).to(dev)

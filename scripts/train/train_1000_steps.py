@@ -29,6 +29,9 @@ WHAT WOULD MAKE THIS FAIL (the assertions are meant to be able to fail):
 from __future__ import annotations
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -137,7 +140,7 @@ def main():
     ))
     print(info.summary(), flush=True)
 
-    import bitsandbytes
+    import bitsandbytes as bnb
 
     trainable = [p for p in model.parameters() if p.requires_grad]
     n_tr = sum(p.numel() for p in trainable)

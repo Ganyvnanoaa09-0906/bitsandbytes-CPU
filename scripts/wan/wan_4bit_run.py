@@ -22,6 +22,9 @@ oracle:
 """
 from __future__ import annotations
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -119,7 +122,7 @@ class QuantLinear(nn.Module):
         self.quant_bytes = q.numel() + int(st.absmax.numel()) * 4
 
     def forward(self, x):
-        from bitsandbytes.functional import dequantize_4bit
+        from bitsandbytes.functional import dequantize_4bit as _dq
         if x.dtype != torch.float32:
             x = x.float()
         # ⚠️ 不要转置。实测（probe + 三次 A/B）:

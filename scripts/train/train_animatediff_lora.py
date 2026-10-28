@@ -38,6 +38,9 @@ Usage:
 from __future__ import annotations
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -55,7 +58,7 @@ import sys
 import time
 
 import torch
-import torch.nn.functional
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -66,7 +69,7 @@ except AttributeError:
            #   （正常终端里是 io.TextIOWrapper,有这个方法）
 
 
-import bitsandbytes
+import bitsandbytes as bnb
 from scripts.lib.animatediff_train import PairDataset, load_animatediff_model, resolve_video_model, _rss_gb
 
 

@@ -3,6 +3,9 @@
 from __future__ import annotations
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -13,12 +16,12 @@ if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import json, os, sys, time, threading, gc
 import torch
-import torch.nn.functional
+import torch.nn.functional as F
 import psutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from scripts.lib.small_image_model import SmallImageConfig, SmallARImageModel
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "bitsandbytes"))
-import bitsandbytes
+import bitsandbytes as bnb
 
 def rss_gb(): return psutil.Process().memory_info().rss/1e9
 class Peak:

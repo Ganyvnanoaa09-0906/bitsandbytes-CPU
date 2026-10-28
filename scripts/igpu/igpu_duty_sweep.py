@@ -28,6 +28,9 @@ intensive measurement was the anomaly and the offload is worth building.
 from __future__ import annotations
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -37,12 +40,12 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 
-import multiprocessing
+import multiprocessing as mp
 import statistics
 import sys
 import time
 
-import numpy
+import numpy as np
 import torch
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
@@ -115,7 +118,7 @@ DUTY = [0.0, 0.25, 0.5, 0.75, 1.0]
 
 
 def gpu_worker(duty, seconds, q):
-    import pyopencl
+    import pyopencl as cl
     plat = cl.get_platforms()[0]
     ctx = cl.Context(devices=[plat.get_devices()[0]])
     cq = cl.CommandQueue(ctx)

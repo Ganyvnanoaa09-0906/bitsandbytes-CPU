@@ -29,6 +29,9 @@ vocab=1024 ⇒ (左,上) 有 1024² ≈ 105 万个格子，而 16x16 只有 740 
 留出 CE 用 Laplace 平滑（α=0.1）避免 log(0)；插值估计另给一个 α 平滑版本。
 """
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)

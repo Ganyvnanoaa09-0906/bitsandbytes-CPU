@@ -4,6 +4,9 @@
 用法：python gt1030/_t_5l.py [ckpt]
 """
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -14,9 +17,9 @@ if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import sys
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-import numpy
+import numpy as np
 import torch
-import gt1030.ar_v2_model
+import gt1030.ar_v2_model as MM
 from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 
 CKPT = sys.argv[1] if len(sys.argv) > 1 else r'F:\weibo_cos\ckpt_5l.pt'
@@ -34,7 +37,7 @@ dev.forward(tokens)
 loss_dev, ic = dev.loss_and_dlogits(tokens)
 with torch.no_grad():
     lg = m.forward_logits(xt, None)[1][0]
-import torch.nn.functional
+import torch.nn.functional as F
 loss_t = float(F.cross_entropy(lg[:, :-1].reshape(-1, cfg.vocab_size), xt[:, 1:].reshape(-1)))
 print('layers=%d  loss dev=%.6f torch=%.6f diff=%.2e'
       % (dev.n_layer, loss_dev, loss_t, abs(loss_dev - loss_t)))
