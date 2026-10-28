@@ -358,6 +358,12 @@ def main():
     ap.add_argument('--baseline-json', default=r'D:\work\video_mvp\regroup_baseline.json')
     a = ap.parse_args()
 
+    # `--baseline` 必须真的把基线写回去：它是"刷新记录"的唯一动作。此前它只跳过比较、
+    # 不落盘，于是 --baseline 之后 JSON 里的 commit 仍是旧值（结构性原因：写入分支只看
+    # a.json）。这里在解析后立即补默认值，保证写入分支能走到。
+    if a.baseline and not a.json:
+        a.json = a.baseline_json
+
     if a.selftest:
         ok = run_selftest(a.root, a.baseline_json)
         print('\n自测结果: %s' % ('PASS' if ok else 'FAIL'))
