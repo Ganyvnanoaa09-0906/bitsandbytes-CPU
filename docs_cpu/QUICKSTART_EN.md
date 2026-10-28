@@ -440,10 +440,10 @@ x  = fused_cpu.fused_add_scale(h, h2, self.ls2)
 **Verify and reproduce**:
 ```bat
 py -3.11 test_fused_kernels.py     :: all four kernels vs eager (fwd+bwd) + timing
-py -3.11 bench_fused_final.py      :: end to end (RMSNorm and residual both fused)
-py -3.11 bench_fused_e2e3.py       :: three wiring variants compared
-py -3.11 bench_l3_vs_swiglu.py     :: fused vs unfused, isolated
-py -3.11 bench_r5_threads.py       :: thread count (5 is optimal here; 6 is 5.9% SLOWER)
+py -3.11 scripts/bench/bench_fused_final.py      :: end to end (RMSNorm and residual both fused)
+py -3.11 scripts/bench/bench_fused_e2e3.py       :: three wiring variants compared
+py -3.11 scripts/bench/bench_l3_vs_swiglu.py     :: fused vs unfused, isolated
+py -3.11 scripts/bench/bench_r5_threads.py       :: thread count (5 is optimal here; 6 is 5.9% SLOWER)
 ```
 Numerics: `max|delta| ~1e-7 to 1e-6` vs eager (fp32 accumulation order only);
 `state_dict` keys unchanged, so checkpoints interload safely.

@@ -1,7 +1,7 @@
 # CPU 训练基准（基线）：内存带宽 / GEMM / 并发打包
 
 机器：R5-4500U（6C/6T，DDR4-3200 双通道，15.4GB 共享内存），Windows，torch 2.13.0+cpu。
-脚本：`bench_cpu.py`；原始数据：`bench_results/baseline_r5_4500u.json`。
+脚本：`scripts/bench/bench_cpu.py`；原始数据：`bench_results/baseline_r5_4500u.json`。
 
 ## A. 内存带宽（torch 元素级操作，GB/s）
 
@@ -59,7 +59,7 @@ Zen2 6 核 AVX2 FMA 峰值约 460 GFLOPS（2×FMA256/核），实测约 60%，GE
 
 ## E. 优化器更新带宽（决定全参微调能不能跑起来）
 
-脚本：`bench_optimizer.py`（Windows / R5-4500U / torch 2.13 CPU）。有效字节按
+脚本：`scripts/bench/bench_optimizer.py`（Windows / R5-4500U / torch 2.13 CPU）。有效字节按
 "p 读+写 + g 读 + 两路 1-byte 状态读+写 + absmax"（AdamW8bit ≈ 16 B/元素；
 torch AdamW fp32 ≈ 28 B/元素）计算。
 

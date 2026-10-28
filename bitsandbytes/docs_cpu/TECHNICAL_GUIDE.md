@@ -300,10 +300,10 @@ cache line 已经被读过，普通 store 只是标脏，NT 反而强制刷出 �
 
 ```bat
 py -3.11 test_fused_kernels.py        :: 四个核的对拍（前向+反向）+ 计时
-py -3.11 bench_fused_final.py         :: 端到端（RMSNorm + 残差都走融合）
-py -3.11 bench_fused_e2e3.py          :: v1/v2/v3 三种接法对比
-py -3.11 bench_l3_vs_swiglu.py        :: 融合 vs 单独算（隔离对照）
-py -3.11 bench_r5_threads.py          :: 线程数（本机 5 线程最优，6 反而慢 5.9%）
+py -3.11 scripts/bench/bench_fused_final.py         :: 端到端（RMSNorm + 残差都走融合）
+py -3.11 scripts/bench/bench_fused_e2e3.py          :: v1/v2/v3 三种接法对比
+py -3.11 scripts/bench/bench_l3_vs_swiglu.py        :: 融合 vs 单独算（隔离对照）
+py -3.11 scripts/bench/bench_r5_threads.py          :: 线程数（本机 5 线程最优，6 反而慢 5.9%）
 ```
 
 ### 3.6 GDN 接入 Transformers（gdn_cpu.py）

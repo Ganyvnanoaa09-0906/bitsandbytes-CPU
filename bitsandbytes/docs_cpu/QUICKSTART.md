@@ -372,10 +372,10 @@ x  = fused_cpu.fused_add_scale(h, h2, self.ls2)
 **核对与复跑**：
 ```bat
 py -3.11 test_fused_kernels.py     :: 四个核 vs eager 对拍（前向+反向）+ 计时
-py -3.11 bench_fused_final.py      :: 端到端（RMSNorm + 残差都走融合）
-py -3.11 bench_fused_e2e3.py       :: v1/v2/v3 三种接法对比
-py -3.11 bench_l3_vs_swiglu.py     :: 融合 vs 单独算（隔离对照）
-py -3.11 bench_r5_threads.py       :: 线程数（本机 5 线程最优，6 反而慢 5.9%）
+py -3.11 scripts/bench/bench_fused_final.py      :: 端到端（RMSNorm + 残差都走融合）
+py -3.11 scripts/bench/bench_fused_e2e3.py       :: v1/v2/v3 三种接法对比
+py -3.11 scripts/bench/bench_l3_vs_swiglu.py     :: 融合 vs 单独算（隔离对照）
+py -3.11 scripts/bench/bench_r5_threads.py       :: 线程数（本机 5 线程最优，6 反而慢 5.9%）
 ```
 数值：与 eager `max|Δ| ~1e-7 ~ 1e-6`（fp32 累加顺序不同所致），
 `state_dict` 键名不变 ⇒ checkpoint 可安全互载。

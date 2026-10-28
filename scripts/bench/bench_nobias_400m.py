@@ -1,0 +1,25 @@
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
+import sys, time, json, torch, torch.nn as nn, torch.nn.functional as F, psutil
+sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
+from small_image_model import SmallImageConfig, SmallARImageModel
+sys.path.insert(0, r'D:\work\bitsandbytes-CPU\bitsandbytes')
+import bitsandbytes as bnb
+torch.set_num_threads(6); torch.backends.mkldnn.enabled=True
+cfg=SmallImageConfig(d_model=1280,n_layer=16,n_head=16,ffn_dim=7168,total_tokens=256)
+m=SmallARImageModel(cfg)
+def strip(blk):
+    for name in ['qkv','proj']:
+        old=getattr(blk,name)
+        new=nn.Linear(old.in_features, old.out_features, bias=False)
+        new.weight.data.copy_(old.weight.data); setattr(blk,name,new)
+    old=blk.mlp[0]; new=nn.Linear(old.in_features, old.out_features, bias=False); new.weight.data.copy_(old.weight.data); blk.mlp[0]=new
+    old=blk.mlp[2]; new=nn.Linear(old.in_features, old.out_features, bias=False); new.weight.data.copy_(old.weight.data); blk.mlp[2]=new
+for blk in m.blocks: strip(blk)
+n=sum(p.numel() for p in m.parameters()); opt=bnb.optim.AdamW8bit(m.parameters(),lr=1e-4)
+x=torch.randint(0,1024,(1,256)); text=torch.zeros(1,768); ts=[]
+for _ in range(2):
+    t0=time.perf_counter(); th,ge=m(x,text); loss=F.cross_entropy(ge.reshape(-1,1024),x.reshape(-1))+0.1*F.cross_entropy(th.reshape(-1,1024),x[:,:16].reshape(-1)); opt.zero_grad(set_to_none=True); loss.backward(); opt.step(); ts.append(time.perf_counter()-t0)
+print(json.dumps(dict(kind='nobias',params=int(n),step_times=ts,mean=sum(ts)/len(ts),loss=float(loss.detach())),ensure_ascii=False))

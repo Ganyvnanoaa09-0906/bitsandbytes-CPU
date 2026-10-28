@@ -19,7 +19,7 @@ LoRA 真可训只有 3.19M，优化器只占 **约 1.7%**；对比全参微调�
 |---|---|---|
 | 548M 全参 AdamW8bit | **1255 ms** | ~7.0 GB/s（548M×16B / 1.255s） |
 
-和 `bench_optimizer.py` 的带宽模型完全对上——全参微调时优化器是第二大头。
+和 `scripts/bench/bench_optimizer.py` 的带宽模型完全对上——全参微调时优化器是第二大头。
 
 ## 3. 算子占比（torch profiler，self CPU）
 

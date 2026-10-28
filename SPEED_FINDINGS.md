@@ -223,7 +223,7 @@ T=64: 稳定 99~100%，仅末尾 93.9%
 
 **QKV 融合的详细数据：**
 ```
-微基准 (bench_qkv.py):
+微基准 (scripts/bench/bench_qkv.py):
   batch*T=512    9.01ms -> 6.91ms   +23.3%
   batch*T=1024  13.52ms -> 9.96ms   +26.3%
 真实模型 (b=8 T=256, 含反向):
@@ -274,7 +274,7 @@ Conv2d:    128->256 32x32 b8  172.49 GFLOP/s
 ## 附：本次新增的脚本
 
 ```
-bench_avx2.py          本机 GEMM/线程/精度/后端 基准
+scripts/bench/bench_avx2.py          本机 GEMM/线程/精度/后端 基准
 tune_ar.py             AR 模型开关消融（mkldnn/SDPA/线程/autocast）
 test_loop.py           loop_times 消融
 test_loop2.py          等算力对比（循环 vs 加层）

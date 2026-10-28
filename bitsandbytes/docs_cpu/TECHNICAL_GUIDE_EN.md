@@ -327,10 +327,10 @@ This note exists so nobody assumes it already works: **exported is not the same 
 
 ```bat
 py -3.11 test_fused_kernels.py        :: all four kernels checked against eager (fwd+bwd) + timing
-py -3.11 bench_fused_final.py         :: end to end (RMSNorm and residual both fused)
-py -3.11 bench_fused_e2e3.py          :: three wiring variants compared
-py -3.11 bench_l3_vs_swiglu.py        :: fused vs unfused, isolated
-py -3.11 bench_r5_threads.py          :: thread count (5 is optimal here; 6 is 5.9% SLOWER)
+py -3.11 scripts/bench/bench_fused_final.py         :: end to end (RMSNorm and residual both fused)
+py -3.11 scripts/bench/bench_fused_e2e3.py          :: three wiring variants compared
+py -3.11 scripts/bench/bench_l3_vs_swiglu.py        :: fused vs unfused, isolated
+py -3.11 scripts/bench/bench_r5_threads.py          :: thread count (5 is optimal here; 6 is 5.9% SLOWER)
 ```
 
 ### 3.6 GDN integration into Transformers (gdn_cpu.py)
