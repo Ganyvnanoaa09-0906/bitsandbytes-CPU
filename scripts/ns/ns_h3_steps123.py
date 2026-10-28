@@ -27,9 +27,6 @@ a measurement, and the old metric is kept in the output for comparison.
 from __future__ import annotations
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -226,7 +223,7 @@ w()
 w('**完整优化器更新耗时**（含 NS 之外的部分：动量、AdamW、参数写回）:')
 w()
 try:
-    import bitsandbytes as bnb
+    import bitsandbytes
     m2 = SmallARImageModelV2(cfg)
     mp, ap = [], []
     for n_, p in m2.named_parameters():

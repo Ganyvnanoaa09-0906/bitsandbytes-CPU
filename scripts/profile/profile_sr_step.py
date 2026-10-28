@@ -9,9 +9,6 @@
 """
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -26,10 +23,10 @@ import random
 import sys
 import time
 
-import numpy as np
+import numpy
 import torch
 import torch.nn
-import torch.nn.functional as F
+import torch.nn.functional
 from PIL import Image
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')

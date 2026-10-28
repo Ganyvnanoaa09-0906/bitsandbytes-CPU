@@ -29,9 +29,6 @@ CLIP score 约定：`100 * cos(image_emb, text_emb)`，越高越对齐（常见�
 from __future__ import annotations
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -105,9 +102,9 @@ def build_pairs(a):
 
 # --------------------------- 代理分数（无 CLIP 兜底） ---------------------------
 def proxy_score(prompt, path, size=256):
-    import numpy as np
+    import numpy
     import torch
-    import torch.nn.functional as F
+    import torch.nn.functional
     from PIL import Image
     im = Image.open(path).convert('RGB').resize((size, size), Image.BILINEAR)
     x = torch.from_numpy(np.asarray(im).copy()).permute(2, 0, 1).float() / 255.0
@@ -271,7 +268,7 @@ def main():
             print(f'[clip_eval] CLIP unavailable ({type(e).__name__}: {e}) -> proxy fallback', flush=True)
 
     from PIL import Image
-    import torch.nn.functional as F
+    import torch.nn.functional
 
     def wrap(p):
         return f'a photo of {p}' if a.template == 'photo' and p else p

@@ -31,9 +31,6 @@
 from __future__ import annotations
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -42,8 +39,8 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
-import argparse, json as _json, os, random, sys, time
-import numpy as np
+import argparse, json, os, random, sys, time
+import numpy
 from PIL import Image, ImageDraw
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -126,7 +123,7 @@ def main():
         return
 
     if a.paths:
-        import json as _json
+        import json
         paths = _json.load(open(a.paths, encoding='utf-8'))
         print('从路径清单读入 %d 条（与 token 同序）' % len(paths))
     else:

@@ -17,9 +17,6 @@
 from __future__ import annotations
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -42,7 +39,7 @@ def enable(rmsnorm=True, swiglu=False, block=False, verbose=True):
     block  : 融合 `x + ls * y`（残差 + LayerScale）
     """
     import fused_cpu
-    import small_image_model_v2 as M
+    import small_image_model_v2
 
     if not fused_cpu.available():
         raise RuntimeError('DLL 里没有融合核 —— 需要重新编译 bnb（含 cfused_* 导出）')
@@ -95,7 +92,7 @@ def enable(rmsnorm=True, swiglu=False, block=False, verbose=True):
 
 
 def disable(verbose=True):
-    import small_image_model_v2 as M
+    import small_image_model_v2
     if _ENABLED['rms'] and 'rms' in _ORIG:
         M.RMSNorm.forward = _ORIG['rms']
         _ENABLED['rms'] = False

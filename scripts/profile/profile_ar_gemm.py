@@ -9,9 +9,6 @@
 """
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -47,7 +44,7 @@ def make_batch(b):
 
 
 def step(m, opt, x, y):
-    import torch.nn.functional as F
+    import torch.nn.functional
     # forward_logits 返回 (think_head.logits(...), gen_head.logits(x))
     # 而每个 head 的 logits() 自身又返回 (tensor, aux) —— 所以是两层元组
     out = m.forward_logits(x)

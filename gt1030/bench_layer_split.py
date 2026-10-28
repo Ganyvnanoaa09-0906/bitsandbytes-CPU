@@ -20,7 +20,7 @@ from __future__ import annotations
 import ctypes
 import statistics
 import sys
-import time as _t
+import time
 
 import numpy as np
 import pyopencl as cl

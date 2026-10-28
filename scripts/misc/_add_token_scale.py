@@ -33,9 +33,6 @@ current stage, since each resolution lives in its own file.
 """
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -53,7 +50,7 @@ except AttributeError:
     pass   # ★ IDLE 的 stdout 是 StdOutputFile,没有 reconfigure
            #   （正常终端里是 io.TextIOWrapper,有这个方法）
 
-P = r'_os.path.join(_root, 'scripts\\lib\\small_image_model_v2.py')'
+P = r'D:\work\bitsandbytes-CPU\small_image_model_v2.py'
 s = io.open(P, encoding='utf-8').read()
 
 if 'token_scale' in s:

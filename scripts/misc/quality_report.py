@@ -16,9 +16,6 @@
 """
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -28,13 +25,13 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse
-import json as _json
+import json
 import os
 import sys
 
-import numpy as np
+import numpy
 import torch
-import torch.nn.functional as F
+import torch.nn.functional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # 线程数可调：训练在跑时用少线程做评估，避免抢 CPU 把训练拖慢。
@@ -92,8 +89,8 @@ def _resolve_paths(lat_path, n_rows, explicit=None, verbose=True):
       2) latents 同目录下的 *.paths.json，取行数匹配的那个
       3) 项目历史上的默认 tokens_16x16_full.pt.paths.json（同样要行数匹配）
     """
-    import glob as _glob
-    import json as _json
+    import glob
+    import json
     d = os.path.dirname(os.path.abspath(lat_path))
     # 编码器（encode_sdxl_latents.py / 各 tokens 生成脚本）实际用的是
     # tokens_16x16_full.pt.paths.json，所以把它排在最前面，别的按字母序兜底。
@@ -410,7 +407,7 @@ def main():
                     pe = fwd(xg, tt, CC)
                 xg = sc.step(pe, t, xg).prev_sample
         try:
-            from PIL import Image as _I
+            from PIL import Image
             from scripts.lib.vae_decode import Decoder as _Dec2
             _dec2 = _Dec2(VQ, verbose=False)
             with torch.no_grad():

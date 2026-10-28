@@ -28,10 +28,7 @@ ROOT = r'D:\work\bitsandbytes-CPU'
 sys.path.insert(0, os.path.join(ROOT, 'tools'))
 
 BOOTSTRAP = ('import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path\n'
-             '_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
-_root = _os.path.dirname(_os.path.abspath(__file__))\n'
+             '_root = _os.path.dirname(_os.path.abspath(__file__))\n'
              'while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):\n'
              '    _parent = _os.path.dirname(_root)\n'
              '    if _parent == _root:\n'

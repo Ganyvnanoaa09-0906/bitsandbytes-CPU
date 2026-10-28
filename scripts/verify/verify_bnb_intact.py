@@ -11,9 +11,6 @@
 """
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -25,7 +22,7 @@ if _root not in _sys.path:
 import sys, time
 import os
 import torch
-import torch.nn as nn
+import torch.nn
 
 # ---------------------------------------------------------------------------
 # Three fixes, all found by this file reporting "OK 11/12" on the i5 while
@@ -89,7 +86,7 @@ def check(name, cond, detail=''):
 print()
 print('[1] 8-bit 优化器（所有训练都靠它）')
 try:
-    import bitsandbytes as bnb
+    import bitsandbytes
     check('import bitsandbytes', True, '路径 ' + str(bnb.__file__)[:44])
 except Exception as e:
     check('import bitsandbytes', False, str(e)[:50])
@@ -138,7 +135,7 @@ if bnb is not None:
 print()
 print('[2] 量化内核')
 try:
-    import bitsandbytes.functional as BF
+    import bitsandbytes.functional
     x = torch.randn(64, 128)
     q, st = BF.quantize_blockwise(x)
     dq = BF.dequantize_blockwise(q, st)
@@ -148,7 +145,7 @@ except Exception as e:
     check('blockwise 8bit 往返', False, str(e)[:50])
 
 try:
-    import bitsandbytes.functional as BF
+    import bitsandbytes.functional
     x = torch.randn(64, 128)
     q, st = BF.quantize_4bit(x, quant_type='nf4')
     dq = BF.dequantize_4bit(q, st)
@@ -198,7 +195,7 @@ except Exception as e:
 print()
 print('[5] 训练脚本的优化器构造（真实路径）')
 try:
-    import bitsandbytes as bnb
+    import bitsandbytes
     m = nn.Linear(512, 512)
     o = bnb.optim.AdamW8bit(m.parameters(), lr=2e-4)
     check('train_ar_v2 的优化器构造', True,

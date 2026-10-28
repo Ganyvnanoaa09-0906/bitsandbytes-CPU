@@ -19,9 +19,6 @@ way, and it is the answer rather than another number that might be meaningless.
 """
 from __future__ import annotations
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -44,7 +41,7 @@ except AttributeError:
 
 import pyopencl as cl  # noqa: E402
 
-_lines = open(r'_os.path.join(_root, 'scripts\\bench\\bench_opencl3.py')', encoding='utf-8').read().split(chr(10))
+_lines = open(r'D:\work\bitsandbytes-CPU\bench_opencl3.py', encoding='utf-8').read().split(chr(10))
 BASE = chr(10).join(_lines[36:192])
 
 # TS 与 TK 必须匹配：每轮装入的行数要覆盖整个 tile

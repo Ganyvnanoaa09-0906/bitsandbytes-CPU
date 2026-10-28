@@ -11,9 +11,6 @@
 """
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -24,8 +21,8 @@ if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import torch as T
-import torch.nn.functional as F
+import torch
+import torch.nn.functional
 from PIL import Image
 
 from scripts.lib.clip_score_eval import load_clip
@@ -35,7 +32,7 @@ TXT = "a photo of a woman in a blue maid outfit with twintails"
 
 def variants(out, model, kind):
     """返回 {名字: 张量} 的候选嵌入取法。"""
-    import torch as T
+    import torch
     d = {}
     if T.is_tensor(out):
         d['tensor'] = out

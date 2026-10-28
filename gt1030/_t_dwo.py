@@ -1,9 +1,6 @@
 # -*- coding: utf-8 -*-
 """探针 32：1 层，定位 dWo 的 15% 误差来自 GEMM 还是输入（o_tok / dattn）。"""
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -14,10 +11,10 @@ if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import sys
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-import numpy as np
+import numpy
 import torch
-import torch.nn.functional as F
-import gt1030.ar_v2_multi as MM
+import torch.nn.functional
+import gt1030.ar_v2_multi
 from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 
 CKPT = r'F:\weibo_cos\ckpt_1l.pt'

@@ -3,7 +3,7 @@
 import sys
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 import numpy as np
-import torch as th
+import torch
 import gt1030.ar_v2_model as MM
 import gt1030.full_gpu_layer as L
 

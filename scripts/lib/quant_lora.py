@@ -13,9 +13,6 @@
 from __future__ import annotations
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -28,8 +25,8 @@ if _root not in _sys.path:
 import time
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn
+import torch.nn.functional
 
 from bitsandbytes.functional import (
     dequantize_4bit,
@@ -44,7 +41,7 @@ from bitsandbytes.functional import (
 # 每 64 个权重一个 fp32 absmax ⇒ 2.5 bit/权重 ⇒ 对 fp32 是 12.8x。
 from dataclasses import dataclass  # noqa: E402
 
-import quantnbit as _qn
+import quantnbit
 from quant2bit import NF2 as _NF2_TABLE  # noqa: E402
 from quant2bit import dequantize as _q2_dequantize  # noqa: E402
 from quant2bit import quantize as _q2_quantize  # noqa: E402

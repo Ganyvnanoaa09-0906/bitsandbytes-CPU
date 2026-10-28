@@ -9,9 +9,6 @@ mask_mode='full':  注意力全双向（无因果）—— GRN refinement 的前
 """
 import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
@@ -23,7 +20,7 @@ if _root not in _sys.path:
 import io
 
 # ---------- ① 模型：加 'full' mask ----------
-P = r'_os.path.join(_root, 'scripts\\lib\\small_image_model_v2.py')'
+P = r'D:\work\bitsandbytes-CPU\small_image_model_v2.py'
 s = io.open(P, encoding='utf-8-sig').read()
 
 OLD = "        if causal and mask_mode == 'block' and T > 1:"
@@ -52,7 +49,7 @@ if "'full'   = 全双向" not in s:
 io.open(P, 'w', encoding='utf-8', newline='').write(s)
 
 # ---------- ② 训练脚本：加 --grn-refine ----------
-Q = r'_os.path.join(_root, 'scripts\\lib\\train_ar_v2.py')'
+Q = r'D:\work\bitsandbytes-CPU\train_ar_v2.py'
 t = io.open(Q, encoding='utf-8-sig').read()
 changed = []
 
