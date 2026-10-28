@@ -1,26 +1,26 @@
 # -*- coding: utf-8 -*-
-"""check_sdist_identity.py — 从干净 git archive 构建 sdist，并**断言内嵌 DLL 的身份**。
+"""check_sdist_identity.py — 从干净 git archive 构建 sdist，断言内嵌 DLL 的**身份 + 出处**。
 
-为什么需要它（2026-10-28 审计会话发现）：
-  之前的"打包卫生"验证只检查了形状（"0 个违规产物 / 1 个原生库"），没检查身份。
-  而在工作树里 `bitsandbytes/bitsandbytes/libbitsandbytes_cpu.dll` 是**未跟踪**的旧件
-  （dev9 的 3be2a7fe…），于是"验证通过"的 sdist 里嵌的是旧内核。
-  ⇒ 形状检查通过、身份错误 —— 这正是"检查器只验形状不验身份"。
+2026-10-28 审计会话提出的三条，全部落实：
 
-本脚本强制：
-  1. 从 `git archive HEAD` 导出干净树（不含未跟踪文件），在其中构建 sdist
-  2. 只从 `--dll-source`（默认取已发布 wheel 里的 DLL）注入内核，并先校验来源 sha256
-  3. 断言 sdist 内嵌 DLL 的 sha256 == `--expect-dll`
-  4. 断言没有构建产物/字节码混入
-  5. 记录 size / sha256 / 成员数 / 内嵌 DLL 到 JSON，供 Gate-2 引用
-任何一条不满足 ⇒ 退出码 1。
+1. **没有跨版本默认值。** 期望 digest 与 DLL 来源必须显式给出。写死上一个版本的
+   digest 是最危险的一类"看起来能跑"：下一个版本要么拒绝正确的 DLL，要么诱使人
+   把常量改成工作树里的任意值，门禁就此失效。
+2. **不绑定本机绝对路径。** 仓库根默认由 `git rev-parse --show-toplevel` 发现，CI 可直接跑。
+3. **追溯链四段**：源码 commit → 构建定义（工具链 + -D）→ DLL sha256 → sdist 内嵌 sha256。
+   缺任何一段 ⇒ 退出码 2（而不是静默通过）。
+
+用法：
+  python tools/check_sdist_identity.py \
+      --expect-dll <sha256> --dll-source <wheel|dll> \
+      --dll-source-commit <commit> --dll-defines "<-D 列表，可空串>" \
+      --dll-toolchain "<工具链描述>" [--root <repo>] [--json <记录>] [--keep]
 """
 import argparse
 import hashlib
 import io
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -28,13 +28,10 @@ import tarfile
 import tempfile
 import zipfile
 
-ROOT = r'D:\work\bitsandbytes-CPU'
-AUDITED_DLL_SHA = '472675df952e1270db1df84ca91a296adb00691e29b901a21a51767c977ca855'
-WHEEL = r'D:\work\_release_dev10\bitsandbytes_cpu_fork-0.50.2.dev10-py3-none-win_amd64.whl'
 FORBIDDEN = ('.pyc', '.pyo', '.obj', '.o', '.a', '.lib', '.exp', '.pdb', '.so', '.dylib')
 
 
-def sha256_file(p):
+def sha_file(p):
     h = hashlib.sha256()
     with open(p, 'rb') as f:
         for chunk in iter(lambda: f.read(1 << 20), b''):
@@ -42,111 +39,145 @@ def sha256_file(p):
     return h.hexdigest()
 
 
-def export_clean(dest):
+def repo_root(explicit):
+    if explicit:
+        return os.path.abspath(explicit)
+    r = subprocess.run(['git', 'rev-parse', '--show-toplevel'], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise SystemExit('[FATAL] 不是 git 仓库且未给 --root: %s' % r.stderr.strip())
+    return r.stdout.strip()
+
+
+def head_commit(root):
+    return subprocess.run(['git', '-C', root, 'rev-parse', 'HEAD'],
+                          capture_output=True, text=True).stdout.strip()
+
+
+def export_clean(root, dest):
     tar = os.path.join(dest, 'tree.tar')
-    subprocess.run(['git', '-C', ROOT, 'archive', '-o', tar, '--format=tar', 'HEAD'], check=True)
-    dst = os.path.join(dest, 'tree')
-    os.makedirs(dst, exist_ok=True)
-    subprocess.run(['tar', '-xf', tar, '-C', dst], check=True)
+    subprocess.run(['git', '-C', root, 'archive', '-o', tar, '--format=tar', 'HEAD'], check=True)
+    tree = os.path.join(dest, 'tree')
+    os.makedirs(tree, exist_ok=True)
+    subprocess.run(['tar', '-xf', tar, '-C', tree], check=True)
     os.remove(tar)
-    return dst
+    return tree
 
 
-def dll_from_wheel(whl):
-    with zipfile.ZipFile(whl) as z:
-        names = [n for n in z.namelist() if n.endswith('libbitsandbytes_cpu.dll')]
-        if len(names) != 1:
-            raise SystemExit('[FATAL] wheel 里 libbitsandbytes_cpu.dll 数量=%d' % len(names))
-        return z.read(names[0]), names[0]
+def dll_blob(source):
+    if source.lower().endswith('.whl'):
+        with zipfile.ZipFile(source) as z:
+            names = [n for n in z.namelist() if n.endswith('libbitsandbytes_cpu.dll')]
+            if len(names) != 1:
+                raise SystemExit('[FATAL] wheel 里 DLL 数量=%d' % len(names))
+            return z.read(names[0]), '%s::%s' % (os.path.basename(source), names[0])
+    if not os.path.isfile(source):
+        raise SystemExit('[FATAL] DLL 来源不存在: %s' % source)
+    return io.open(source, 'rb').read(), os.path.abspath(source)
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--expect-dll', default=AUDITED_DLL_SHA)
-    ap.add_argument('--dll-source', default=WHEEL,
-                    help='wheel（取包内 DLL）或单个 DLL 文件')
-    ap.add_argument('--json', default=r'D:\work\collab\shared\sdist_identity_record.json')
+    ap.add_argument('--expect-dll', required=True,
+                    help='本次发布审计过的 DLL sha256（显式给出，无默认值）')
+    ap.add_argument('--dll-source', required=True, help='wheel 或单个 DLL 文件')
+    ap.add_argument('--dll-source-commit', default=None, help='构建该 DLL 的源码 commit')
+    ap.add_argument('--dll-defines', default=None, help='构建定义（-D 列表），无则传空串')
+    ap.add_argument('--dll-toolchain', default=None, help='工具链描述，例如 "zig 0.14.1 windows-gnu"')
+    ap.add_argument('--root', default=None)
+    ap.add_argument('--json', default=None)
     ap.add_argument('--keep', action='store_true')
     a = ap.parse_args()
 
+    root = repo_root(a.root)
     tmp = tempfile.mkdtemp(prefix='sdist_identity_')
-    tree = export_clean(tmp)
-    pkg = os.path.join(tree, 'bitsandbytes')
-    if not os.path.isdir(pkg):
-        raise SystemExit('[FATAL] git archive 里没有 bitsandbytes/ 目录')
+    try:
+        tree = export_clean(root, tmp)
+        pkg = os.path.join(tree, 'bitsandbytes')
+        if not os.path.isdir(pkg):
+            raise SystemExit('[FATAL] git archive 里没有 bitsandbytes/')
 
-    # 1) 注入审计过的 DLL（未跟踪文件不得参与构建）
-    target = os.path.join(pkg, 'bitsandbytes', 'libbitsandbytes_cpu.dll')
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    if a.dll_source.lower().endswith('.whl'):
-        blob, where = dll_from_wheel(a.dll_source)
+        target = os.path.join(pkg, 'bitsandbytes', 'libbitsandbytes_cpu.dll')
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        blob, src_desc = dll_blob(a.dll_source)
         io.open(target, 'wb').write(blob)
-        src_desc = '%s::%s' % (os.path.basename(a.dll_source), where)
-    else:
-        shutil.copy2(a.dll_source, target)
-        src_desc = a.dll_source
-    got = sha256_file(target)
-    print('注入 DLL: %s' % src_desc)
-    print('  注入后 sha256 = %s  (%d B)' % (got[:16], os.path.getsize(target)))
-    if got != a.expect_dll:
-        raise SystemExit('[FATAL] 注入源本身就不是审计值: %s != %s' % (got, a.expect_dll))
+        got = hashlib.sha256(blob).hexdigest()
+        print('注入 DLL: %s' % src_desc)
+        print('  来源 sha256 = %s  (%d B)' % (got[:16], len(blob)))
+        if got != a.expect_dll:
+            raise SystemExit('[FATAL] 注入源本身就不是审计值: %s != %s' % (got, a.expect_dll))
 
-    # 2) 清掉可能残留的 egg-info（旧 SOURCES.txt 会把已删文件拉回来）
-    for d in os.listdir(pkg):
-        if d.endswith('.egg-info'):
-            shutil.rmtree(os.path.join(pkg, d))
-    # 3) 干净构建
-    outdir = os.path.join(tmp, 'dist')
-    subprocess.run([sys.executable, '-m', 'build', '--sdist', '--outdir', outdir],
-                   cwd=pkg, check=True, capture_output=True)
-    sdists = [f for f in os.listdir(outdir) if f.endswith('.tar.gz')]
-    if len(sdists) != 1:
-        raise SystemExit('[FATAL] 产出的 sdist 数量=%d' % len(sdists))
-    sdist = os.path.join(outdir, sdists[0])
+        for d in os.listdir(pkg):
+            if d.endswith('.egg-info'):
+                shutil.rmtree(os.path.join(pkg, d))
 
-    # 4) 断言身份 + 形状
-    with tarfile.open(sdist) as t:
-        members = [m for m in t.getmembers() if m.isfile()]
-        names = [m.name for m in members]
-        dlls = [n for n in names if n.endswith('.dll')]
-        if len(dlls) != 1:
-            raise SystemExit('[FATAL] sdist 里 .dll 数量=%d: %s' % (len(dlls), dlls))
-        inner = hashlib.sha256(t.extractfile(dlls[0]).read()).hexdigest()
-        bad = [n for n in names if n.endswith(FORBIDDEN) or '__pycache__' in n]
-    size = os.path.getsize(sdist)
-    ok_identity = (inner == a.expect_dll)
-    ok_shape = not bad
-    print('sdist: %d B  成员 %d  sha256=%s' % (size, len(names), sha256_file(sdist)[:16]))
-    print('  内嵌 DLL: %s' % os.path.basename(dlls[0]))
-    print('  内嵌 DLL sha256 = %s  %s' % (inner[:16], 'OK' if ok_identity else 'MISMATCH(expect %s)' % a.expect_dll[:16]))
-    print('  构建产物/字节码: %d  %s' % (len(bad), 'OK' if ok_shape else bad[:5]))
+        outdir = os.path.join(tmp, 'dist')
+        subprocess.run([sys.executable, '-m', 'build', '--sdist', '--outdir', outdir],
+                       cwd=pkg, check=True, capture_output=True)
+        names = [f for f in os.listdir(outdir) if f.endswith('.tar.gz')]
+        if len(names) != 1:
+            raise SystemExit('[FATAL] sdist 数量=%d' % len(names))
+        sdist = os.path.join(outdir, names[0])
 
-    rec = {
-        'built_from': 'git archive HEAD',
-        'tree_head': subprocess.run(['git', '-C', ROOT, 'rev-parse', 'HEAD'],
-                                    capture_output=True, text=True).stdout.strip(),
-        'dll_source': src_desc,
-        'dll_source_sha256': got,
-        'expect_dll_sha256': a.expect_dll,
-        'embedded_dll_sha256': inner,
-        'identity_ok': ok_identity,
-        'shape_ok': ok_shape,
-        'forbidden_members': bad,
-        'sdist_name': sdists[0],
-        'sdist_bytes': size,
-        'sdist_sha256': sha256_file(sdist),
-        'member_count': len(names),
-    }
-    io.open(a.json, 'w', encoding='utf-8', newline='').write(json.dumps(rec, ensure_ascii=False, indent=2))
-    print('记录写入 %s' % a.json)
-    if not (ok_identity and ok_shape):
-        raise SystemExit('[FATAL] sdist 身份或形状校验失败')
-    if a.keep:
-        print('[keep] 临时目录: %s' % tmp)
-    else:
-        shutil.rmtree(tmp, ignore_errors=True)
-    print('结果: PASS（身份 + 形状）')
-    return 0
+        with tarfile.open(sdist) as t:
+            files = [m for m in t.getmembers() if m.isfile()]
+            mnames = [m.name for m in files]
+            dlls = [n for n in mnames if n.endswith('.dll')]
+            if len(dlls) != 1:
+                raise SystemExit('[FATAL] sdist 里 .dll 数量=%d: %s' % (len(dlls), dlls))
+            embedded = hashlib.sha256(t.extractfile(dlls[0]).read()).hexdigest()
+            bad = [n for n in mnames if n.endswith(FORBIDDEN) or '__pycache__' in n]
+
+        identity_ok = embedded == a.expect_dll
+        shape_ok = not bad
+        provenance_complete = bool(a.dll_source_commit) and a.dll_defines is not None \
+            and bool(a.dll_toolchain)
+
+        print('sdist: %d B  成员 %d  sha256=%s' % (os.path.getsize(sdist), len(mnames),
+                                                   sha_file(sdist)[:16]))
+        print('  内嵌 DLL sha256 = %s  %s' % (embedded[:16], 'OK' if identity_ok else 'MISMATCH'))
+        print('  构建产物/字节码违规 = %d  %s' % (len(bad), 'OK' if shape_ok else bad[:5]))
+        print('  出处完整 = %s (commit=%s toolchain=%s)' %
+              (provenance_complete, (a.dll_source_commit or '?')[:12], a.dll_toolchain or '?'))
+
+        rec = {
+            'tree_head': head_commit(root),
+            'built_from': 'git archive HEAD',
+            'dll_build': {
+                'source_commit': a.dll_source_commit,
+                'defines': a.dll_defines,
+                'toolchain': a.dll_toolchain,
+            },
+            'provenance_complete': provenance_complete,
+            'dll_source': src_desc,
+            'dll_source_sha256': got,
+            'expect_dll_sha256': a.expect_dll,
+            'embedded_dll_sha256': embedded,
+            'identity_ok': identity_ok,
+            'shape_ok': shape_ok,
+            'forbidden_members': bad,
+            'sdist_name': names[0],
+            'sdist_bytes': os.path.getsize(sdist),
+            'sdist_sha256': sha_file(sdist),
+            'member_count': len(mnames),
+        }
+        if a.json:
+            io.open(a.json, 'w', encoding='utf-8', newline='').write(
+                json.dumps(rec, ensure_ascii=False, indent=2))
+            print('记录: %s' % a.json)
+
+        if not (identity_ok and shape_ok):
+            print('结果: FAIL（身份或形状）')
+            return 1
+        if not provenance_complete:
+            print('结果: FAIL（缺构建出处：--dll-source-commit / --dll-defines / --dll-toolchain）')
+            return 2
+        print('结果: PASS（身份 + 形状 + 出处）')
+        return 0
+    finally:
+        if a.keep:
+            print('[keep] %s' % tmp)
+        else:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == '__main__':
