@@ -211,13 +211,25 @@ def analyse(root, baseline_json=None):
             exempt.append((f, m, l, n, why))
         else:
             unresolved.append((f, m, l, n, why))
-    root_py = len([f for f in os.listdir(root) if f.endswith('.py')
-                   and os.path.isfile(os.path.join(root, f))])
     tracked = subprocess.run(['git', '-C', root, 'ls-files'], capture_output=True, text=True,
                              encoding='utf-8', errors='replace').stdout.splitlines()
+    # root_py 也走 git 口径：文件系统统计会把未跟踪的 .py 算进来（会与 tracked 混用两个数据源）
+    root_py = len([t for t in tracked if t.endswith('.py') and '/' not in t])
+    fs_root_py = len([f for f in os.listdir(root) if f.endswith('.py')
+                      and os.path.isfile(os.path.join(root, f))])
+    fail_closed = (len(tracked) == 0 and fs_root_py > 0)
     return dict(root_py=root_py, tracked=len(tracked), py_files=sum(1 for _ in tracked_py(root)),
+                fail_closed=fail_closed, fs_root_py=fs_root_py,
                 edges=len(real), local_edges=len(local), syntax_bad_files=syntax_bad,
                 unresolved=unresolved, exempt=exempt, idx_root=len(ir), idx_pkg=len(ip))
+
+
+def git_head(root):
+    try:
+        return subprocess.run(['git', '-C', root, 'rev-parse', '--short', 'HEAD'], capture_output=True,
+                              text=True, encoding='utf-8', errors='replace').stdout.strip() or 'unknown'
+    except Exception:
+        return 'unknown'
 
 
 def report(st, baseline_json=None, root=None):
@@ -225,8 +237,9 @@ def report(st, baseline_json=None, root=None):
     # --root 用错时输出格式与 PASS 完全一样，看着像成功。
     if root:
         print('== 扫描根 ==')
-        print('  root = %s   (来源：%s)' % (os.path.abspath(root),
+        print('  root   = %s   (来源：%s)' % (os.path.abspath(root),
               '--root 显式传入' if os.path.abspath(root) != os.path.abspath(ROOT) else '--root 默认值'))
+        print('  commit = %s' % git_head(root))
     print('== 统计 ==')
     print('  仓库内 .py      : %d' % st['py_files'])
     print('  根目录 .py      : %d' % st['root_py'])
@@ -234,6 +247,11 @@ def report(st, baseline_json=None, root=None):
     print('  导入边          : %d（本地 %d）' % (st['edges'], st['local_edges']))
     print('  可导入名        : root=%d / pkg=%d' % (st['idx_root'], st['idx_pkg']))
     print('  语法错误文件    : %d' % len(st['syntax_bad_files']))
+    if st.get('fail_closed'):
+        print('  [FATAL] 枚举到 0 个被跟踪文件，但根目录有 %d 个 .py —— 当前目录不是 git 工作树？'
+              % st.get('fs_root_py', 0))
+        print('          本门禁无法枚举导入边，**拒绝报 PASS**（fail closed）。')
+        return False
     print('  **无法解析的边**: %d' % len(st['unresolved']))
     print('  根目录相对导入（exempt）: %d' % len(st.get('exempt') or []))
     for f, m, l, n, why in (st.get('exempt') or [])[:10]:
@@ -281,11 +299,26 @@ def run_selftest(root, baseline_json):
         os.makedirs(os.path.join(dest, 'scripts_moved'), exist_ok=True)
         subprocess.run(['git', '-C', dest, 'mv', target, 'scripts_moved/' + target], check=True)
         _CACHE.clear()
+        _IDX.clear()
         st2 = analyse(dest, baseline_json)
         print('  unresolved = %d（移动 %s）' % (len(st2['unresolved']), target))
         ok2 = len(st2['unresolved']) > 0
         print('  S2: %s' % ('PASS（抓住断边）' if ok2 else 'FAIL（门禁对断边无感）'))
-        return ok1 and ok2
+
+        print('\n== S3：无 .git 的树（git archive 导出）⇒ 必须 FATAL ==')
+        bare = os.path.join(tmp, 'nogit')
+        os.makedirs(bare, exist_ok=True)
+        tar = os.path.join(tmp, 'src.tar')
+        subprocess.run(['git', '-C', root, 'archive', '-o', tar, '--format=tar', 'HEAD'], check=True)
+        subprocess.run(['tar', '-xf', tar, '-C', bare], check=True)
+        _CACHE.clear()
+        _IDX.clear()
+        st3 = analyse(bare, baseline_json)
+        ok3 = bool(st3.get('fail_closed'))
+        print('  tracked=%d / 根目录 .py=%d / fail_closed=%s'
+              % (st3['tracked'], st3.get('fs_root_py'), st3.get('fail_closed')))
+        print('  S3: %s' % ('PASS（fail closed）' if ok3 else 'FAIL（无 git 时静默 PASS）'))
+        return ok1 and ok2 and ok3
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -308,7 +341,7 @@ def main():
     st = analyse(a.root, a.baseline_json)
     ok = report(st, None if a.baseline else a.baseline_json, root=a.root)
     if a.json:
-        payload = dict(st)
+        payload = dict(st, commit=git_head(a.root), root=os.path.abspath(a.root))
         payload['unresolved'] = [list(x) for x in st['unresolved']]
         open(a.json, 'w', encoding='utf-8').write(json.dumps(payload, ensure_ascii=False, indent=2))
         print('\n已写 %s' % a.json)
