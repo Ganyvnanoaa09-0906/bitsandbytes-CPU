@@ -19,6 +19,7 @@
   若 A_total ≈ B_1 或更小 ⇒ 增量已经最优，PAR 只会更贵（每次多算 token）
 """
 import os, sys
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)

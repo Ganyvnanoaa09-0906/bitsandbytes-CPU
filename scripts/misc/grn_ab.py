@@ -13,6 +13,7 @@
 两臂除 --grn-corrupt-only 外完全一致（同 seed / 同数据 / 同步数）。
 """
 import os, sys
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)

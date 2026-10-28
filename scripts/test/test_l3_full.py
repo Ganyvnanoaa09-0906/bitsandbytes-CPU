@@ -13,6 +13,7 @@ k/V/键模式扫描显示：1gram V=1024 系列快得多。
 测全模型：前向+反向+优化器，B=8 T=256。
 """
 import os, sys
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)

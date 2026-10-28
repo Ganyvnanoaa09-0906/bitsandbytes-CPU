@@ -14,6 +14,7 @@ This scans by compiling each file with SyntaxWarning promoted to an error, which
 catches the real thing rather than pattern-matching backslashes by eye.
 """
 import os, sys
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)

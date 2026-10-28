@@ -8,6 +8,7 @@ mask_mode='full':  注意力全双向（无因果）—— GRN refinement 的前
 论文依据：GRN (arXiv 2604.13030) Eq.4-7
 """
 import os, sys
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)

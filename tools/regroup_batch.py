@@ -96,7 +96,10 @@ def rewrite_imports(src, names, theme, from_rel):
         if isinstance(node, ast.Import):
             mov, keep = [], []
             for al in node.names:
-                (mov if al.name.split('.')[0] in names else keep).append(al.name)
+                # alias 必须保留：bootstrap 是 `import os as _os, sys as _sys`，
+                # 丢掉 asname 会让后续 _os/_sys 变成 NameError（pytest 裸跑抓到的真回归）
+                spec = al.name + ((' as ' + al.asname) if al.asname else '')
+                (mov if al.name.split('.')[0] in names else keep).append(spec)
             new_lines = []
             if keep:
                 new_lines.append(indent + 'import ' + ', '.join(keep))

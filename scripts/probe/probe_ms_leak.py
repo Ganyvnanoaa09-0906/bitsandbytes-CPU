@@ -31,6 +31,7 @@ VAR 之所以敢用尺度内双向，是因为它的同一尺度 token 是【残
 同时打印【相邻同码率 / 随机基线】倍数作为第二个独立佐证 —— 两个指标互相印证。
 """
 import os, sys
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
