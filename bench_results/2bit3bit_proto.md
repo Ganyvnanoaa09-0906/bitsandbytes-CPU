@@ -113,7 +113,7 @@ zig c++ -target x86_64-windows-gnu -O3 -mavx2 -mfma -shared q3bit_kernel.cpp -o 
 
 真实 LM 训练需要输出 logits：Qwen3.5-0.8B 的 lm_head 与 embedding tie，表是
 (248320, 1024) fp32 = **0.947 GB**。用 csrc 同款 AVX2 内核实测（seq=64，脚本
-`q3bit_lmhead_bench.py`）：
+`scripts/misc/q3bit_lmhead_bench.py`）：
 
 | 方案 | lm_head 内存 | logits 时间 | 额外开销 | dequant 占比 |
 |---|---|---|---|---|

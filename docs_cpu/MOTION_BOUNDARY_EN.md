@@ -2,7 +2,7 @@
 
 > Pipeline: **frozen config** 512x512 · DPM-Solver++(2M) · 5 steps · SD1.5 VAE · independent
 > tiling + hard cuts · FSRCNN post-processing
-> Source: `motion_boundary.py` + `face_consistency.py` + `streak_metrics.py`, measured on
+> Source: `motion_boundary.py` + `face_consistency.py` + `scripts/misc/streak_metrics.py`, measured on
 > 2026-09-11 afternoon
 > Note: this is an independent experiment record of the video-generation project; it is not
 > part of the `bitsandbytes` library API.
@@ -93,6 +93,6 @@ $env:ADIFF_VAE = "D:\work\textmodel\sd15_full\vae"
     --root "D:\work\output\motion" --out "D:\work\output\motion\face.json"
 
 # radial-streak quantification
-& "D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe" -u streak_metrics.py `
+& "D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe" -u scripts/misc/streak_metrics.py `
     --root "D:\work\output\motion" --more "D:\work\output\motion_mit"
 ```

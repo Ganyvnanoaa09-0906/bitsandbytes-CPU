@@ -123,7 +123,7 @@ cl /nologo /O2 /Ob2 /arch:AVX2 /fp:fast /openmp:experimental /std:c++17 /EHsc ^
 ```bat
 :: 方式一：临时（加环境变量）
 set PYTHONPATH=C:\path\to\bitsandbytes
-python train.py
+python scripts/misc/train.py
 
 :: 方式二：装进环境（editable）
 pip install -e C:\path\to\bitsandbytes
@@ -223,7 +223,7 @@ CPU 注册的 torch 算子：`quantize_blockwise` / `dequantize_blockwise`（fp3
 ```bat
 python -m bitsandbytes.gdn_cpu            :: GDN 精度自检
 python tests\test_cpu_e2e.py              :: 优化器收敛 + GDN 训练 + 非连续梯度
-python stress_opt.py                      :: 7 优化器 × 10 尺寸 × 3 dtype 压力 + 确定性
+python scripts/misc/stress_opt.py                      :: 7 优化器 × 10 尺寸 × 3 dtype 压力 + 确定性
 python scripts/video/gdn_layout_probe.py                :: 布局零拷贝 / C 不变性 / 峰值内存
 python scripts/video/gdn_mem_probe.py                   :: 多层场景内存（T=8192 × 8 层）
 python scripts/video/gdn_train_smoke.py                 :: fused vs naive 速度内存对比 + 可训练性

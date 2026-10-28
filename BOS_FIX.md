@@ -18,7 +18,7 @@ top-k 256,  temp 0.8   →  238 码 (23.2%),  熵 4.010   →  更平滑，结�
 
 ### 第二步（决定性）：让模型看着真实前缀续画
 
-用 `sample_ar_cond.py`：给模型真实图的前 N% token，让它续画其余，再解码。
+用 `scripts/misc/sample_ar_cond.py`：给模型真实图的前 N% token，让它续画其余，再解码。
 
 ```
 前缀  75%  →  完美延续（看不出接缝）
@@ -107,12 +107,12 @@ python train_ar_v2.py ... --use_bos --resume .autopilot\v3_noloop\ckpt_12000.pt
 
 ```powershell
 # 采样（注意 --top-k 默认只有 100，要显式给大值）
-& $py sample_ar.py --ar .autopilot\v4_bos\ckpt_XXXXX.pt `
+& $py scripts/misc/sample_ar.py --ar .autopilot\v4_bos\ckpt_XXXXX.pt `
   --vqvae .autopilot\vqvae_ema_full2\ckpt_last.pt `
   --out samples_v4.png --n 8 --top-k 1024 --temperature 1.0
 
 # 对比诊断：前缀 0% 是否从"色块"变成"有结构"
-& $py sample_ar_cond.py --ar .autopilot\v4_bos\ckpt_XXXXX.pt `
+& $py scripts/misc/sample_ar_cond.py --ar .autopilot\v4_bos\ckpt_XXXXX.pt `
   --vqvae .autopilot\vqvae_ema_full2\ckpt_last.pt `
   --tokens .autopilot\tokens_final2.pt --out cond_v4.png --n 6
 ```
@@ -127,6 +127,6 @@ python train_ar_v2.py ... --use_bos --resume .autopilot\v3_noloop\ckpt_12000.pt
 
 ## 附带的重要提醒
 
-**`sample_ar.py` 的 `--top-k` 默认是 100**（词表 1024），等于只在 top 10% 里采样。
+**`scripts/misc/sample_ar.py` 的 `--top-k` 默认是 100**（词表 1024），等于只在 top 10% 里采样。
 生成时务必显式指定，**推荐 `--top-k 1024`（不截断）或 `--top-k 256`**。
 实测默认值会显著降低多样性（427 码 vs 671 码）。

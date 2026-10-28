@@ -97,7 +97,7 @@ CPU 上经 Transformers 慢路径转成逐时间步（per-step）Python 循环�
 - 提供 `quant_weight_bytes()` 统计本层实际占用（码字 + 标度 + 码本）。
 
 **入口**：`from quant_lora import QuantLinearTrainable`；上层统一入口为
-`train.py --method quant_base`（经 `peft_backends._apply_quant_base` 替换 `nn.Linear`）。
+`scripts/misc/train.py --method quant_base`（经 `peft_backends._apply_quant_base` 替换 `nn.Linear`）。
 
 **实测**（`jiaoben\scripts/test/test_quant_base.py`，PASSED）：
 8bit 权重 48.0KB → 13.2KB（省 72.5%，重标度 max|Δ|=0，scale 梯度 120.77）；
@@ -374,7 +374,7 @@ py -3.11 scripts/bench/bench_r5_threads.py          :: 线程数（本机 5 线�
 | 真实 Qwen 结构全链 seq=128（权重常驻） | **1.35×** |
 | 同全链 seq=512 | 0.70×（DML 的 `F.sdpa` 长序列 3~7× 慢于 CPU；`multi_head_attention` 专用内核需新驱动，本机 27.20.11032 不支持） |
 
-**实现要点**（`IgpuExecutor`，`train.py --igpu` 的底层）：
+**实现要点**（`IgpuExecutor`，`scripts/misc/train.py --igpu` 的底层）：
 - `prepare(tokens=)`：前置检查（DirectML 可用 / 全 fp32 / 基座内存 ≤ 上限 / 每步
   token ≤ `GPU_SCHED_MAX_TOKENS` 默认 256 / 启动时 GEMM 校准达标），成功后
   `model.to(DML)` 整体常驻，并为可训练参数建立 CPU 镜像；失败返回原因、调用方回退
@@ -382,7 +382,7 @@ py -3.11 scripts/bench/bench_r5_threads.py          :: 线程数（本机 5 线�
 - `grad_to_cpu()`：可训练参数梯度拷回 CPU 镜像（供 bnb 8bit 优化器），并清空核显侧
   梯度——这是训练中唯一的 DML 同步点；
 - `weights_from_cpu()`：优化器更新后的权重拷回核显；两处往返量仅适配器规模，可忽略；
-- 调用方（train.py）每步末尾执行一次 `loss.item()`，即整队列排空点；每步只允许一次。
+- 调用方（scripts/misc/train.py）每步末尾执行一次 `loss.item()`，即整队列排空点；每步只允许一次。
 
 **换机自适应（Intel UHD 630 等，R8）**：不同核显算力差异极大，固定参数无法跨机复用，
 故执行器默认自适应，无需逐台手调：
@@ -418,10 +418,10 @@ py -3.11 scripts/bench/bench_r5_threads.py          :: 线程数（本机 5 线�
 且 torch-directml 与 diffusers 0.40 存在版本墙（见下条），全链 DML 反向还会触发
 插件崩溃。生图训练维持纯 CPU（fp32）路线。
 
-**torch-directml 版本墙（torch241_compat.py）**：安装 torch-directml 会把 torch
+**torch-directml 版本墙（scripts/misc/torch241_compat.py）**：安装 torch-directml 会把 torch
 降级到 2.4.1（其硬性依赖），导致 diffusers 0.40 导入即崩（字符串注解的
 `infer_schema`、缺 `flex_attention`、`sdpa` 无 `enable_gqa` 三处不兼容）。项目提供
-`torch241_compat.py` 运行时兼容层（幂等，torch≥2.5 自动跳过），凡装了
+`scripts/misc/torch241_compat.py` 运行时兼容层（幂等，torch≥2.5 自动跳过），凡装了
 torch-directml 的环境跑 SD/生图脚本必须在 `import diffusers` 之前引入。
 另注意：DML 上「先 `model.to(DML)` 再改 `requires_grad`」会**静默丢梯度图**，
 必须先设 requires_grad 再迁移。
@@ -590,7 +590,7 @@ build_manual\selftest_win.bat        REM 在 VS x64 终端里运行；实测 4/4
 **完整自检**（需 torch）：
 ```
 python -m bitsandbytes.gdn_cpu    # 应输出 selftest PASSED
-python stress_opt.py             # 210 组合 0 失败（LLM 侧回归）
+python scripts/misc/stress_opt.py             # 210 组合 0 失败（LLM 侧回归）
 ```
 
 ---

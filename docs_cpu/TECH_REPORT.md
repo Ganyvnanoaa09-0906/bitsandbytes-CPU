@@ -303,7 +303,7 @@ GPU 强」算子的负载——本训练栈不存在这种形态。另注：非�
 就不要指望把任务拆给慢设备；只有当吞吐比接近 1、或某类算子本来就是慢设备强项时，
 异步分割才值得，且必须是「块级/整步一次同步」，避免逐算子同步把收益赔给队列排空。
 
-**最终形态**：`train.py --igpu` 落地为**块级常驻执行器**（默认关闭）：每步 token ≤
+**最终形态**：`scripts/misc/train.py --igpu` 落地为**块级常驻执行器**（默认关闭）：每步 token ≤
 `GPU_SCHED_MAX_TOKENS`（默认 256）、fp32 基座 ≤ 内存自适应上限（16GB→7000MB、
 12GB→5250MB、8GB→3500MB）、启动时 GEMM 校准达标、无量化参数时启用；否则打印原因
 自动回退纯 CPU。逐算子接口（`big_gemm` / `patch_igpu`）保留仅作实验，不推荐用于
@@ -507,7 +507,7 @@ Windows 侧用 zig 自带 clang 交叉编译 portable DLL（三 TU **0 条 AVX**
 - **torch-directml 版本墙**：安装 torch-directml 会把 torch 降至 2.4.1（硬性依赖），
   与 diffusers 0.40 三处不兼容（字符串注解 `infer_schema`、缺 `flex_attention`、
   `sdpa` 无 `enable_gqa`）——**装了 torch-directml 的环境，纯 CPU 生图训练也会
-  import 崩溃**。修复：`torch241_compat.py` 运行时兼容层（幂等，torch≥2.5 自动
+  import 崩溃**。修复：`scripts/misc/torch241_compat.py` 运行时兼容层（幂等，torch≥2.5 自动
   跳过），`train_sd_lora.py` 已在 `import diffusers` 前引入。另注意 DML 上先
   `model.to(DML)` 再改 `requires_grad` 会静默丢梯度图，必须先设 requires_grad
   再迁移。
@@ -825,5 +825,5 @@ naive 慢 107x，torch oneDNN/MKL 工业级墙），故底层加速到头，走�
 - 机器 B（i5-10400）：文本 **8** 线程、生图 **12** 线程；fp32。
 - 重编 DLL：VS x64 终端 `build_manual\build_manual.bat amd`（AMD）或 `intel`（Intel）；
   cpp/h 保持 **CRLF** 行尾（LF + GBK 注释会被 cl 吞行）。
-- 自检：`python -m bitsandbytes.gdn_cpu`（PASSED）；`stress_opt.py`（210 组合 0 失败）；
+- 自检：`python -m bitsandbytes.gdn_cpu`（PASSED）；`scripts/misc/stress_opt.py`（210 组合 0 失败）；
   `selftest_cpu.c`（4/4）。

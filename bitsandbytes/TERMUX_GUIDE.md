@@ -172,9 +172,9 @@ bash build_termux.sh --selftest
 - 因此 Python 侧检查必须**按 OpenMP 域分进程**（实测得出的结构）：
   | 进程 | 加载什么 | 跑什么 |
   |---|---|---|
-  | `termux_check.py` | 只加载 `.so`（ctypes） | T1–T5，**从不 import torch** |
-  | `torch_part.py` | 只 import torch | T6/T7（`disk_balancer`、`latent_chunk_store`） |
-  | `torch_part.py --with-bnb` | torch **且** `.so` | T8（`AdamW8bit` 真跑一步） |
+  | `scripts/misc/termux_check.py` | 只加载 `.so`（ctypes） | T1–T5，**从不 import torch** |
+  | `scripts/misc/torch_part.py` | 只 import torch | T6/T7（`disk_balancer`、`latent_chunk_store`） |
+  | `scripts/misc/torch_part.py --with-bnb` | torch **且** `.so` | T8（`AdamW8bit` 真跑一步） |
   父进程连"探测 torch 是否存在"都用子进程做 —— 那一步本身就是崩溃点。
   T8 单独一个进程是刻意设计：它是唯一**预期**会 abort 的一步，
   结论不能取决于崩溃落在文件里的哪一行。（不用 `fork()`：torch 那时已起线程，
@@ -185,7 +185,7 @@ bash build_termux.sh --selftest
   若要宣称完整，需要再加针对这些路径的用例。
 - NEON 与标量路径的**性能**差异未测（第 5 项只保证数值正确）。
 - 手机型号/SoC 不同，`-mcpu=native` 的探测结果会不同；脚本会自动降级。
-- **完整回归套件（`run_all_tests.py`）在 Termux 上跑不了**：它的多数子脚本在模块层
+- **完整回归套件（`scripts/misc/run_all_tests.py`）在 Termux 上跑不了**：它的多数子脚本在模块层
   `import torch`，同时又加载 `.so`，正是上面那个双 OpenMP 冲突。长训练在 x86 上验
   （R5 与 i5，各 1000 步）。
 - `termux_adb_test.ps1` 是**纯 ASCII** 的（含所有提示信息），这是刻意的：
@@ -204,7 +204,7 @@ bash build_termux.sh --selftest
 | torch + bitsandbytes 同进程 T8（多线程 `.so`） | **SIGABRT**，双 OpenMP —— 记为 SKIP 并给出原因与修法 |
 | torch + bitsandbytes 同进程 T8（`--no-openmp`，128 KB） | **8/8 通过**；`AdamW8bit` 真跑一步：`max|dW| 6.2269e-02`，loss `0.3553 → 0.0296` |
 | 单线程版数值一致性 | 与多线程版**完全相同**（T4 0.392%、T5 2.514e-07） |
-| **50 步训练**（`termux_train.py`） | **7/7 通过**：loss `5.6960 → 0.0130`（-99.77%），45 ms/step |
+| **50 步训练**（`scripts/misc/termux_train.py`） | **7/7 通过**：loss `5.6960 → 0.0130`（-99.77%），45 ms/step |
 
 `gemm_8bit` 那条参考值值得一提：C 自检把 `gemm_8bit` 与它自己的标量路径对比，
 那是**一致性**检查 —— 两条路径共有的错误也会通过。T5 的参考值是**本脚本用 numpy
@@ -212,7 +212,7 @@ bash build_termux.sh --selftest
 
 ### 50 步训练：为什么不用 transformers，以及结果
 
-第一版 `termux_train.py` 导入 Qwen3Next，在手机上死在 `No module named 'transformers'`。
+第一版 `scripts/misc/termux_train.py` 导入 Qwen3Next，在手机上死在 `No module named 'transformers'`。
 **transformers 在 Android 上装不了**：`tokenizers`/`safetensors` 是 Rust 扩展，
 `regex`/`pyyaml` 是 C 扩展，PyPI 上 aarch64 轮子**全是 manylinux（glibc）**，
 Android 用 bionic；Termux 仓库里这些包**一个都没有**。硬啃等于在手机上装 Rust 工具链现编。
@@ -283,7 +283,7 @@ fp32 最低位。**这也说明 ARM64 的 NEON 内核与 x86 的 AVX2 内核算�
 | 标量助手报 undeclared | `use of undeclared identifier` | `scalar_absmax` / `scalar_gemv_4bit_inference` 被关在 AVX2 守卫内，却被无守卫的回退路径调用 |
 | clang 警告"treating 'c' input as 'c++'" | 编译警告 | `selftest_cpu.c` 必须按 C++ 编译（内部有 `extern "C"`），已显式加 `-x c++`，对应 MSVC 的 `/TP` |
 | 手工挑文件打发布包 | `fatal error: 'common.h' file not found` | 我按名字挑了 6 个文件，漏了 `common.h` —— 而构建把 `csrc/` 当 include 根整体读。**正确做法：整目录拷贝**，并加脚本穷举所有 `#include "..."` 逐个校验 |
-| `disk_balancer.py` 的 docstring 里写 `C:\cache` | Python 3.14: `SyntaxWarning: "\c" is an invalid escape sequence` | 非 raw docstring 里的 Windows 路径。3.11 只警告所以长期没暴露，3.14 明确说将来会失效（届时**直接导入失败**）。已改 raw docstring；并写 `scan_escapes.py` 全仓扫描，另抓出 `bitsandbytes/tools/verify_train_release.py` 同类问题 |
+| `disk_balancer.py` 的 docstring 里写 `C:\cache` | Python 3.14: `SyntaxWarning: "\c" is an invalid escape sequence` | 非 raw docstring 里的 Windows 路径。3.11 只警告所以长期没暴露，3.14 明确说将来会失效（届时**直接导入失败**）。已改 raw docstring；并写 `scripts/misc/scan_escapes.py` 全仓扫描，另抓出 `bitsandbytes/tools/verify_train_release.py` 同类问题 |
 
 ## 七、相关文件
 
@@ -291,8 +291,8 @@ fp32 最低位。**这也说明 ARM64 的 NEON 内核与 x86 的 AVX2 内核算�
 - `selftest_cpu.c` —— 无 torch 的 C 层自检（5 项）
 - `build_linux.sh` —— 普通 Linux 构建入口（x86_64 AVX2 / aarch64 NEON）
 - `pythonInterface.cpp` —— ctypes 导出签名（写 ctypes 调用**必须**照它，不能照名字猜）
-- `D:\work\bitsandbytes-CPU\termux_check.py` —— ctypes 域检查 T1–T5（从不 import torch）
-- `D:\work\bitsandbytes-CPU\torch_part.py` —— torch 域检查（`--with-bnb` 时才加载 `.so`）
+- `D:\work\bitsandbytes-CPU\scripts/misc/termux_check.py` —— ctypes 域检查 T1–T5（从不 import torch）
+- `D:\work\bitsandbytes-CPU\scripts/misc/torch_part.py` —— torch 域检查（`--with-bnb` 时才加载 `.so`）
 - `D:\work\bitsandbytes-CPU\i5build\build_termux_bundle.ps1` —— 打发布包（整目录 + include 校验）
 - `D:\work\bitsandbytes-CPU\i5build\make_selfcontained.ps1` —— 生成 base64 内嵌的自包含脚本
 - `D:\work\bitsandbytes-CPU\i5build\verify_selfcontained.py` —— payload sha256 往返校验

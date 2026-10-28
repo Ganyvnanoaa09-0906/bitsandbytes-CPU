@@ -13,7 +13,7 @@
    aarch64 qemu 运行时自检；C 自检从 5 项扩到 **9 项**，x86 AVX2 原生、x86 generic、
    aarch64 qemu 全部 9/9 PASS；结果 `bench_results/isa_matrix.md`。
 4. **2bit/3bit 训练链路**（`q3bit_proto.py`、`q3bit_kernel.cpp`、`q3bit_gemm.cpp`、
-   `q3bit_lmhead_bench.py`、`q3bit_lmhead_train.py`）：
+   `scripts/misc/q3bit_lmhead_bench.py`、`scripts/misc/q3bit_lmhead_train.py`）：
    - 量化误差：3-bit relL2 0.22–0.28（真实 Qwen3.5-0.8B 权重），2-bit 0.51–0.72；
    - Qwen3.5-0.8B LoRA：权重 **3.202 → 0.378 GB（-88%）**、RSS 5.34 → 2.69 GB、
      端到端 CE 训练 +31% 步时（4202 vs 3206 ms）；

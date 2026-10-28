@@ -342,7 +342,7 @@ strength of the slow device, is async splitting worthwhile — and then it must 
 block-level / one-sync-per-step, avoiding per-operator syncs that give the gain back to
 queue draining.
 
-**Final form**: `train.py --igpu` is now a **block-level resident executor** (off by
+**Final form**: `scripts/misc/train.py --igpu` is now a **block-level resident executor** (off by
 default): enabled when tokens per step ≤ `GPU_SCHED_MAX_TOKENS` (default 256), the fp32
 base ≤ a RAM-adaptive limit (16GB→7000MB, 12GB→5250MB, 8GB→3500MB), the startup GEMM
 calibration passes, and there are no quantized parameters; otherwise it prints a reason
@@ -552,7 +552,7 @@ machine has no VS, so that build is not verified here).
   (a hard dependency), which is incompatible with diffusers 0.40 in three ways (string
   annotations in `infer_schema`, missing `flex_attention`, no `enable_gqa` in `sdpa`)
   — **on any machine with torch-directml installed, pure-CPU SD training crashes at
-  import too**. Fix: the `torch241_compat.py` runtime shim (idempotent, skipped
+  import too**. Fix: the `scripts/misc/torch241_compat.py` runtime shim (idempotent, skipped
   automatically on torch≥2.5); `train_sd_lora.py` imports it before `diffusers`. Also
   note: on DML, changing `requires_grad` after `model.to(DML)` silently drops the
   autograd graph — set requires_grad before the move.
@@ -889,5 +889,5 @@ Performance reference: a 256MB volume with 5,084 records / 2,500 files is rebuil
 - Machine B (i5-10400): text **8** threads, image **12** threads; fp32.
 - Rebuild DLL: VS x64 terminal `build_manual\build_manual.bat amd` (AMD) / `intel`
   (Intel); keep cpp/h as **CRLF** (LF + GBK comments are swallowed by `cl`).
-- Self-test: `python -m bitsandbytes.gdn_cpu` (PASSED); `stress_opt.py`
+- Self-test: `python -m bitsandbytes.gdn_cpu` (PASSED); `scripts/misc/stress_opt.py`
   (210 combos, 0 failures); `selftest_cpu.c` (4/4).

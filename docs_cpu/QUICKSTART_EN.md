@@ -256,7 +256,7 @@ Unified training entry point (upper-level project):
 
 ```bat
 cd 那很有乐子了~
-python train.py --method quant_base --base_model <path> --quant_dtype nf4
+python scripts/misc/train.py --method quant_base --base_model <path> --quant_dtype nf4
 ```
 
 ### 4.7 EFST: MoE expert-specific fine-tuning (memory-saving)
@@ -312,13 +312,13 @@ Measured (3-layer Qwen3Next hybrid, top-2): trainable 725,712 → 143,600 (19.8%
 :: pinned torch versions; co-installing breaks both). Run --igpu from the dedicated
 :: DML venv (.venv_dml, torch 2.4.1 + torch_directml); in the main env, --igpu just
 :: prints a venv hint and falls back to pure CPU automatically.
-D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe train.py --igpu
+D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe scripts/misc/train.py --igpu
 
 :: Customize the per-step token cap and the fp32 base-weight memory cap (MB)
-D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe train.py --igpu --igpu_max_tokens 128 --igpu_mem_mb 4096
+D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe scripts/misc/train.py --igpu --igpu_max_tokens 128 --igpu_mem_mb 4096
 
 :: Lower the enable gate (startup calibration must reach this iGPU/CPU ratio); 0 = skip calibration
-D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe train.py --igpu --igpu_min_gain 1.05
+D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe scripts/misc/train.py --igpu --igpu_min_gain 1.05
 ```
 
 **What it does**: at training start, **all weights are moved to the iGPU once** (frozen
@@ -374,11 +374,11 @@ attempt "half CPU, half iGPU" data-parallel or operator-split schemes.
 **Not for image-generation (SD) training**: measured on the same machine, every
 dominant SD UNet operator loses on DML (mainstream conv3×3 0.50-0.90x, S=1024
 self-attention 0.14x, projection GEMMs 0.38-0.65x), torch-directml pins torch 2.4.1
-which is import-incompatible with diffusers 0.40 (fix: `torch241_compat.py`, imported
+which is import-incompatible with diffusers 0.40 (fix: `scripts/misc/torch241_compat.py`, imported
 before `diffusers` in `train_sd_lora.py`), and the real-UNet DML backward crashes
 inside the plugin. SD training stays pure CPU (fp32).
 
-**Python API** (drive it in your own script; `train.py` already embeds this flow):
+**Python API** (drive it in your own script; `scripts/misc/train.py` already embeds this flow):
 
 ```python
 from gpu_scheduler import IgpuExecutor
@@ -742,19 +742,19 @@ Append the corresponding options to your training command:
 
 ```bat
 :: auto mode (recommended): offload cold params to disk once memory usage exceeds the threshold
-py -3.11 train.py --flash auto
+py -3.11 scripts/misc/train.py --flash auto
 
 :: speed first: prioritize training speed over disk health
-py -3.11 train.py --flash auto --flash_speed
+py -3.11 scripts/misc/train.py --flash auto --flash_speed
 
 :: manual mode: specify per-disk cache capacity (MB)
-py -3.11 train.py --flash manual --flash_sizes C:2048,D:4096
+py -3.11 scripts/misc/train.py --flash manual --flash_sizes C:2048,D:4096
 
 :: specify cache paths, and keep cache files after training
-py -3.11 train.py --flash auto --flash_paths D:\cache,E:\cache --flash_keep
+py -3.11 scripts/misc/train.py --flash auto --flash_paths D:\cache,E:\cache --flash_keep
 
 :: lower the threshold: trigger offload at 60% memory usage
-py -3.11 train.py --flash auto --flash_threshold 0.6
+py -3.11 scripts/misc/train.py --flash auto --flash_threshold 0.6
 ```
 
 ### 5.2 Parameter table
@@ -800,7 +800,7 @@ balancer.cleanup()                # delete caches after training
 ### 5.5 Using in a Python script
 
 > `--flash` is a **CLI option** that only affects command-line entry points that call
-> `add_flash_args()` (e.g. `train.py`). If you invoke disk load balancing from your own
+> `add_flash_args()` (e.g. `scripts/misc/train.py`). If you invoke disk load balancing from your own
 > Python script, use one of the following approaches.
 
 **Approach 1: reuse the `--flash` options (if your script uses argparse)**

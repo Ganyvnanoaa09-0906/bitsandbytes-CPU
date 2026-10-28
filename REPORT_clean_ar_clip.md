@@ -205,7 +205,7 @@ Loss 曲线 — T=64（对数纵轴）
 - `train.jsonl` —— 逐步记录 `step / T / loss / gen / think / step_s / elapsed_s / rss_gb`
 - `--seed`（默认 1234；已验证两次运行 loss 逐位复现）
 - `--no_ckpt` —— 404M 模型单个 ckpt 1.54 GB，磁盘紧张时必须能关掉
-- 新增 `training_report.py` —— 一键生成 loss 曲线 + 速度表 markdown（无 matplotlib 依赖，ASCII 绘图）
+- 新增 `scripts/misc/training_report.py` —— 一键生成 loss 曲线 + 速度表 markdown（无 matplotlib 依赖，ASCII 绘图）
 
 ### 2.5 崩溃与重跑记录（诚实记录）
 
@@ -251,7 +251,7 @@ CLIP 的文本编码器对 danbooru 标签式长 prompt 本身就不擅长。
 | `scripts/misc/fast_clean.py` | **重写**（批处理清洗，19.2× 提速） |
 | `clip_score_eval.py` | **重写**（真 CLIP + 代理兜底） |
 | `scripts/train/train_ar_curriculum.py` | 改（逐步 jsonl / `--seed` / `--no_ckpt`） |
-| `training_report.py` | **新建**（loss 曲线 + 速度报告） |
+| `scripts/misc/training_report.py` | **新建**（loss 曲线 + 速度报告） |
 | `.torch_home/` | 新增（ssdlite320 + keypointrcnn 权重缓存） |
 | `.hf_home/` | 新增（CLIP 缓存，581 MB） |
 
@@ -268,7 +268,7 @@ cd D:\work\bitsandbytes-CPU
 #   高精度但很慢：        --detect keypoint (~3 s/张)
 
 # --- 任务 B：tokenize + 课程预训练 ---
-& $PY tokenize_dataset.py --data .autopilot\clean_fast_918\images `
+& $PY scripts/misc/tokenize_dataset.py --data .autopilot\clean_fast_918\images `
     --ckpt .autopilot\vqvae_ema_full2\ckpt_last.pt `
     --out .autopilot\tokens_918_ema.pt --size 256 --batch 16
 
@@ -278,7 +278,7 @@ cd D:\work\bitsandbytes-CPU
     --d_model 512 --n_layer 10 --n_head 8 --ffn_dim 2048 --no_ckpt
 
 # 看曲线
-& $PY training_report.py --run .autopilot\ar_curriculum_small
+& $PY scripts/misc/training_report.py --run .autopilot\ar_curriculum_small
 
 # --- 任务 C：CLIP 评估 ---
 & $PY clip_score_eval.py --images D:\work\lora_action `

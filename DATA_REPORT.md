@@ -44,7 +44,7 @@ paths              : 14114 条（与 token 严格同序）
              扩充池跨池      移除 2852（全部来自 clean_webp，含一组 108 张完全相同）
              合计移除 4927 张
 
-④ tokenize  tokenize_dataset.py --size 256
+④ tokenize  scripts/misc/tokenize_dataset.py --size 256
              VQ-VAE: vqvae_ema_full2/ckpt_last.pt
 ```
 
@@ -148,7 +148,7 @@ civitai_nsfw (AI 生成)    6,537    ~22%
 
 用户估计 char2 约 1/3 带码，位置集中在胸/臀。
 
-**检测器做了两版都不够用**（`mosaic_detect.py` v1 / `mosaic_detect_v2.py`）：
+**检测器做了两版都不够用**（`scripts/misc/mosaic_detect.py` v1 / `mosaic_detect_v2.py`）：
 
 - v1（FFT 周期峰值）：频段下界算错，把 k=3 超低频收进来，5409/6419 张图的
   "最佳块尺寸"都报 42 —— 它在捡大尺度图像结构
@@ -166,7 +166,7 @@ civitai_nsfw (AI 生成)    6,537    ~22%
 
 **最终处置：不靠检测，靠分池 + 课程收尾。**
 
-- `mosaic_mask.py` + `scripts/train/train_ar_curriculum.py --masks` 的机制保留可用
+- `scripts/misc/mosaic_mask.py` + `scripts/train/train_ar_curriculum.py --masks` 的机制保留可用
   （预训练池实测屏蔽率 2.03%），但**不当作保险**
 - 真正可靠的做法：有码图单独分池，只用于预训练**前半段**，
   后半段与后训练全部切到无码图 —— 让最后阶段的数据决定模型输出分布

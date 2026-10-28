@@ -106,7 +106,7 @@ NF4 / FP4 codes** (`register_buffer("wq")` + `register_buffer("code")`), and the
 - provides `quant_weight_bytes()` to report the actual bytes (codes + scale + codebook).
 
 **Entry point**: `from quant_lora import QuantLinearTrainable`; top-level entry is
-`train.py --method quant_base` (via `peft_backends._apply_quant_base`, replacing `nn.Linear`).
+`scripts/misc/train.py --method quant_base` (via `peft_backends._apply_quant_base`, replacing `nn.Linear`).
 
 **Measured** (`jiaoben\scripts/test/test_quant_base.py`, PASSED): 8-bit weight 48.0 KB → 13.2 KB
 (72.5% saved, rescale max|Δ|=0, scale grad 120.77); NF4/FP4 48.0 KB → 6.8 KB (85.8% saved,
@@ -411,7 +411,7 @@ step, and the device is synchronized once per step.
 | Real Qwen-structure full chain, seq=128 (weights resident) | **1.35x** |
 | Same chain, seq=512 | 0.70x (DML's `F.sdpa` is 3-7x slower than CPU at long sequences; the specialized `multi_head_attention` kernel needs a newer driver, unsupported on 27.20.11032) |
 
-**Implementation notes** (`IgpuExecutor`, the engine behind `train.py --igpu`):
+**Implementation notes** (`IgpuExecutor`, the engine behind `scripts/misc/train.py --igpu`):
 - `prepare(tokens=)`: preconditions (DirectML available / all-fp32 / base memory within
   the adaptive cap / tokens per step ≤ `GPU_SCHED_MAX_TOKENS`, default 256 / a passing
   startup GEMM calibration); on success moves the whole model with `model.to(DML)` and
@@ -421,7 +421,7 @@ step, and the device is synchronized once per step.
   optimizer) and clears the iGPU-side gradients — the only DML sync point in training;
 - `weights_from_cpu()`: copies optimizer-updated weights back to the iGPU; both round
   trips are adapter-sized and negligible;
-- the caller (train.py) runs one `loss.item()` per step — the single queue drain point.
+- the caller (scripts/misc/train.py) runs one `loss.item()` per step — the single queue drain point.
 
 **Machine adaptivity (Intel UHD 630 etc., R8)**: iGPU compute varies hugely across
 machines and fixed knobs cannot be reused as-is, so the executor adapts by default —
@@ -470,10 +470,10 @@ kernels are too strong on a 6-core AVX2 CPU for a weak iGPU to beat); torch-dire
 and diffusers 0.40 additionally face a version wall (below), and the full-chain DML
 backward crashes inside the plugin. Image-generation training stays pure-CPU (fp32).
 
-**The torch-directml version wall (torch241_compat.py)**: installing torch-directml
+**The torch-directml version wall (scripts/misc/torch241_compat.py)**: installing torch-directml
 downgrades torch to 2.4.1 (its hard dependency), which breaks diffusers 0.40 at import
 (string annotations in `infer_schema`, missing `flex_attention`, no `enable_gqa` in
-`sdpa` — three incompatibilities). The project ships `torch241_compat.py`, a runtime
+`sdpa` — three incompatibilities). The project ships `scripts/misc/torch241_compat.py`, a runtime
 shim (idempotent, skipped automatically on torch≥2.5); any environment with
 torch-directml installed must import it before `diffusers` when running SD/image
 scripts. Also note: on DML, changing `requires_grad` after `model.to(DML)` **silently
@@ -671,7 +671,7 @@ that the kernels port to gcc/clang, not a false pass.
 **Full self-test** (requires torch):
 ```
 python -m bitsandbytes.gdn_cpu    # should print "selftest PASSED"
-python stress_opt.py             # 210 combos, 0 failures (LLM-side regression)
+python scripts/misc/stress_opt.py             # 210 combos, 0 failures (LLM-side regression)
 ```
 
 ---

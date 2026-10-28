@@ -65,11 +65,11 @@ RuntimeError: PytorchStreamWriter failed writing file data/180: file write faile
 | `scripts/misc/apply_dups.py` | 按去重结果移出重复项（不删，隔离到 `_dups/`） |
 | `scripts/misc/mix_datasets.py` | 按配比从多个池抽样，输出清单（不复制文件） |
 | `scripts/misc/extract_photobooks.py` | 批量解压写真集，按集名分目录 |
-| `tokenize_dataset.py` | 多目录/清单 tokenize，**同时输出路径清单保证 mask 同序** |
-| `mosaic_mask.py` | 马赛克区域定位 → token 级 mask |
+| `scripts/misc/tokenize_dataset.py` | 多目录/清单 tokenize，**同时输出路径清单保证 mask 同序** |
+| `scripts/misc/mosaic_mask.py` | 马赛克区域定位 → token 级 mask |
 | `scripts/train/train_ar_curriculum.py` | 加 per-step jsonl、`--seed`、`--no_ckpt`、`--masks`、**分阶段 batch** |
-| `training_report.py` | 一键出 loss 曲线 + 速度表 |
-| `sample_ar.py` | **从训练好的 AR 模型采样解码成图**（关键验证工具） |
+| `scripts/misc/training_report.py` | 一键出 loss 曲线 + 速度表 |
+| `scripts/misc/sample_ar.py` | **从训练好的 AR 模型采样解码成图**（关键验证工具） |
 
 ### 3.2 数据池最终账目
 
@@ -124,7 +124,7 @@ top-1 等于下一个 token:   6.89%
 **危害**：loss 曲线一路漂亮地掉到 0.0006，但采样出来是 1024 张同一个 token。**只有采样看图能发现，看 loss 永远是"训练成功"。**
 
 ### 🔴 Bug 2：mask 语义写反
-`mosaic_mask.py` 里 `True = 检测到马赛克 = 要屏蔽`，loss 里写成 `gen * m` 就保留了该屏蔽的位置 → loss=0 → 零梯度 → 8bit 优化器除零 → NaN。
+`scripts/misc/mosaic_mask.py` 里 `True = 检测到马赛克 = 要屏蔽`，loss 里写成 `gen * m` 就保留了该屏蔽的位置 → loss=0 → 零梯度 → 8bit 优化器除零 → NaN。
 
 ### 🟠 Bug 3：`fast_clean` 强行拉成正方形
 3024×4032 的人像被压成 1:1，脸全变形。改成 `--square-mode crop`（短边缩放后中心裁剪）。
@@ -197,7 +197,7 @@ CPU 早已 100%（6/6 逻辑核），**没有余量可挖**。真正的瓶颈是
 `pretrain_run3`：`T=16:400(b64) → T=64:400(b16) → T=256:1400(b8)`，带 mask，预计 90 分钟。
 
 ### 待办
-1. **训练完先采样看图**（`sample_ar.py`），再报 loss —— 顺序不能反
+1. **训练完先采样看图**（`scripts/misc/sample_ar.py`），再报 loss —— 顺序不能反
 2. 翠翠的图下载完 → 后训练池
 3. `scripts/misc/mix_datasets.py` 配比（coser 40~60% / 写真 20~30% / NSFW 20~30%）
 4. 那 1.9 GB 文本数据集对图像训练无用，可挪走腾空间

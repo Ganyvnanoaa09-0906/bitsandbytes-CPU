@@ -237,7 +237,7 @@ GET https://hf-mirror.com/<repo>/resolve/main/<path>            # 下文件
 架构（从 hf-mirror 拉到 `config.json` 后确认，与权重头完全吻合）：
 `dim=1536, ffn_dim=8960, num_heads=12, num_layers=30, in_dim=out_dim=16, text_len=512`。
 
-### 4.2 拷打量化库的结果（`quant_stress_wan.py`，真实 Wan2.1 权重）
+### 4.2 拷打量化库的结果（`scripts/misc/quant_stress_wan.py`，真实 Wan2.1 权重）
 
 ```
 [1] 306/306 个 2D 权重张量量化成功，失败 0 例
@@ -391,7 +391,7 @@ python video_e2e.py train --data D:\work\video_mvp\data\data_win_S128_T8.pt `
 ```
 
 前置条件：
-- 组件脚本（`sliding_window.py` / `scripts/misc/independent_chunks.py` / `temporal_metrics.py` / `post_process.py`）
+- 组件脚本（`scripts/misc/sliding_window.py` / `scripts/misc/independent_chunks.py` / `temporal_metrics.py` / `scripts/misc/post_process.py`）
   已随本分支落在**仓库根**；
 - 训练工具 `video_mvp/` 是外部目录：默认 `..ideo_mvp`，或用环境变量
   `VIDEO_E2E_TOOLS=D:\work\video_mvp` 指定；训练数据用 `--data` 或 `VIDEO_E2E_DATA`；

@@ -275,7 +275,7 @@ Conv2d:    128->256 32x32 b8  172.49 GFLOP/s
 
 ```
 scripts/bench/bench_avx2.py          本机 GEMM/线程/精度/后端 基准
-tune_ar.py             AR 模型开关消融（mkldnn/SDPA/线程/autocast）
+scripts/misc/tune_ar.py             AR 模型开关消融（mkldnn/SDPA/线程/autocast）
 scripts/test/test_loop.py           loop_times 消融
 scripts/test/test_loop2.py          等算力对比（循环 vs 加层）
 gemm_probe.py          云端 CPU 特性 + GEMM + Conv 基准

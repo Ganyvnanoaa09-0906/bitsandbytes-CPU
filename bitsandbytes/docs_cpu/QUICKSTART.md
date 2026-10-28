@@ -210,7 +210,7 @@ out.sum().backward()           # 反向：梯度流回可学习标度 scale（LS
 
 ```bat
 cd 那很有乐子了~
-python train.py --method quant_base --base_model <path> --quant_dtype nf4
+python scripts/misc/train.py --method quant_base --base_model <path> --quant_dtype nf4
 ```
 
 ### 4.7 EFST：MoE 专家专项微调（省内存）
@@ -260,13 +260,13 @@ opt = bnb.optim.AdamW8bit(filter(lambda p: p.requires_grad, model.parameters()),
 :: 注意：主训练环境（torch ≥2.6）不装 torch-directml（两者钉死的 torch 版本互斥，
 :: 同环境安装会互相破坏）；跑 --igpu 请用独立 DML venv（.venv_dml，torch 2.4.1 +
 :: torch_directml）。主环境直接跑 --igpu 会得到 venv 引导提示并自动回退纯 CPU。
-D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe train.py --igpu
+D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe scripts/misc/train.py --igpu
 
 :: 自定义每步 token 上限 与 fp32 基座内存上限（MB）
-D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe train.py --igpu --igpu_max_tokens 128 --igpu_mem_mb 4096
+D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe scripts/misc/train.py --igpu --igpu_max_tokens 128 --igpu_mem_mb 4096
 
 :: 调低核显启用门槛（校准比 ≥ 该值才启用）；0 = 跳过启动校准
-D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe train.py --igpu --igpu_min_gain 1.05
+D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe scripts/misc/train.py --igpu --igpu_min_gain 1.05
 ```
 
 **作用**：训练时把**全部权重常驻核显**（冻结基座只搬一次），前向+反向全程在核显上
@@ -311,10 +311,10 @@ Graphics（R5-4500U）实测；Intel UHD 630（i5-10400 等）走同一接口—
 **生图（SD）训练不要开核显**：同机实测 SD UNet 主力算子在 DML 上全面落后
 （conv 主力形状 0.50~0.90×、S=1024 自注意力 0.14×、投影 GEMM 0.38~0.65×），
 且 torch-directml 钉死 torch 2.4.1 与 diffusers 0.40 导入不兼容（修复：
-`torch241_compat.py`，train_sd_lora.py 已在 import diffusers 前引入），真实 UNet
+`scripts/misc/torch241_compat.py`，train_sd_lora.py 已在 import diffusers 前引入），真实 UNet
 的 DML 反向还会触发插件崩溃。SD 训练保持纯 CPU（fp32）。
 
-**Python 接口**（脚本内自行驱动，`train.py` 已内置同款流程）：
+**Python 接口**（脚本内自行驱动，`scripts/misc/train.py` 已内置同款流程）：
 
 ```python
 from gpu_scheduler import IgpuExecutor
@@ -647,19 +647,19 @@ bitsandbytes-cpu doctor
 
 ```bat
 :: 自动模式（推荐）：内存使用率超过阈值时，将冷参数卸载至硬盘
-py -3.11 train.py --flash auto
+py -3.11 scripts/misc/train.py --flash auto
 
 :: 速度优先：优先训练速度，不优先保护磁盘
-py -3.11 train.py --flash auto --flash_speed
+py -3.11 scripts/misc/train.py --flash auto --flash_speed
 
 :: 手动模式：指定各磁盘缓存容量(MB)
-py -3.11 train.py --flash manual --flash_sizes C:2048,D:4096
+py -3.11 scripts/misc/train.py --flash manual --flash_sizes C:2048,D:4096
 
 :: 指定缓存路径，并在训练结束后保留缓存文件
-py -3.11 train.py --flash auto --flash_paths D:\cache,E:\cache --flash_keep
+py -3.11 scripts/misc/train.py --flash auto --flash_paths D:\cache,E:\cache --flash_keep
 
 :: 调低阈值：内存使用率达到 60% 即触发卸载
-py -3.11 train.py --flash auto --flash_threshold 0.6
+py -3.11 scripts/misc/train.py --flash auto --flash_threshold 0.6
 ```
 
 ### 5.2 参数表
@@ -704,7 +704,7 @@ balancer.cleanup()                # 训练结束后删除缓存
 
 ### 5.5 在 Python 脚本中使用
 
-> `--flash` 是 **CLI 参数**，仅对使用了 `add_flash_args()` 的命令行入口（如 `train.py`）
+> `--flash` 是 **CLI 参数**，仅对使用了 `add_flash_args()` 的命令行入口（如 `scripts/misc/train.py`）
 > 生效。若您在自己的 Python 脚本中调用，请使用以下两种方式。
 
 **方式一：复用 `--flash` 参数（若您的脚本用 argparse）**

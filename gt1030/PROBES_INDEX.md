@@ -12,7 +12,7 @@
 | `ar_v2_multi.py` | **整机实现**：10 层 + head，单 context + 3GB arena，全部 kernel 与调用 | §7.222.5–.18 |
 | `ar_v2_multi_selftest.py` | M4 验收：per-tensor 梯度对拍 + 10 步轨迹（判据 <0.02，实测 1.94e-3） | §7.222.10 |
 | `ar_v2_train.py` | M6 训练器：`--ckpt --steps --lr --lr-min --warmup --spike --opt-state --save-every --val-frac` | §7.222.14/23 |
-| `ar_v2_export.py` | 设备权重 → CPU trainer 同格式 ckpt（M5，可被 `sample_ar.py` 直接用） | §7.222.11 |
+| `ar_v2_export.py` | 设备权重 → CPU trainer 同格式 ckpt（M5，可被 `scripts/misc/sample_ar.py` 直接用） | §7.222.11 |
 | `ar_v2_optstate.py` | AdamW 状态存取（`<ckpt>.opt.npz`，341MB）：解决 resume 冷启动发散 | §7.222.23 |
 | `ar_v2_eval.py` | 单 ckpt 体检：NaN/absmax + val（382 张，带 SEM） | §7.222.23/24 |
 | `ar_v2_valdump.py` | 导出逐 batch val loss（配对比较的输入） | §7.222.24 |

@@ -95,7 +95,7 @@ dl_sets 短边中位 960，而 clean_webp 是 1200。模糊阈值随分辨率**�
 | 文件 | 改动 |
 |---|---|
 | `train_ar_v2.py` | **新增 `--resume`**：恢复权重+全局步数，按阶段跳过已完成步，日志追加不清零 |
-| `resume_list.py` | 新增。按输出相对路径反查，只为 fast_clean 生成「未处理」清单，支持断点续跑 |
+| `scripts/misc/resume_list.py` | 新增。按输出相对路径反查，只为 fast_clean 生成「未处理」清单，支持断点续跑 |
 | `build_final_pool.ps1` | 新增。并池流水线：跨池去重 → 前后账目 → 重新 tokenize |
 | `scripts/probe/probe_new_data.py` | 新增。抽样拼联系表，人工检查裁剪/水印/码区 |
 | `scripts/probe/probe_rejected.py` | 新增。把 rejected.jsonl 里某类拒绝原因抽样拼图，验证是否误杀 |

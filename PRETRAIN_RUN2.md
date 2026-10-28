@@ -110,7 +110,7 @@ Get-Content D:\work\bitsandbytes-CPU\.autopilot\v2_run2\train.jsonl |
 **采样看效果**：
 
 ```powershell
-python sample_ar.py --ar .autopilot\v2_run2\ckpt_last.pt `
+python scripts/misc/sample_ar.py --ar .autopilot\v2_run2\ckpt_last.pt `
   --vqvae .autopilot\vqvae_ema_full2\ckpt_last.pt --out v2_run2_samples.png --n 16 --threads 5
 ```
 
