@@ -9,6 +9,10 @@
 如果 B 也糊 ⇒ 瓶颈在分词器；如果 B 清晰而 C 糊 ⇒ 瓶颈在 AR。
 同时输出两两 PSNR。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import sys, glob, os, random, time
 import torch
 import torch.nn.functional as F

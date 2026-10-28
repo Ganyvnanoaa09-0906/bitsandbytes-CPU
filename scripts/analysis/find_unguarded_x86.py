@@ -10,6 +10,10 @@
   2. 若是，把**外层条件原文**打出来，由人判断它是否把代码限制在 x86 上。
 只有"深度 == 0"（完全在预处理条件之外）才是**无条件编译**的确凿证据。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import os
 import re
 import sys

@@ -10,6 +10,10 @@
 判据（本项目已确立）：**自由采样的高频缺口 + 看图有没有主体**。
   val 不算数（已证明 val 好 ≠ 画质好）。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import os, subprocess, sys, json, glob
 
 BB = r'D:\work\bitsandbytes-CPU'

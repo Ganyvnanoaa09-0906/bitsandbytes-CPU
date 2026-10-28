@@ -7,6 +7,10 @@ S2>=0.80"当"主体完整"阈值，那等于**把量具的性质当成被测物�
 修正后不硬塞外推阈值，改为：① 报剂量-反应曲线；② 崩溃需**多条信号同时成立**；
 ③ 判定以肉眼复核为准。数据本身没变，只重算判读。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import json
 import os
 import sys

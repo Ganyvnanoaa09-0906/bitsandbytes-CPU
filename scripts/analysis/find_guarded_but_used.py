@@ -17,6 +17,10 @@
 本仓库只关心两类目标：x86_64(AVX2 或非 AVX2) 与 aarch64。
 用真值表枚举（宏数量有限，直接枚举 2^n）避免手写逻辑。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import os
 import re
 import sys
