@@ -94,7 +94,7 @@ im = pipe(prompt, num_inference_steps=4, guidance_scale=1.5,
 `export_to_video` 在本机因缺 OpenCV 后端报 `ImportError`。装
 `opencv-python` 或 `imageio-ffmpeg` 即可出 mp4；不装则脚本退回逐帧 PNG。
 
-可用脚本：`lcm_on_sd15.py`（单图）、`lcm_on_video.py`（视频，已内置关 slicing）。
+可用脚本：`scripts/video/lcm_on_sd15.py`（单图）、`scripts/video/lcm_on_video.py`（视频，已内置关 slicing）。
 
 ---
 

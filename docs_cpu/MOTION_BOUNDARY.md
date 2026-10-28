@@ -77,7 +77,7 @@ $env:ADIFF_VAE = "D:\work\textmodel\sd15_full\vae"
 & "D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe" -u motion_boundary.py --out "D:\work\output\motion"
 
 # 纯分析（不生成）
-& "D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe" -u motion_report.py --root "D:\work\output\motion"
+& "D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe" -u scripts/video/motion_report.py --root "D:\work\output\motion"
 
 # 面部一致性
 & "D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe" -u face_consistency.py `

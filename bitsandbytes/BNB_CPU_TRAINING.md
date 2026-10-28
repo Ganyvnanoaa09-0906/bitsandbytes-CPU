@@ -224,9 +224,9 @@ CPU 注册的 torch 算子：`quantize_blockwise` / `dequantize_blockwise`（fp3
 python -m bitsandbytes.gdn_cpu            :: GDN 精度自检
 python tests\test_cpu_e2e.py              :: 优化器收敛 + GDN 训练 + 非连续梯度
 python stress_opt.py                      :: 7 优化器 × 10 尺寸 × 3 dtype 压力 + 确定性
-python gdn_layout_probe.py                :: 布局零拷贝 / C 不变性 / 峰值内存
-python gdn_mem_probe.py                   :: 多层场景内存（T=8192 × 8 层）
-python gdn_train_smoke.py                 :: fused vs naive 速度内存对比 + 可训练性
+python scripts/video/gdn_layout_probe.py                :: 布局零拷贝 / C 不变性 / 峰值内存
+python scripts/video/gdn_mem_probe.py                   :: 多层场景内存（T=8192 × 8 层）
+python scripts/video/gdn_train_smoke.py                 :: fused vs naive 速度内存对比 + 可训练性
 ```
 
 ## 7. 内存调优（免得拷打 SSD）
