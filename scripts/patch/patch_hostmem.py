@@ -12,6 +12,10 @@ Requires decoupling the autograd Function from the CPU weight tensor: it now tak
 out_features/in_features and accepts a None weight (LoRA mode returns no weight gradient).
 """
 from __future__ import annotations
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 
 import io
 

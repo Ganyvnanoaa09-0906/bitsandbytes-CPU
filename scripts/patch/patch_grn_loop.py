@@ -5,6 +5,10 @@
         【目标仍是 x】（真值），这就是 GRN 的 self-refinement 训练。
         l ~ U[0,1] 每步重采（论文 Eq.6）。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import io
 
 P = r'D:\work\bitsandbytes-CPU\train_ar_v2.py'

@@ -1,5 +1,9 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """patch_loop_calls.py — 给所有 run_blocks 调用点追加 loop_cfg/loop_mods 参数"""
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import re, io
 
 P = r'D:\work\bitsandbytes-CPU\small_image_model_v2.py'
