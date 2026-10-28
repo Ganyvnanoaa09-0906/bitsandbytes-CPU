@@ -7,6 +7,10 @@
 
 用真实模型结构测 attention 的 T 缩放，再外推到视频长度。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import sys, time, math
 import torch
 

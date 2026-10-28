@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """measure_fwd_bwd_gemm.py — 前向 vs 反向 GEMM 的效率差
 
 假设：真实模型 GEMM 只有 194 GFLOPS（纯前向 Linear 序列能到 300.8），
@@ -8,6 +8,10 @@
   dx = dout @ W^T      形状 (M,N)@(N,K)  —— W^T 是转置视图，访问不连续
   dW = dout^T @ x      形状 (N,M)@(M,K)  —— 需要累加
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import sys, time
 import torch
 import torch.nn as nn
