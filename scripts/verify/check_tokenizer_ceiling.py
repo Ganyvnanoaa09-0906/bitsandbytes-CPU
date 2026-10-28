@@ -18,6 +18,10 @@ Read-only with respect to the training run: one image at a time through the enco
 torch threads beyond one, so it will not disturb the MaskGIT job that is currently using five.
 """
 from __future__ import annotations
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 
 import sys
 

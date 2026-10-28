@@ -4,6 +4,10 @@
 条件注入的前提是每张图的元数据能按路径查到。这里只比对【路径格式与命中率】，
 不打印任何图片内容或统计值细节。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import json, os
 
 meta = r'.autopilot\clean_nf\metadata.jsonl'

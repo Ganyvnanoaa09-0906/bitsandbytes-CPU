@@ -12,6 +12,10 @@
   这里不只比 max_abs，还要按真实量级算相对误差，并检查 fp32 下的退化输入
   （全零、极大值、极小值、含 inf/nan 的边界）。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import sys
 
 import torch

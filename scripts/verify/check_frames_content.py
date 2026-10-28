@@ -7,6 +7,10 @@
 逐组输出：亮度分布、颜色数、水平/垂直边缘能量、以及"是否存在一个可辨认主体"
 （前景/背景的对比度）。同时把每组的第 0 帧并排拼一张对比图，供人眼确认。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import os
 import glob
 import json

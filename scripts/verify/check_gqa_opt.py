@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """check_gqa_opt.py — 验证 GQA cache 优化【不改变输出】+ 测提速
 
 两件事：
@@ -6,6 +6,10 @@
      （缓存存展开版 vs 紧凑版，只是布局不同，数学上必须完全一致）
   ② 提速幅度
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import os, sys, time
 import torch
 
