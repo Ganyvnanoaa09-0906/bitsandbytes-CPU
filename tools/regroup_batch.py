@@ -117,9 +117,18 @@ def main():
     ap.add_argument('--prefix', required=True, help='根目录文件前缀，如 bench（匹配 bench_*.py）')
     ap.add_argument('--theme', required=True, help='目标子目录名，如 bench')
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--exclude-inbound', action='store_true',
+                    help='只移动没有被其他脚本 import 的文件（有入边的库留到 B6 统一处理）')
     a = ap.parse_args()
 
     files = [p for p in tracked(['%s_*.py' % a.prefix]) if os.sep not in p and '/' not in p]
+    if a.exclude_inbound:
+        import json
+        safe = set(json.load(io.open(r'D:\work\video_mvp\regroup_safeset.json', encoding='utf-8'))['safe'])
+        before_n = len(files)
+        files = [f for f in files if os.path.splitext(f)[0] in safe]
+        print('--exclude-inbound: %d -> %d（跳过有入边的库脚本 %d 个）'
+              % (before_n, len(files), before_n - len(files)))
     names = {f[:-3] for f in files}
     if not files:
         raise SystemExit('没有匹配的根目录文件: %s_*.py' % a.prefix)

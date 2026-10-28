@@ -6,6 +6,10 @@
   预计算后只需传 ~30MB(fp16) 的张量，而不是 605MB 的模型快照，
   而且训练时完全不依赖 CLIP，云端更稳。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import json, os, sys
 import torch
 
