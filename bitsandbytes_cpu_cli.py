@@ -51,6 +51,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 
 import argparse
 import importlib.util
@@ -953,7 +956,7 @@ def cmd_version(args) -> int:
 
 
 def cmd_detect(args) -> int:
-    import json
+    import json as _json
     try:
         d = _detect()
     except ImportError as exc:
@@ -1050,8 +1053,8 @@ def cmd_doctor(args) -> int:
 def cmd_selftest(args) -> int:
     try:
         import torch
-        import torch.nn
-        import bitsandbytes
+        import torch.nn as nn
+        import bitsandbytes as bnb
     except ImportError:
         _torch_hint()
         return 1

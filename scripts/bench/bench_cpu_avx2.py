@@ -7,6 +7,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 # bench_cpu_avx2.py - 小规模合成基准：i5-10400 (AVX2) 上 PyTorch CPU 计算吞吐
 # 目的：给出"训练速度最快"的配置结论（线程数 × dtype），不加载大模型、不烧内存。
 #

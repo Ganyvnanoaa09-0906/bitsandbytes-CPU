@@ -17,6 +17,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import os, sys, time
 import torch
 
@@ -44,7 +47,7 @@ def make_batch(b):
 
 
 def step(m, opt, x, y):
-    import torch.nn.functional
+    import torch.nn.functional as F
     # forward_logits 返回 (think_head.logits(...), gen_head.logits(x))
     # 而每个 head 的 logits() 自身又返回 (tensor, aux) —— 所以是两层元组
     out = m.forward_logits(x)

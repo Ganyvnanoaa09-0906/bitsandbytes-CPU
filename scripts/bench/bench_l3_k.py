@@ -16,10 +16,13 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import os, sys, time
 import torch
-import torch.nn
-import torch.nn.functional
+import torch.nn as nn
+import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from scripts.lib.l3_ffn import L3FFN, causal_spatial_key

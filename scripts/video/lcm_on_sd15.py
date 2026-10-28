@@ -31,6 +31,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 
 import os
 import sys
@@ -61,7 +64,7 @@ PROMPTS = [
 
 
 def valid(im, tag):
-    import numpy
+    import numpy as np
     a = np.asarray(im, dtype=np.float32)
     ok = bool(np.isfinite(a).all()) and a.std() > 3.0
     print('      [%s] mean=%.1f std=%.1f -> %s' % (tag, a.mean(), a.std(),

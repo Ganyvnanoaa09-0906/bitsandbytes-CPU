@@ -15,6 +15,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import os
 import sys
 
@@ -23,7 +26,7 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2, build_cluster_map
 from scripts.lib.small_vqvae import VQVAE
-import bitsandbytes
+import bitsandbytes as bnb
 
 BASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".autopilot")
 

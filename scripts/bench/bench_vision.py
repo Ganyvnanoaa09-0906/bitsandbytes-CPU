@@ -7,6 +7,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 # bench_vision.py - 生图/视觉模型训练的 CPU 基准（i5-10400 AVX2）
 # 测：① 2D 卷积吞吐（oneDNN AVX2）② 8bit 量化 conv 权重可行性（内存/开销）
 # 运行：py -3.11 bench_vision.py

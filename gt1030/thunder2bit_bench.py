@@ -15,6 +15,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 
 import argparse
 import gc
@@ -23,7 +26,7 @@ import os
 import sys
 import time
 
-import numpy
+import numpy as np
 import psutil
 import torch
 
@@ -41,7 +44,7 @@ def rss_gb():
 
 
 def replace_4bit(module, prefix=''):
-    import bitsandbytes
+    import bitsandbytes as bnb
     n = 0
     for name, child in list(module.named_children()):
         full = f'{prefix}.{name}' if prefix else name

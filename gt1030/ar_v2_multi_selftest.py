@@ -13,16 +13,19 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import argparse
 import sys
 import time
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-import numpy
+import numpy as np
 import torch
-import torch.nn.functional
+import torch.nn.functional as F
 
-import gt1030.ar_v2_multi
+import gt1030.ar_v2_multi as MM
 from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 
 CKPT10 = r'F:\weibo_cos\ar_run_full3\ckpt_12000.pt'

@@ -7,6 +7,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 # bench_r5_model.py - R5-4500U 真实模型 5 步训练对比
 #   A: fp32 基座 + LoRA + adafactor        （基线）
 #   B: fp32 基座 + LoRA + bnb.AdamW8bit    （8bit 优化器省内存）

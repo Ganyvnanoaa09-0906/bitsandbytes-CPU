@@ -7,6 +7,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 # bench_r5_threads.py - R5-4500U (6C6T AVX2) 线程校准基准
 # 测：GEMM / Conv / attention 在 4/5/6 线程下的吞吐，决定文本训练最优线程数
 # 运行：py -3.11 bench_r5_threads.py

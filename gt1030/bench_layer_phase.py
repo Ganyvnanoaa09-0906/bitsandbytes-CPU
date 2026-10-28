@@ -18,9 +18,9 @@ validated in attention_gpu.py: dWo/dWqkv/dx and the MLP dW2).
 from __future__ import annotations
 
 import ctypes
-import statistics
+import statistics as _st
 import sys
-import time
+import time as _time
 
 import numpy as np
 import pyopencl as cl

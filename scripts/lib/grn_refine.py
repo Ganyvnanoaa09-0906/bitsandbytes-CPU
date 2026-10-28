@@ -32,8 +32,11 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import torch
-import torch.nn.functional
+import torch.nn.functional as F
 
 
 def grn_make_input(y_true, vocab, l=None, generator=None):
@@ -92,7 +95,7 @@ def grn_sample(model, batch, T, vocab, steps=20, shape='step',
     model 需提供 forward_logits(tokens) -> (_, gen_logits)
     返回 (B, T) 的 index
     """
-    import torch.nn.functional
+    import torch.nn.functional as F
     dev = torch.device(device)
     B = batch
     # 起点：全随机（论文：l_0 = 0）
@@ -156,7 +159,7 @@ if __name__ == '__main__':
 
     # ④ 用一个小模型跑一遍采样，确认形状与合法性
     print()
-    import small_image_model_v2
+    import small_image_model_v2 as M
     cfg = M.SmallImageConfigV2(
         vocab_size=V, d_model=128, n_layer=2, n_head=4, n_kv_head=2,
         ffn_dim=512, total_tokens=T, grid=16, think_tokens=8,

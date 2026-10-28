@@ -21,12 +21,15 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 
 import time
 
 import torch
-import torch.nn
-import torch.nn.functional
+import torch.nn as nn
+import torch.nn.functional as F
 
 from bitsandbytes.functional import (
     dequantize_4bit,
@@ -41,7 +44,7 @@ from bitsandbytes.functional import (
 # 每 64 个权重一个 fp32 absmax ⇒ 2.5 bit/权重 ⇒ 对 fp32 是 12.8x。
 from dataclasses import dataclass  # noqa: E402
 
-import quantnbit
+import quantnbit as _qn
 from quant2bit import NF2 as _NF2_TABLE  # noqa: E402
 from quant2bit import dequantize as _q2_dequantize  # noqa: E402
 from quant2bit import quantize as _q2_quantize  # noqa: E402

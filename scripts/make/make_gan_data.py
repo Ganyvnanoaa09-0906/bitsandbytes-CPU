@@ -17,6 +17,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import argparse, os, sys, time
 import torch
 
@@ -37,7 +40,7 @@ def load_ar(path):
 
 
 def topk_sample(lg, k, temp=1.0):
-    import torch.nn.functional
+    import torch.nn.functional as F
     lg = lg / max(temp, 1e-6)
     v, _ = torch.topk(lg, k, dim=-1)
     thr = v[..., -1, None]

@@ -45,12 +45,15 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 
 import os
 import time
 
 import torch
-import torch.nn
+import torch.nn as nn
 
 # 检测 DirectML 是否可用
 _dml = None
@@ -58,7 +61,7 @@ _dml_device = None
 _dml_name = None
 _dml_import_err = None
 try:
-    import torch_directml
+    import torch_directml as _dml
     if _dml.device_count() > 0:
         _dml_device = _dml.device(0)
         try:

@@ -25,18 +25,21 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
-import argparse, json, math, os, sys, time, threading
-import numpy
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
+import argparse, json as _json, math, os, sys, time, threading
+import numpy as np
 import torch
-import torch.nn
-import torch.nn.functional
+import torch.nn as nn
+import torch.nn.functional as F
 import psutil
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from small_image_model_v2 import (SmallImageConfigV2, SmallARImageModelV2, build_cluster_map)
 from small_vqvae import VQVAE, vqvae_from_ckpt
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "bitsandbytes"))
-import bitsandbytes
+import bitsandbytes as bnb
 
 
 
@@ -113,7 +116,7 @@ def build_optimizers(a, model):
     split mirrors ab_muon_v2.py: 2-D parameters whose names contain neither 'emb' nor 'head'
     go to Muon, everything else to AdamW8bit.
     """
-    import bitsandbytes
+    import bitsandbytes as bnb
     name = (getattr(a, 'optimizer', 'adamw') or 'adamw').lower()
     if name != 'muon':
         return [bnb.optim.AdamW8bit(model.parameters(), lr=a.lr)]
@@ -195,7 +198,7 @@ def parse_batch(spec):
 
 def load_caption_cond(cap_path, paths, text_dim, model_id='openai/clip-vit-base-patch32'):
     """把 caption 编码成 (N, text_dim) 的 pooled 条件。返回 None 表示不可用。"""
-    import json
+    import json as _json
     caps = [_json.loads(l) for l in open(cap_path, encoding='utf-8') if l.strip()]
     by = {os.path.abspath(c['path']): c.get('caption', '') for c in caps}
     texts = [by.get(os.path.abspath(p), 'a person') for p in paths]

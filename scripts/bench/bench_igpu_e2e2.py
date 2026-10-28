@@ -21,12 +21,15 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import os, sys, time
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
-    import torch_directml
+    import torch_directml as dml
     HAS_DML = True
 except Exception:
     HAS_DML = False
@@ -48,7 +51,7 @@ def build(T, grid):
 
 
 def one_round(dev, T, grid, B, iters=4):
-    import torch.nn.functional
+    import torch.nn.functional as F
     torch.manual_seed(0)
     m = build(T, grid).to(dev)
     opt = torch.optim.SGD(m.parameters(), lr=0.0)

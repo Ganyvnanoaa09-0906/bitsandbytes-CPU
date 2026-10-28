@@ -28,15 +28,18 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import argparse, gc, json, math, os, sys, time
 import torch
-import torch.nn
-import torch.nn.functional
+import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from small_vqvae import VQVAE, ImageFolderLite, Peak, rss_gb
-import bitsandbytes
+import bitsandbytes as bnb
 
 
 def trim_heap():

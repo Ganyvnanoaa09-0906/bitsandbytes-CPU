@@ -9,11 +9,14 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
-import sys, time, argparse, torch, torch.nn.functional
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
+import sys, time, argparse, torch, torch.nn.functional as F
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 from scripts.lib.small_image_model import SmallImageConfig, SmallARImageModel
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU\bitsandbytes')
-import bitsandbytes
+import bitsandbytes as bnb
 ap=argparse.ArgumentParser(); ap.add_argument('--size',default='400M'); ap.add_argument('--steps',type=int,default=3); a=ap.parse_args()
 torch.set_num_threads(6); torch.backends.mkldnn.enabled=True
 if a.size=='33M': cfg=SmallImageConfig(d_model=512,n_layer=10,n_head=8,ffn_dim=2048,total_tokens=256)

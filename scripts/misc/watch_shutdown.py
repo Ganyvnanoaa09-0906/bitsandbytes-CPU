@@ -7,6 +7,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import os, time
 v15=r"D:\work\textmodel\animatediff-motion-adapter-v1-5\diffusion_pytorch_model.safetensors"
 frcnn=r"D:\work\textmodel\fsrcnn_x4_v2.pth"

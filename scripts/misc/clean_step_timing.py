@@ -27,6 +27,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 
 import dataclasses
 import json
@@ -47,7 +50,7 @@ except AttributeError:
 from scripts.lib.measure_guard import assert_idle, stamp
 from scripts.lib.small_image_model_v2 import SmallARImageModelV2, SmallImageConfigV2
 from scripts.lib.loop_transformer import LoopConfig
-import bitsandbytes
+import bitsandbytes as bnb
 
 assert_idle()
 stamp('干净计时开始')

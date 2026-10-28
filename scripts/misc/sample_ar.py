@@ -8,7 +8,7 @@
       --out samples.png --n 16 --top-k 100 --temperature 1.0
 """
 from __future__ import annotations
-import os, sys
+import os as _o, sys as _s
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
 _root = _os.path.dirname(_os.path.abspath(__file__))
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
@@ -18,9 +18,12 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
-import argparse, os, sys, time
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
+import argparse, os as _o, sys as _s, time
 import torch
-import torch.nn.functional
+import torch.nn.functional as _F
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # v1 的 small_image_model 只在加载 v1 checkpoint 时才需要，
 # 改成惰性导入：否则云端没上传这个文件时，连 v2 都采不了。
@@ -146,9 +149,9 @@ def main():
                 text = ct[rows]
                 print('  条件: --cond-pt 取 %d 个不同行（%d..%d）' % (a.n, rows[0], rows[-1]))
         elif a.text:
-            import sys, os
+            import sys as _s, os as _o
             _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)))
-            import torch.nn.functional
+            import torch.nn.functional as _F
             from scripts.lib.clip_score_eval import load_clip, clip_feat
             m, p = load_clip('openai/clip-vit-base-patch32')
             with torch.no_grad():
@@ -236,7 +239,7 @@ def main():
     # 顺手把 token 存下来：只存图的话，两种采样策略的对比就只能比像素，
     # 而像素要过一遍 VQ 解码 + 量化成 uint8，小差异可能被抹掉。
     # token 是逐位可比的（cache_ab 那套 A/B 的判据就靠它）。
-    import os
+    import os as _o
     tok_path = _os.path.splitext(a.out)[0] + '.tokens.pt'
     torch.save(toks, tok_path)
     print('tokens -> %s  %s' % (tok_path, tuple(toks.shape)))

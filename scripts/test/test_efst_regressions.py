@@ -17,13 +17,16 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import os
 
 os.environ.setdefault("OMP_NUM_THREADS", "6")
 os.environ.setdefault("MKL_NUM_THREADS", "6")
 
 import torch
-import torch.nn
+import torch.nn as nn
 
 from scripts.lib.efst import EFSTConfig, apply_efst, find_expert_groups
 
@@ -196,7 +199,7 @@ def case_tensor_usage_counts():
     stayed 0 -> select_top_experts always returned the first keys ([0,1]). This case pins
     the int/str normalization.
     """
-    import torch.nn
+    import torch.nn as nn
     from bitsandbytes.efst import (collect_expert_usage, find_expert_groups,
                                    select_top_experts)
 

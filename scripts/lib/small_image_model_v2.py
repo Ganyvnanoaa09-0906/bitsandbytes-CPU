@@ -34,13 +34,16 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import math
 import os
 from dataclasses import dataclass
 
 import torch
-import torch.nn
-import torch.nn.functional
+import torch.nn as nn
+import torch.nn.functional as F
 
 # 融合 RMSNorm 开关。默认开；CPU_FORGE_RMSNORM=legacy 退回逐算子旧实现。
 # 注意：这个模块是被 train_ar_v2.py / 采样脚本共用的，改这里【全局生效】——

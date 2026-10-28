@@ -27,6 +27,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 
 import argparse
 import ctypes
@@ -39,10 +42,10 @@ import sys
 import time
 import urllib.request
 
-import numpy
-import pyopencl
+import numpy as np
+import pyopencl as cl
 import torch
-import torch.nn
+import torch.nn as nn
 
 try:
     from memwatch import check_or_exit as _memcheck
@@ -399,7 +402,7 @@ def make_optimizer(args, named_params):
                              ns_iters=args.ns_iters, weight_decay=wd))
         if other_p:
             try:
-                import bitsandbytes
+                import bitsandbytes as bnb
                 opts.append(bnb.optim.AdamW8bit(other_p, lr=args.lr, weight_decay=wd))
                 rest = 'AdamW8bit'
             except Exception:
@@ -409,14 +412,14 @@ def make_optimizer(args, named_params):
             args.ns_iters, len(muon_p), rest, len(other_p))
     if name in ('adamw4bit', '4bit'):
         try:
-            import bitsandbytes
+            import bitsandbytes as bnb
             return bnb.optim.AdamW4bit([p for _, p in named_params], lr=args.lr,
                                        weight_decay=wd), 'AdamW4bit (bnb)'
         except Exception as exc:
             print('  WARNING: AdamW4bit unavailable (%s); falling back' % str(exc)[:80])
     if name in ('adamw8bit', '8bit'):
         try:
-            import bitsandbytes
+            import bitsandbytes as bnb
             return bnb.optim.AdamW8bit([p for _, p in named_params], lr=args.lr,
                                        weight_decay=wd), 'AdamW8bit (bnb)'
         except Exception as exc:
@@ -682,7 +685,7 @@ def train(args) -> int:
         for m in model.modules():
             if isinstance(m, IgpuLoRALinear) and m.w_dev is None:
                 m.refresh()
-        import gc
+        import gc as _gc
         _gc.collect()
         print('  froze base on device; freed CPU copies of base weights')
     _uniq = {id(p): p for p in model.parameters() if p.requires_grad}

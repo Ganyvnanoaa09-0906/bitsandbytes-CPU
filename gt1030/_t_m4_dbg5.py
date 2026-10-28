@@ -9,11 +9,14 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import argparse, sys
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-import numpy
+import numpy as np
 import torch
-import gt1030.ar_v2_model
+import gt1030.ar_v2_model as MM
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--torchmodel', type=int, default=0)
@@ -30,7 +33,7 @@ if args.torchmodel:
           % (sum(p.numel() for p in m.parameters()) / 1e6))
 
 # 设备内存信息
-import pyopencl
+import pyopencl as cl
 dev0 = MM.A.ctx.devices[0]
 print('device: %s  global_mem=%.2fGB  max_alloc=%.2fGB  local=%.1fKB  cu=%d'
       % (dev0.name, dev0.global_mem_size / 1e9, dev0.max_mem_alloc_size / 1e9,

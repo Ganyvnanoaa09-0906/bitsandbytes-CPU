@@ -28,14 +28,17 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import argparse
 import os
 import time
 
-import numpy
+import numpy as np
 import torch
-import torch.nn
-import torch.nn.functional
+import torch.nn as nn
+import torch.nn.functional as F
 from PIL import Image
 
 FSRCNN_PATH = r"D:\work\textmodel\fsrcnn_x4_v2.pth"

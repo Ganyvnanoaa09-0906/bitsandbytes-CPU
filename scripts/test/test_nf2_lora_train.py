@@ -27,6 +27,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 
 import dataclasses
 import sys
@@ -60,7 +63,7 @@ QuantLinearLora = quant_lora.QuantLinearLora
 quantize_model_8bit_lora = quant_lora.quantize_model_8bit_lora
 from scripts.lib.small_image_model_v2 import SmallARImageModelV2, SmallImageConfigV2
 from scripts.lib.loop_transformer import LoopConfig
-import bitsandbytes
+import bitsandbytes as bnb
 
 torch.set_num_threads(6)
 CKPT = r'D:\work\bitsandbytes-CPU\i5build\ar32_run1\ckpt_3000.pt'

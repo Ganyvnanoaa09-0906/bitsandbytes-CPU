@@ -15,13 +15,16 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import os, sys, time
 import torch
-import torch.nn.functional
+import torch.nn.functional as F
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU\bitsandbytes')
 from scripts.lib.small_image_model import SmallImageConfig, SmallARImageModel
-import bitsandbytes
+import bitsandbytes as bnb
 
 THREADS = int(os.environ.get('BENCH_THREADS', '6'))
 torch.set_num_threads(THREADS)

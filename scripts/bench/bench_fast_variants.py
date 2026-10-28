@@ -8,12 +8,15 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 # -*- coding: utf-8 -*-
-import sys, time, json, argparse, torch, torch.nn, torch.nn.functional
+import sys, time, json, argparse, torch, torch.nn as nn, torch.nn.functional as F
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 from scripts.lib.small_image_model import SmallImageConfig, SmallARImageModel
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU\bitsandbytes')
-import bitsandbytes
+import bitsandbytes as bnb
 class RMSNorm(nn.Module):
     def __init__(self, dim, eps=1e-6):
         super().__init__(); self.weight=nn.Parameter(torch.ones(dim)); self.eps=eps

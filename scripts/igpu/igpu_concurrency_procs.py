@@ -37,13 +37,16 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 
-import multiprocessing
+import multiprocessing as mp
 import statistics
 import sys
 import time
 
-import numpy
+import numpy as np
 import torch
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
@@ -131,7 +134,7 @@ SECONDS = 25.0
 
 def gpu_worker(rounds_target, queue):
     """Runs in its own process, so no GIL interaction with the CPU side at all."""
-    import pyopencl
+    import pyopencl as cl
     plat = cl.get_platforms()[0]
     ctx = cl.Context(devices=[plat.get_devices()[0]])
     q = cl.CommandQueue(ctx)

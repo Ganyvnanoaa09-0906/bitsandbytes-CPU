@@ -30,6 +30,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 
 import ctypes
 import gc
@@ -119,7 +122,7 @@ class QuantLinear(nn.Module):
         self.quant_bytes = q.numel() + int(st.absmax.numel()) * 4
 
     def forward(self, x):
-        from bitsandbytes.functional import dequantize_4bit
+        from bitsandbytes.functional import dequantize_4bit as _dq
         if x.dtype != torch.float32:
             x = x.float()
         # ⚠️ 不要转置。实测（probe + 三次 A/B）:

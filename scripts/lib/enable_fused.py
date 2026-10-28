@@ -25,6 +25,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import functools
 
 _ENABLED = {'rms': False, 'swiglu': False, 'block': False}
@@ -39,7 +42,7 @@ def enable(rmsnorm=True, swiglu=False, block=False, verbose=True):
     block  : 融合 `x + ls * y`（残差 + LayerScale）
     """
     import fused_cpu
-    import small_image_model_v2
+    import small_image_model_v2 as M
 
     if not fused_cpu.available():
         raise RuntimeError('DLL 里没有融合核 —— 需要重新编译 bnb（含 cfused_* 导出）')
@@ -92,7 +95,7 @@ def enable(rmsnorm=True, swiglu=False, block=False, verbose=True):
 
 
 def disable(verbose=True):
-    import small_image_model_v2
+    import small_image_model_v2 as M
     if _ENABLED['rms'] and 'rms' in _ORIG:
         M.RMSNorm.forward = _ORIG['rms']
         _ENABLED['rms'] = False

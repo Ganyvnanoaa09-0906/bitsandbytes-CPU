@@ -29,6 +29,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 
 import os
 import re
@@ -104,7 +107,7 @@ def _build_synthetic():
     """搭出与 AnimateDiff 同构的模块树：每层同时有 attentions（空间）与
     motion_modules（时序），两者内部都有 transformer_blocks.N.attn1.to_*，
     **叶子名完全相同**，正是 PEFT 无法按父路径区分的那种结构。"""
-    import torch.nn
+    import torch.nn as nn
 
     def attn_set():
         return nn.ModuleDict({

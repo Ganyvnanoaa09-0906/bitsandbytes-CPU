@@ -37,6 +37,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import argparse, json, os, statistics, sys, time
 
 EXTS = ('.jpg', '.jpeg', '.png', '.webp', '.bmp')
@@ -102,9 +105,9 @@ def build_pairs(a):
 
 # --------------------------- 代理分数（无 CLIP 兜底） ---------------------------
 def proxy_score(prompt, path, size=256):
-    import numpy
+    import numpy as np
     import torch
-    import torch.nn.functional
+    import torch.nn.functional as F
     from PIL import Image
     im = Image.open(path).convert('RGB').resize((size, size), Image.BILINEAR)
     x = torch.from_numpy(np.asarray(im).copy()).permute(2, 0, 1).float() / 255.0
@@ -268,7 +271,7 @@ def main():
             print(f'[clip_eval] CLIP unavailable ({type(e).__name__}: {e}) -> proxy fallback', flush=True)
 
     from PIL import Image
-    import torch.nn.functional
+    import torch.nn.functional as F
 
     def wrap(p):
         return f'a photo of {p}' if a.template == 'photo' and p else p

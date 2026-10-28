@@ -18,16 +18,19 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import sys
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-import numpy
+import numpy as np
 import torch
 
 
 def export_ckpt(model, path, step=0, extra=None):
     """model: ar_v2_multi.Model -> 写一个和 train_ar_v2 完全同格式的 ckpt"""
-    import gt1030.ar_v2_multi
+    import gt1030.ar_v2_multi as MM
     MD, FF, WROW, V = MM.MD, MM.FF, MM.WROW, model.head.V
     sd = {}
     # ---- token / pos embeddings（host 侧表格）----

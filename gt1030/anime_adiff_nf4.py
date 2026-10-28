@@ -9,6 +9,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 
 import argparse
 import json
@@ -16,7 +19,7 @@ import os
 import sys
 import time
 
-import numpy
+import numpy as np
 import psutil
 import torch
 from PIL import Image
@@ -29,7 +32,7 @@ from sd15_nf4_unet import replace_linear_4bit
 
 
 def replace_unet_nf4(module, skip_sub='motion_modules', prefix=''):
-    import bitsandbytes
+    import bitsandbytes as bnb
     n = 0
     for name, child in list(module.named_children()):
         full = f'{prefix}.{name}' if prefix else name

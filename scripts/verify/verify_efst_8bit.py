@@ -9,19 +9,22 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import os
 import sys
 
 os.environ.setdefault("OMP_NUM_THREADS", "6")
 
 import torch
-import torch.nn
+import torch.nn as nn
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "bitsandbytes"))  # 本地 bitsandbytes
 sys.path.insert(0, HERE)  # efst.py
 
-import bitsandbytes
+import bitsandbytes as bnb
 from scripts.lib.efst import EFSTConfig, apply_efst
 
 

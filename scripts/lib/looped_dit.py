@@ -38,11 +38,14 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import math
 import os
 import torch
-import torch.nn
-import torch.nn.functional
+import torch.nn as nn
+import torch.nn.functional as _F
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +201,7 @@ def _layernorm_none_affine(mod, x):
     """
     if x.device.type == 'cpu':
         return mod(x)
-    import torch.nn.functional
+    import torch.nn.functional as _F
     w, b = _affine_ones_zeros(mod.normalized_shape, x)
     if not _DML_SAFE_NORM:
         return _F.layer_norm(x, mod.normalized_shape, w, b, mod.eps)

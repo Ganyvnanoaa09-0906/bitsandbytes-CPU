@@ -38,6 +38,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 
 import json
 import math
@@ -118,7 +121,7 @@ def quant_kmeans(w, bits, blocksize=64, iters=8):
     码本开销：每块 2^bits 个 fp16 电平 ⇒ (levels*16)/blocksize 比特/权重。
     """
     from scipy.cluster.vq import kmeans2
-    import numpy
+    import numpy as np
     flat = w.reshape(-1).numpy()
     n = flat.size
     pad = (-n) % blocksize

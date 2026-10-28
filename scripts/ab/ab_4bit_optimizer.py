@@ -36,6 +36,9 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 
 import importlib.util
 import statistics
@@ -74,7 +77,7 @@ print('  AdamW4bit 从 worktree 加载: %s' % adamw4bit._dll_path)
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 from scripts.lib.measure_guard import assert_idle, stamp
 
-import bitsandbytes
+import bitsandbytes as bnb
 from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 from scripts.lib.loop_transformer import LoopConfig
 

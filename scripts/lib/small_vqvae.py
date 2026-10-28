@@ -14,16 +14,19 @@ while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
+_here = _os.path.dirname(_os.path.abspath(__file__))
+if _here not in _sys.path:
+    _sys.path.insert(0, _here)
 import argparse, json, os, sys, time, threading
 import torch
-import torch.nn
-import torch.nn.functional
+import torch.nn as nn
+import torch.nn.functional as F
 import psutil
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from PIL import Image
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "bitsandbytes"))
-import bitsandbytes
+import bitsandbytes as bnb
 
 class ImageFolderLite(Dataset):
     def __init__(self, root, size=256, max_items=0):
