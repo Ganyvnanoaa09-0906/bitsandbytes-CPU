@@ -128,6 +128,36 @@ def rewrite_imports(src, names, theme, from_rel):
     return ''.join(lines), len(edits)
 
 
+def preflight(files, names):
+    """批前预检（蓝军 2026-10-28 建议）：把"门禁事后抓"变成"工具事先说清楚"。
+
+    A. 列出所有 importer，按"批内（本批要移动的文件）/ 批外（留在别处的文件）"分组；
+       批外 importer 会被本批改写引用，必须显式列出来。
+    B. 对每个 importer 检查其目录下是否有同名兄弟文件：有则该引用运行时优先命中兄弟，
+       不能改写成 scripts.*（B3b 踩过的条件）。
+    返回 (inbatch_importers, external_importers, shadowed) 三个集合。
+    """
+    inbatch, external, shadowed = set(), set(), set()
+    moved_rels = {'%s' % f for f in files}
+    for rel in tracked(['*.py']):
+        full = os.path.join(ROOT, rel.replace('/', os.sep))
+        try:
+            text = io.open(full, encoding='utf-8-sig').read()
+        except OSError:
+            continue
+        hit = [n for n in names if re.search(r'\b%s\b' % re.escape(n), text)]
+        if not hit:
+            continue
+        importer_dir = os.path.dirname(full)
+        for n in hit:
+            if os.path.exists(os.path.join(importer_dir, n + '.py')):
+                shadowed.add((rel, n))
+            elif rel in moved_rels:
+                inbatch.add(rel)
+            else:
+                external.add(rel)
+    return inbatch, external, shadowed
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--prefix', default=None, help='根目录文件前缀，如 bench（匹配 bench_*.py）')
@@ -140,6 +170,8 @@ def main():
     ap.add_argument('--rest-safe', action='store_true',
                     help='把根目录所有"零入边"文件成批移走（B5 收尾）')
     ap.add_argument('--limit', type=int, default=0, help='每批最多移动多少个（0=不限）')
+    ap.add_argument('--allow-external-importers', action='store_true',
+                    help='允许批外 importer 存在（它们会被本批改写；默认存在即中止）')
     ap.add_argument('--exclude-inbound', action='store_true',
                     help='只移动没有被其他脚本 import 的文件（有入边的库留到 B6 统一处理）')
     a = ap.parse_args()
@@ -193,6 +225,20 @@ def main():
         if any(re.search(r'\b%s\b' % re.escape(n), text) for n in names):
             ref_files.add(p)
     print('含这些名字的文件 %d 个（将按 AST 精确改写，不做无脑替换）' % len(ref_files))
+
+    # 批前预检：把跨批依赖与被遮蔽的引用在动手之前说清楚
+    inb, ext, shd = preflight(files, names)
+    print('  预检A 批内 importer: %d 个文件' % len(inb))
+    if ext:
+        print('  预检A **批外 importer: %d 个文件**（本批会改写它们的引用）' % len(ext))
+        for r in sorted(ext)[:12]:
+            print('    - %s' % r)
+        if not a.allow_external_importers:
+            raise SystemExit('存在批外 importer，默认中止；确认要一并改写请加 --allow-external-importers')
+    if shd:
+        print('  预检B 被同级同名文件遮蔽（不改写）: %d 处' % len(shd))
+        for rel, n in sorted(shd)[:8]:
+            print('    - %s 引用 %s（同目录已有同名文件）' % (rel, n))
 
     if a.dry_run:
         print('\n[dry-run] 不做任何修改。')
