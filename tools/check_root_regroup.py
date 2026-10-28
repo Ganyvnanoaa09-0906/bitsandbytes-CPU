@@ -371,15 +371,15 @@ def main():
         except Exception:
             payload['tree'] = None
 
-    # 口径必须写进记录，否则后来人无法复现同一个数字（蓝军 2026-10-28）
-    payload['edge_counting'] = (
-        'Import: 每个 alias 计 1 条；ImportFrom: 每个语句计 1 条（按 module，不按 alias）；'
-        'importlib.import_module("x"): 计 1 条；归组 bootstrap 的 os/sys alias 归入 '
-        'instrumentation_edges，不进入 edges；edges 为剔除仪器边后的 effective 值')
-    payload['root_py_source'] = 'git ls-files 中不含目录分隔符的 .py（与 tracked 同源）'
-    payload['bootstrap_marker'] = (
-        '行内同时含 "import os as _os" 与 "sys as _sys" 的行号；'
-        '按行内容匹配而非整行相等，因此容忍尾注释与插入位置')
+        # 口径必须写进记录，否则后来人无法复现同一个数字（蓝军 2026-10-28）
+        payload['edge_counting'] = (
+            'Import: 每个 alias 计 1 条；ImportFrom: 每个语句计 1 条（按 module，不按 alias）；'
+            'importlib.import_module("x"): 计 1 条；归组 bootstrap 的 os/sys alias 归入 '
+            'instrumentation_edges，不进入 edges；edges 为剔除仪器边后的 effective 值')
+        payload['root_py_source'] = 'git ls-files 中不含目录分隔符的 .py（与 tracked 同源）'
+        payload['bootstrap_marker'] = (
+            '行内同时含 "import os as _os" 与 "sys as _sys" 的行号；'
+            '按行内容匹配而非整行相等，因此容忍尾注释与插入位置')
         payload['unresolved'] = [list(x) for x in st['unresolved']]
         open(a.json, 'w', encoding='utf-8').write(json.dumps(payload, ensure_ascii=False, indent=2))
         print('\n已写 %s' % a.json)
