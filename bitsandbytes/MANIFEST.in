@@ -28,6 +28,25 @@ graft tools
 # three. Their .c sources stay in the sdist and in the repository.
 global-exclude *.exe
 global-exclude *.exe.manifest
+# Not shipping byte-code: a stale __pycache__ inside csrc/ or tools/ can otherwise end up in the
+# sdist, and a .pyc built by a different interpreter is worse than useless to the recipient
+# (it is silently ignored, or it shadows nothing). The source is always there.
+global-exclude *.pyc
+global-exclude *.pyo
+prune tools/__pycache__
+# Build outputs are not sources. The tools/ directory holds compiled .obj files next to the .c
+# they came from, and a local Linux build leaves libbitsandbytes_*.so in bitsandbytes/. A sdist
+# built from such a tree carried 5.5 MB of them (a 4.1 MB AVX-512 .so among them) on every
+# platform, because an egg-info SOURCES.txt written by that earlier build kept them listed.
+# The Windows DLL stays: it is the prebuilt kernel this fork ships.
+global-exclude *.obj
+global-exclude *.pdb
+global-exclude *.o
+global-exclude *.a
+global-exclude *.lib
+global-exclude *.exp
+global-exclude *.so
+global-exclude *.dylib
 include build_linux.sh
 include build_termux.sh
 include selftest_cpu.c
