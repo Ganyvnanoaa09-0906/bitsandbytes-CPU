@@ -28,6 +28,12 @@ import tarfile
 import tempfile
 import zipfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from normalize_sdist import normalize as _normalize_sdist
+except Exception:          # 归一化是可选能力，缺失不应让身份门禁失效
+    _normalize_sdist = None
+
 FORBIDDEN = ('.pyc', '.pyo', '.obj', '.o', '.a', '.lib', '.exp', '.pdb', '.so', '.dylib')
 
 
@@ -85,6 +91,8 @@ def main():
     ap.add_argument('--dll-toolchain', default=None, help='工具链描述，例如 "zig 0.14.1 windows-gnu"')
     ap.add_argument('--root', default=None)
     ap.add_argument('--json', default=None)
+    ap.add_argument('--normalize', action='store_true',
+                    help='构建后做确定性归一化（tar 元数据 + gzip 头），并记录两个 sha256')
     ap.add_argument('--keep', action='store_true')
     a = ap.parse_args()
 
@@ -139,6 +147,25 @@ def main():
         print('  出处完整 = %s (commit=%s toolchain=%s)' %
               (provenance_complete, (a.dll_source_commit or '?')[:12], a.dll_toolchain or '?'))
 
+        norm_path = None
+        norm_sha = None
+        norm_bytes = None
+        if a.normalize:
+            if _normalize_sdist is None:
+                raise SystemExit('[FATAL] --normalize 需要 tools/normalize_sdist.py')
+            norm_path = os.path.join(outdir, names[0].replace('.tar.gz', '.normalized.tar.gz'))
+            _normalize_sdist(sdist, norm_path, 0)
+            norm_sha = sha_file(norm_path)
+            norm_bytes = os.path.getsize(norm_path)
+            # 归一化不得改变内容：内嵌 DLL 必须仍是审计值
+            with tarfile.open(norm_path) as tn:
+                nd = [m for m in tn.getmembers() if m.name.endswith('.dll')]
+                n_inner = hashlib.sha256(tn.extractfile(nd[0]).read()).hexdigest()
+            print('  归一化后: %d B  sha256=%s  内嵌 DLL=%s' %
+                  (norm_bytes, norm_sha[:16], 'OK' if n_inner == a.expect_dll else 'MISMATCH'))
+            if n_inner != a.expect_dll:
+                raise SystemExit('[FATAL] 归一化改变了内嵌 DLL')
+
         rec = {
             'tree_head': head_commit(root),
             'built_from': 'git archive HEAD',
@@ -158,6 +185,9 @@ def main():
             'sdist_name': names[0],
             'sdist_bytes': os.path.getsize(sdist),
             'sdist_sha256': sha_file(sdist),
+            'sdist_sha256_normalized': norm_sha,
+            'sdist_normalized_bytes': norm_bytes,
+            'normalized': bool(a.normalize),
             'member_count': len(mnames),
         }
         if a.json:
