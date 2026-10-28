@@ -9,6 +9,10 @@ Usage:
   python ab_table.py --dirs D:\\...\\ctl_L4\\off\\frames D:\\...\\ctl_L4\\on\\frames ^
                      --names L4_nocontrol L4_control
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import argparse
 import os
 import sys

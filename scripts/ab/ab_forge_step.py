@@ -13,6 +13,10 @@
 
 同时校验收敛前提：两档的 loss 和梯度必须一致（相对误差 < 1e-4），否则再快也不能用。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import os
 import sys
 import time

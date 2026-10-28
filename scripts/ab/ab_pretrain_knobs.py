@@ -13,6 +13,10 @@
 ★ 先校验数值：融合 RMSNorm 已验证过（check_rmsnorm_equiv.py），但融合 AdamW
   会改变累加顺序，必须确认参数更新量对得上，否则跑了几千步才发现漂移就晚了。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import os
 import sys
 import time
