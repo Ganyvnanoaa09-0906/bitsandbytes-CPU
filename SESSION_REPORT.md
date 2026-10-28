@@ -67,7 +67,7 @@ RuntimeError: PytorchStreamWriter failed writing file data/180: file write faile
 | `extract_photobooks.py` | 批量解压写真集，按集名分目录 |
 | `tokenize_dataset.py` | 多目录/清单 tokenize，**同时输出路径清单保证 mask 同序** |
 | `mosaic_mask.py` | 马赛克区域定位 → token 级 mask |
-| `train_ar_curriculum.py` | 加 per-step jsonl、`--seed`、`--no_ckpt`、`--masks`、**分阶段 batch** |
+| `scripts/train/train_ar_curriculum.py` | 加 per-step jsonl、`--seed`、`--no_ckpt`、`--masks`、**分阶段 batch** |
 | `training_report.py` | 一键出 loss 曲线 + 速度表 |
 | `sample_ar.py` | **从训练好的 AR 模型采样解码成图**（关键验证工具） |
 

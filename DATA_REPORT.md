@@ -166,7 +166,7 @@ civitai_nsfw (AI 生成)    6,537    ~22%
 
 **最终处置：不靠检测，靠分池 + 课程收尾。**
 
-- `mosaic_mask.py` + `train_ar_curriculum.py --masks` 的机制保留可用
+- `mosaic_mask.py` + `scripts/train/train_ar_curriculum.py --masks` 的机制保留可用
   （预训练池实测屏蔽率 2.03%），但**不当作保险**
 - 真正可靠的做法：有码图单独分池，只用于预训练**前半段**，
   后半段与后训练全部切到无码图 —— 让最后阶段的数据决定模型输出分布

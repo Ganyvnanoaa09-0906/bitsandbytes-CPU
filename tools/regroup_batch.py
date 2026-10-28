@@ -114,14 +114,24 @@ def rewrite_imports(src, names, theme, from_rel):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--prefix', required=True, help='根目录文件前缀，如 bench（匹配 bench_*.py）')
-    ap.add_argument('--theme', required=True, help='目标子目录名，如 bench')
+    ap.add_argument('--prefix', default=None, help='根目录文件前缀，如 bench（匹配 bench_*.py）')
+    ap.add_argument('--prefixes', default=None,
+                    help='逗号分隔的多个前缀，合并成一批（如 train,eval,analyze）')
+    ap.add_argument('--theme', default=None, help='目标子目录名，如 bench')
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--exclude-inbound', action='store_true',
                     help='只移动没有被其他脚本 import 的文件（有入边的库留到 B6 统一处理）')
     a = ap.parse_args()
 
-    files = [p for p in tracked(['%s_*.py' % a.prefix]) if os.sep not in p and '/' not in p]
+    prefix_list = ([a.prefix] if a.prefix else []) + ([x.strip() for x in a.prefixes.split(',')] if a.prefixes else [])
+    if not prefix_list:
+        raise SystemExit('需要 --prefix 或 --prefixes')
+    if not a.theme:
+        raise SystemExit('需要 --theme')
+    files = []
+    for pfx in prefix_list:
+        files += [p for p in tracked(['%s_*.py' % pfx]) if os.sep not in p and '/' not in p]
+    files = sorted(set(files))
     if a.exclude_inbound:
         import json
         safe = set(json.load(io.open(r'D:\work\video_mvp\regroup_safeset.json', encoding='utf-8'))['safe'])

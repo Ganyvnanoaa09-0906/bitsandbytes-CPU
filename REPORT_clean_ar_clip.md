@@ -137,7 +137,7 @@ tokens_918_ema.pt : shape (718, 256), 耗时 64.7 s (90 ms/张)
 
 ### 2.3 AR 课程预训练 —— 实测速度
 
-**配置 A：`train_ar_curriculum.py` 默认配置（404 M 参数）**
+**配置 A：`scripts/train/train_ar_curriculum.py` 默认配置（404 M 参数）**
 
 | 阶段 | 步数 | **平均 s/step** | 中位 | p10 | p90 | 总耗时 | loss 首→末 |
 |---|---|---|---|---|---|---|---|
@@ -200,7 +200,7 @@ Loss 曲线 — T=64（对数纵轴）
 
 ### 2.4 训练脚本的改进（我改的）
 
-`train_ar_curriculum.py` 原来**只写 `summary.json`，只有首/末 loss，没有逐步数据**，画不出曲线。已补：
+`scripts/train/train_ar_curriculum.py` 原来**只写 `summary.json`，只有首/末 loss，没有逐步数据**，画不出曲线。已补：
 
 - `train.jsonl` —— 逐步记录 `step / T / loss / gen / think / step_s / elapsed_s / rss_gb`
 - `--seed`（默认 1234；已验证两次运行 loss 逐位复现）
@@ -250,7 +250,7 @@ CLIP 的文本编码器对 danbooru 标签式长 prompt 本身就不擅长。
 |---|---|
 | `fast_clean.py` | **重写**（批处理清洗，19.2× 提速） |
 | `clip_score_eval.py` | **重写**（真 CLIP + 代理兜底） |
-| `train_ar_curriculum.py` | 改（逐步 jsonl / `--seed` / `--no_ckpt`） |
+| `scripts/train/train_ar_curriculum.py` | 改（逐步 jsonl / `--seed` / `--no_ckpt`） |
 | `training_report.py` | **新建**（loss 曲线 + 速度报告） |
 | `.torch_home/` | 新增（ssdlite320 + keypointrcnn 权重缓存） |
 | `.hf_home/` | 新增（CLIP 缓存，581 MB） |
@@ -273,7 +273,7 @@ cd D:\work\bitsandbytes-CPU
     --out .autopilot\tokens_918_ema.pt --size 256 --batch 16
 
 # 小模型（推荐做正式训练）
-& $PY train_ar_curriculum.py --tokens .autopilot\tokens_918_ema.pt `
+& $PY scripts/train/train_ar_curriculum.py --tokens .autopilot\tokens_918_ema.pt `
     --out .autopilot\ar_curriculum_small --stages "16:800,64:800" `
     --d_model 512 --n_layer 10 --n_head 8 --ffn_dim 2048 --no_ckpt
 

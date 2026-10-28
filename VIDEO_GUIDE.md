@@ -103,7 +103,7 @@ im = pipe(prompt, num_inference_steps=4, guidance_scale=1.5,
 ### 2.1 入口与必填参数
 
 ```bash
-python train_diffusion.py --video_selftest --method animatediff_lora \
+python scripts/train/train_diffusion.py --video_selftest --method animatediff_lora \
   --video_model "D:\work\textmodel\sd15_base\unet,D:\work\textmodel\animatediff-motion-adapter-v1-5-2" \
   --video_frames 2 --video_size 32 --steps 3 --batch 1 --rank 4
 ```
