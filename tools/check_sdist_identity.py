@@ -9,6 +9,9 @@
 2. **不绑定本机绝对路径。** 仓库根默认由 `git rev-parse --show-toplevel` 发现，CI 可直接跑。
 3. **追溯链四段**：源码 commit → 构建定义（工具链 + -D）→ DLL sha256 → sdist 内嵌 sha256。
    缺任何一段 ⇒ 退出码 2（而不是静默通过）。
+   **语义限度**：前两段是**操作者声明（attested）**，不是机器证明。任何人填三个字符串都能
+   让 attested=true。要变成证明（verified），必须用该 commit + 该 defines **重建一次并比对 .text**；
+   本工具不做重建，所以记录里恒为 provenance_verified=false。
 
 用法：
   python tools/check_sdist_identity.py \
@@ -137,15 +140,19 @@ def main():
 
         identity_ok = embedded == a.expect_dll
         shape_ok = not bad
-        provenance_complete = bool(a.dll_source_commit) and a.dll_defines is not None \
+        # 这里只检查三个字段是否被【声明】。它不是证明：任何人填三个字符串都能满足。
+        provenance_attested = bool(a.dll_source_commit) and a.dll_defines is not None \
             and bool(a.dll_toolchain)
+        # 真正的证明需要"用该 commit + 该 defines 重建一次并比对 .text"，本工具不做重建。
+        provenance_verified = False
 
         print('sdist: %d B  成员 %d  sha256=%s' % (os.path.getsize(sdist), len(mnames),
                                                    sha_file(sdist)[:16]))
         print('  内嵌 DLL sha256 = %s  %s' % (embedded[:16], 'OK' if identity_ok else 'MISMATCH'))
         print('  构建产物/字节码违规 = %d  %s' % (len(bad), 'OK' if shape_ok else bad[:5]))
-        print('  出处完整 = %s (commit=%s toolchain=%s)' %
-              (provenance_complete, (a.dll_source_commit or '?')[:12], a.dll_toolchain or '?'))
+        print('  出处已声明(attested) = %s (commit=%s toolchain=%s)；已验证(verified) = %s' %
+              (provenance_attested, (a.dll_source_commit or '?')[:12], a.dll_toolchain or '?',
+               provenance_verified))
 
         norm_path = None
         norm_sha = None
@@ -174,7 +181,11 @@ def main():
                 'defines': a.dll_defines,
                 'toolchain': a.dll_toolchain,
             },
-            'provenance_complete': provenance_complete,
+            'provenance_attested': provenance_attested,
+            'provenance_verified': provenance_verified,
+            'provenance_note': ('attested = operator declares commit/defines/toolchain; '
+                                'verified = would require rebuilding from that commit and '
+                                'comparing .text, which this tool does not do'),
             'dll_source': src_desc,
             'dll_source_sha256': got,
             'expect_dll_sha256': a.expect_dll,
@@ -198,8 +209,8 @@ def main():
         if not (identity_ok and shape_ok):
             print('结果: FAIL（身份或形状）')
             return 1
-        if not provenance_complete:
-            print('结果: FAIL（缺构建出处：--dll-source-commit / --dll-defines / --dll-toolchain）')
+        if not provenance_attested:
+            print('结果: FAIL（出处未声明：--dll-source-commit / --dll-defines / --dll-toolchain）')
             return 2
         print('结果: PASS（身份 + 形状 + 出处）')
         return 0
