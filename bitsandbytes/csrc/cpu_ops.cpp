@@ -3705,10 +3705,23 @@ long long fused_rmsnorm_fwd_cpu(
     // 旧记录此处写"有效带宽 18.74 → 30.09 GB/s（实测上限 35.5 的 85%）"：那个 35.5 GB/s 分母
     // 后经独立测量作废（本机上限：读约 25、NT 写 22~25 GB/s），且名义 B/元素不等于 DRAM 流量
     //（第二趟是缓存命中）。故只保留绝对时间与比值，不再给该口径的百分比。
-    // NT 开关阈值与"字节 x 线程"二维数据见 cpu_cache.h 的 bnb_nt_threshold_bytes。
-    // D 很大时第二趟退化为 L2 命中，仍优于让 out 多走一次 DRAM 往返。
-    const bool use_nt = bnb_is_aligned_for_nt(out) &&
-                        ((size_t)M * (size_t)D * sizeof(float) >= bnb_nt_threshold_bytes());
+    // NT 开关：**按总足迹**判，不是按 out 字节数。这个核还流式读 x（和 res），这些读会把 out 的
+    // 行从 L3 里驱逐掉 ⇒ 常规写照样付 RFO 的 DRAM 读。决定胜负的是 x+res+out 的总足迹与每 CCX L3
+    // （本机 4 MiB）的关系：
+    //     实测（thr0/thr2/thr16/thr20000 四构建，交错、hot、21 次中位、单线程、D=2048）：
+    //       1 MiB 0.95~1.07x（等价）   2 MiB 1.79~1.82x   3 MiB 1.55x   4 MiB 1.45x
+    //       8 MiB 1.49x  12 MiB 1.44x  16 MiB 1.47x      32 MiB 1.46x
+    //     out=1 MiB ⇒ 足迹 3 MiB < 4 MiB ⇒ 全驻留 ⇒ NT 无益；out=2 MiB ⇒ 足迹 6 MiB ⇒ 溢出 ⇒ NT 赢。
+    // 纯写核不能用这个判据（同一份数据在纯写下 4 MiB 会退化到 0.23~0.89x）——它们仍走
+    // bnb_nt_threshold_bytes() 的 16 MiB 全局保守阈值，见 cpu_cache.h。
+    const size_t out_bytes = (size_t)M * (size_t)D * sizeof(float);
+    const size_t footprint = out_bytes * (res ? 3u : 2u);   // x (+ res) + out
+#if defined(BNB_NT_FORCE_OFF)
+    // 仅供 A/B：把这个核的 NT 彻底关掉，作为控制臂（判据本身不受 BNB_NT_THRESHOLD_MB 影响）
+    const bool use_nt = false;
+#else
+    const bool use_nt = bnb_is_aligned_for_nt(out) && bnb_nt_stream_worth(footprint);
+#endif
 #if defined(_OPENMP)
 #pragma omp parallel
 #endif

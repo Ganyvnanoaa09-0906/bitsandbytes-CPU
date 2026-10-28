@@ -337,6 +337,25 @@ inline bool bnb_is_aligned_for_nt(const void* p) {
     return (reinterpret_cast<uintptr_t>(p) & 31u) == 0;
 }
 
+// ---- 流式核（读写混合）的 NT 判据 ----
+//
+// 上面的 16 MiB 阈值针对的是"纯写/写主导"的核：它们的输出行如果留在 L3，常规写就完全命中，
+// NT 绕过缓存反而是自伤。但**读写混合**的核（例如 fused_rmsnorm 还流式读 x 和 res）不同：
+// 那些读会把 out 的行从 L3 驱逐，常规写照样付 RFO 的 DRAM 读 ⇒ NT 的价值提前出现。
+//
+// 判据因此改成"总足迹 vs 每 CCX 的 L3"：足迹 = x (+res) + out。本机每 CCX L3 = 4 MiB：
+//   out=1 MiB ⇒ 足迹 3 MiB < 4 MiB ⇒ 全驻留 ⇒ NT 无益（实测 0.95~1.07x）
+//   out=2 MiB ⇒ 足迹 6 MiB > 4 MiB ⇒ 溢出     ⇒ NT 立刻 1.79~1.82x（实测，单线程）
+// 与纯写核相差 4~8 倍的拐点，来源就是这个被漏掉的"读侧流"变量。
+inline size_t bnb_stream_l3_budget() {
+    const size_t l3 = bnb_cache_detail::cache_info().l3;   // 每 CCX
+    return l3 ? l3 : (size_t)(4u << 20);
+}
+
+inline bool bnb_nt_stream_worth(size_t footprint_bytes) {
+    return footprint_bytes > bnb_stream_l3_budget();
+}
+
 // 每个 CCX（共享同一 L3 的那组逻辑处理器）有多少逻辑处理器；0 表示未知。
 //
 // 【只做检测，不参与任何判据】。原因（2026-10-28，审计者指出）：这份 zig 构建没有 OpenMP，
