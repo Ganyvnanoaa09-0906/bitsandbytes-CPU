@@ -72,6 +72,7 @@ struct CacheInfo {
     size_t l2;
     size_t l3;
     unsigned char discovered;   // bit0 = CPUID 成功, bit1 = 用了 OS 兜底
+    unsigned l3_sharing;        // 共享 L3 的【逻辑处理器】数（CPUID EDX[25:14]+1），0=未知
 };
 
 inline void cpuid_x(int r[4], int leaf, int sub) {
@@ -87,8 +88,9 @@ inline void cpuid_x(int r[4], int leaf, int sub) {
 #endif
 }
 
-// 枚举一个 leaf 的缓存描述符；成功返回非零
-inline int enum_leaf(int leaf, size_t* l1d, size_t* l2, size_t* l3) {
+// 枚举一个 leaf 的缓存描述符；成功返回非零。
+// l3_sharing 取 EDX[25:14]+1（"共享此缓存的逻辑处理器数"），只在 L3 条目上记录。
+inline int enum_leaf(int leaf, size_t* l1d, size_t* l2, size_t* l3, unsigned* l3_sharing) {
     int r[4], sub, found = 0;
     for (sub = 0; sub < 16; ++sub) {
         cpuid_x(r, leaf, sub);
@@ -102,9 +104,52 @@ inline int enum_leaf(int leaf, size_t* l1d, size_t* l2, size_t* l3) {
         const size_t size = (size_t)ways * (size_t)parts * (size_t)line * (size_t)sets;
         if (level == 1 && type == 1 && *l1d == 0) { *l1d = size; found = 1; }
         else if (level == 2 && type == 3 && *l2 == 0) { *l2 = size; found = 1; }
-        else if (level == 3 && type == 3 && *l3 == 0) { *l3 = size; found = 1; }
+        else if (level == 3 && type == 3 && *l3 == 0) {
+            *l3 = size;
+            if (l3_sharing) *l3_sharing = (unsigned)(((r[3] >> 14) & 0x3ff) + 1);
+            found = 1;
+        }
     }
     return found;
+}
+
+// 用 OS API 直接读出"共享 L3 的逻辑处理器数"。
+// 为什么不信 CPUID 的 sharing 字段：它在 AMD 与 Intel 上语义不同，实测本机 CPUID 给 1（错），
+// 而 Windows 的 CACHE_RELATIONSHIP 给出的是真实亲和掩码。Linux 暂未实现（返回 0 = 未知）。
+inline unsigned os_l3_sharing() {
+#if defined(_WIN32)
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationCache, nullptr, &len);
+    if (!len) return 0;
+    char* buf = (char*)malloc(len);
+    if (!buf) return 0;
+    unsigned best = 0;
+    size_t best_sz = 0;
+    if (GetLogicalProcessorInformationEx(RelationCache,
+            (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)buf, &len)) {
+        char* p = buf;
+        char* end = buf + len;
+        while (p < end) {
+            PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX e =
+                (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)p;
+            if (e->Relationship == RelationCache && e->Cache.Level == 3) {
+                const size_t sz = (size_t)e->Cache.CacheSize;
+                if (sz >= best_sz) {
+                    ULONG_PTR m = e->Cache.GroupMask.Mask;
+                    unsigned cnt = 0;
+                    while (m) { cnt += (unsigned)(m & 1u); m >>= 1; }
+                    best_sz = sz;
+                    best = cnt;
+                }
+            }
+            p += e->Size;
+        }
+    }
+    free(buf);
+    return best;
+#else
+    return 0;
+#endif
 }
 
 // Decimal parse with no libc strto* call: see the comment in os_fallback for why that
@@ -122,7 +167,7 @@ inline bool parse_decimal(const char* s, size_t* out) {
     return any;
 }
 
-inline void os_fallback(size_t* l1d, size_t* l2, size_t* l3) {
+inline void os_fallback(size_t* l1d, size_t* l2, size_t* l3, unsigned* l3_sharing) {
 #if defined(_WIN32)
     DWORD len = 0;
     GetLogicalProcessorInformationEx(RelationCache, nullptr, &len);
@@ -133,6 +178,7 @@ inline void os_fallback(size_t* l1d, size_t* l2, size_t* l3) {
             (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)buf, &len)) {
         char* p = buf;
         char* end = buf + len;
+        size_t best_l3 = 0;
         while (p < end) {
             PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX e =
                 (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)p;
@@ -140,7 +186,19 @@ inline void os_fallback(size_t* l1d, size_t* l2, size_t* l3) {
                 const size_t sz = (size_t)e->Cache.CacheSize;   // 字段是 CacheSize
                 if (e->Cache.Level == 1 && e->Cache.Type == CacheData && *l1d == 0) *l1d = sz;
                 else if (e->Cache.Level == 2 && *l2 == 0) *l2 = sz;
-                else if (e->Cache.Level == 3 && sz > *l3) *l3 = sz;
+                else if (e->Cache.Level == 3 && sz > best_l3) {
+                    best_l3 = sz;
+                    if (l3_sharing) {
+                        // 共享该 L3 的逻辑处理器数 = 亲和掩码 popcount。
+                        // 不用 CPUID 的 sharing 字段：它在 AMD 上语义与 Intel 不同，
+                        // 实测本机读出来是 1（错），而 API 给的是真实亲和掩码。
+                        ULONG_PTR m = e->Cache.GroupMask.Mask;
+                        unsigned cnt = 0;
+                        while (m) { cnt += (unsigned)(m & 1u); m >>= 1; }
+                        *l3_sharing = cnt;
+                    }
+                }
+                if (e->Cache.Level == 3 && sz > *l3) *l3 = sz;
             }
             p += e->Size;
         }
@@ -198,19 +256,23 @@ inline void os_fallback(size_t* l1d, size_t* l2, size_t* l3) {
 
 inline const CacheInfo& cache_info() {
     static CacheInfo info = [] {
-        CacheInfo c = {0, 0, 0, 0};
+        CacheInfo c = {0, 0, 0, 0, 0};
         size_t l1 = 0, l2 = 0, l3 = 0;
-        if (enum_leaf(4, &l1, &l2, &l3)) c.discovered |= 1;          // Intel
-        if (enum_leaf(0x8000001D, &l1, &l2, &l3)) c.discovered |= 1; // AMD（必需）
+        unsigned sharing = 0;
+        if (enum_leaf(4, &l1, &l2, &l3, &sharing)) c.discovered |= 1;          // Intel
+        if (enum_leaf(0x8000001D, &l1, &l2, &l3, &sharing)) c.discovered |= 1; // AMD（必需）
         if (l1 == 0 || l2 == 0 || l3 == 0) {
-            os_fallback(&l1, &l2, &l3);
+            os_fallback(&l1, &l2, &l3, &sharing);
             c.discovered |= 2;
         }
         // 最后的保守兜底：假设三台里【最小】的那个，宁可少赚也不要缓存抖动
         if (l1 == 0) l1 = 32u * 1024;
         if (l2 == 0) l2 = 256u * 1024;
         if (l3 == 0) l3 = 1024u * 1024;
-        c.l1d = l1; c.l2 = l2; c.l3 = l3;
+        // CPUID 的 sharing 字段在 AMD 上不可靠（实测 1），用 OS 亲和掩码覆盖它。
+        const unsigned api_sharing = os_l3_sharing();
+        if (api_sharing) sharing = api_sharing;
+        c.l1d = l1; c.l2 = l2; c.l3 = l3; c.l3_sharing = sharing;
         return c;
     }();
     return info;
@@ -273,6 +335,16 @@ inline size_t bnb_nt_threshold_bytes() {
 // NT store 还需 32 字节对齐；调用方用它做运行时检查
 inline bool bnb_is_aligned_for_nt(const void* p) {
     return (reinterpret_cast<uintptr_t>(p) & 31u) == 0;
+}
+
+// 每个 CCX（共享同一 L3 的那组逻辑处理器）有多少逻辑处理器；0 表示未知。
+//
+// 【只做检测，不参与任何判据】。原因（2026-10-28，审计者指出）：这份 zig 构建没有 OpenMP，
+// 内核实际是单线程的；把 threads > cores_per_ccx 这类规则接进来，在本机构建里恒为假，
+// 就成了"无法被任何本机测试触发的分支"。等有能产出多线程二进制的工具链（MSVC 或 zig+omp）
+// 并能用二维表实测之后，再把 12 MiB / 6 MiB 的规则接上。
+inline unsigned bnb_cores_per_ccx() {
+    return bnb_cache_detail::cache_info().l3_sharing;
 }
 
 #endif // BNB_CPU_CACHE_H

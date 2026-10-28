@@ -15,6 +15,7 @@ int main() {
            get_cache_blocks<float>(128));
     printf("  get_cache_blocks<float>(128*4) = %d\n", get_cache_blocks<float>(512));
     printf("  bnb_nt_threshold_bytes()     = %.2f MB\n", (double)bnb_nt_threshold_bytes() / 1e6);
+    printf("  L3 sharing (logical procs)   = %u   (0=unknown)\n", bnb_cores_per_ccx());
     printf("\n");
     printf("  期望（Zen2 Renoir）: L1d 32 KB, L2 512 KB, L3 4096 KB/CCX\n");
     return 0;
