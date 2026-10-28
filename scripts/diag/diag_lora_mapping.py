@@ -16,6 +16,10 @@ Three checks, cheapest first:
 Usage:
   python diag_lora_mapping.py --lora D:\work\lora_char2_run500\final
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import argparse
 import json
 import os

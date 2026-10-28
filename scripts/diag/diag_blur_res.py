@@ -5,6 +5,10 @@
 看被拒图和保留图的差异到底来自「图本身糊」还是「缩得太狠」。
 """
 from __future__ import annotations
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import json, os, random, sys
 import numpy as np
 from PIL import Image

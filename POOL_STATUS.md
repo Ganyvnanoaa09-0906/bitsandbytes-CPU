@@ -99,7 +99,7 @@ dl_sets 短边中位 960，而 clean_webp 是 1200。模糊阈值随分辨率**�
 | `build_final_pool.ps1` | 新增。并池流水线：跨池去重 → 前后账目 → 重新 tokenize |
 | `scripts/probe/probe_new_data.py` | 新增。抽样拼联系表，人工检查裁剪/水印/码区 |
 | `scripts/probe/probe_rejected.py` | 新增。把 rejected.jsonl 里某类拒绝原因抽样拼图，验证是否误杀 |
-| `diag_blur_res.py` | 新增。对比原始分辨率 vs 缩放后的拉普拉斯方差 |
+| `scripts/diag/diag_blur_res.py` | 新增。对比原始分辨率 vs 缩放后的拉普拉斯方差 |
 
 ### 为什么加 `--resume`
 

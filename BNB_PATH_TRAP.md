@@ -99,7 +99,7 @@ python -m pip install -e .
 
 ## 相关文件
 
-- `D:\work\diag_bnb_path.py` —— 外层 vs 内层的逐项对照（6/6 PASS）
+- `D:\work\scripts/diag/diag_bnb_path.py` —— 外层 vs 内层的逐项对照（6/6 PASS）
 - `D:\work\diag_bnb_kernels.py` —— 命名空间路径下内核注册缺失的证据
 - `D:\work\diag_namespace.py` —— 受控实验：命名空间包是被哪一步带进 sys.path 的
 - 报告 `CPU_FORGE_TECHNICAL_REPORT.md` §10.160

@@ -10,6 +10,10 @@
   - 若连轻度加噪都还原不回来 ⇒ 采样器/日程/尺度 有硬 bug。
 同时打印每一步潜变量的 std，看它是否发散。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import argparse, os, sys
 import torch
 import torch.nn.functional as F
