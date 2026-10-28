@@ -1,20 +1,28 @@
 # -*- coding: utf-8 -*-
-"""check_root_regroup.py — 根目录脚本归组的验收器（先于移动写好，用于基线与每批验收）。
+"""check_root_regroup.py — 根目录脚本归组的验收器（v2，2026-10-28 重写）。
 
-判据（按蓝军 2026-10-28 的五处修正）：
-  1. **引用边解析**：枚举全仓 .py 的 `import X` / `from X import …` / `import X as Y` /
-     `importlib.import_module("X")` 四类；对每条指向"被移动/被整理脚本"的边，断言目标模块文件存在。
-     判据是「每条原有边仍可解析」，**不是**"被 import 的集合相等"（dotted name 移动后必然变）。
-  2. **静态语法校验**：对仓库内 .py 全部 `ast.parse`，捕获批量文本替换造成的语法破坏。
-  3. **不 import 执行**：默认不执行任何被检脚本（它们顶层可能 load 模型/分配 GB/死循环）。
-     仅对白名单（`--smoke` 指定）做带 timeout 的 subprocess 冒烟。
-  4. 根目录 `.py` 计数、`git ls-files` 计数（供每批比对）。
-  5. 结束后可选跑 `tools/check_repo_hygiene.py`（--hygiene）。
+v1 的致命缺陷（蓝军证伪测试发现）：`module_index()` 无条件按 **basename** 登记
+（`idx.setdefault(mod.split('.')[-1], …)`），于是任何文件无论被移到哪个目录，
+`import <name>` 都能"解析成功" —— 门禁因此永远 PASS（他把 109 条断边移走后仍 PASS）。
+
+v2 判据：
+  1. **只登记"从该 base 真的可导入"的名字**：
+     - `base/foo.py` → `foo`
+     - `base/pkg/__init__.py` → `pkg`（要求 base/pkg/__init__.py 存在）
+     - `base/pkg/mod.py` → `pkg.mod`（要求 base/pkg/__init__.py 存在）
+     **删除 basename 兜底**。
+  2. 两个 sys.path 基点：仓库根、`bitsandbytes/`（Python 包所在层）。
+  3. **相对导入**（`from .x import y`，`node.level>0`）按 importer 所在包解析；
+     importer 不在包内则显式计为 unresolved，不静默当绝对导入。
+  4. `--selftest`：S1 当前树应 PASS；S2 在临时 clone 里 `git mv` 一个被 import 的模块且不改引用，
+     必须 unresolved>0 / exit≠0 —— S2 不过则本门禁不可用于归组。
+  5. 语法错误只算"基线之后新增"；`gt1030/_t_arena.py` 这类既有问题只提示。
 
 用法：
-  python tools/check_root_regroup.py --baseline        # 打基线（违规必须为 0）
-  python tools/check_root_regroup.py --check           # 每批之后跑；有违规即 exit 1
-  python tools/check_root_regroup.py --edges           # 打印所有指向根脚本的边（调试用）
+  python tools/check_root_regroup.py --baseline
+  python tools/check_root_regroup.py --check
+  python tools/check_root_regroup.py --selftest
+  python tools/check_root_regroup.py --check --root D:\tmp\clone
 """
 import argparse
 import ast
@@ -24,179 +32,282 @@ import subprocess
 import sys
 
 ROOT = r'D:\work\bitsandbytes-CPU'
+PKG_BASE = 'bitsandbytes'          # 第二个 sys.path 基点（Python 包所在层）
 EXCLUDE_DIRS = {'.git', '__pycache__', 'build', 'dist', 'dist_windows', 'dist_linux', 'cache_latents',
                 'i5build', '_repo_archive_2026-10-27', '.pytest_cache', '.ruff_cache', 'node_modules'}
 
 
-def walk_py():
-    """只扫 **git 跟踪** 的 .py —— 未跟踪的草稿/临时文件不应参与归组断言
-    （实测：`gt1030/_t_arena.py` 是未跟踪的临时文件，带未闭合三引号，会把基线判成 FAIL）。"""
-    out = subprocess.run(['git', '-C', ROOT, 'ls-files', '*.py'],
-                         capture_output=True, text=True, encoding='utf-8', errors='replace')
-    paths = [p for p in out.stdout.splitlines() if p.strip()]
-    if not paths:                                  # 退回文件系统遍历
-        for dirpath, dirnames, filenames in os.walk(ROOT):
-            dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS]
-            for f in filenames:
-                if f.endswith('.py'):
-                    yield os.path.join(dirpath, f)
-        return
-    for rel in paths:
-        if rel.split('/')[0] in EXCLUDE_DIRS:
+def tracked_py(root):
+    out = subprocess.run(['git', '-C', root, 'ls-files', '*.py'], capture_output=True, text=True,
+                         encoding='utf-8', errors='replace').stdout
+    for rel in out.splitlines():
+        rel = rel.strip()
+        if not rel or rel.split('/')[0] in EXCLUDE_DIRS:
             continue
-        yield os.path.join(ROOT, rel.replace('/', os.sep))
+        yield rel.replace('/', os.sep)
 
 
-def module_index():
-    """可导入模块名 → 文件路径。
+def has_init(base, dirs):
+    """dirs 的每一级（1..n）都必须有 __init__.py 才算包。"""
+    for i in range(1, len(dirs) + 1):
+        if not os.path.exists(os.path.join(base, *dirs[:i], '__init__.py')):
+            return False
+    return True
 
-    仓库有两个 sys.path 基点：仓库根（根目录脚本互 import）与 `bitsandbytes/`（Python 包所在层），
-    所以同一个文件可能有两个可导入名，两个都登记。`__init__.py` 的模块名是它所在目录。
-    """
-    bases = [ROOT, os.path.join(ROOT, 'bitsandbytes')]
+
+def build_index(root, base):
+    """base 下"真的可导入"的名字 → 相对 root 的路径列表。**没有 basename 兜底。**"""
     idx = {}
-    for p in walk_py():
-        rel = os.path.relpath(p, ROOT)
-        for base in bases:
-            rel_base = os.path.relpath(p, base)
-            if rel_base.startswith('..'):
-                continue
-            mod = rel_base[:-3].replace(os.sep, '.')      # 去掉 .py
-            if mod.endswith('__init__'):
-                mod = mod[:-len('__init__')].rstrip('.')  # 包名 = 目录
-            if not mod:
-                continue
-            idx.setdefault(mod.split('.')[-1], []).append(rel)
-            idx.setdefault(mod, []).append(rel)
+    if not os.path.isdir(base):
+        return idx
+    base_abs = os.path.abspath(base)
+    for rel in tracked_py(root):
+        abs_p = os.path.abspath(os.path.join(root, rel))
+        if not abs_p.startswith(base_abs + os.sep):
+            continue
+        rel_base = os.path.relpath(abs_p, base_abs)
+        parts = rel_base[:-3].split(os.sep)          # 去 .py
+        if parts[-1] == '__init__':
+            dirs = parts[:-1]
+            if dirs and has_init(base_abs, dirs):
+                idx.setdefault('.'.join(dirs), []).append(rel)
+            continue
+        if len(parts) > 1:
+            if not has_init(base_abs, parts[:-1]):
+                continue                             # 不是包 ⇒ 不可 `import`
+            idx.setdefault('.'.join(parts), []).append(rel)
+        else:
+            idx.setdefault(parts[0], []).append(rel)  # base/foo.py
     return idx
 
 
-def edges():
-    """产出 (from_rel, dotted_module) 引用边；覆盖四种导入写法。"""
+_CACHE = {}
+_IDX = {}
+
+
+def idx_for(root, base):
+    """按 base 构建（并缓存）可导入名索引。base 可以是仓库根、包层，或某个脚本目录。"""
+    key = (root, os.path.abspath(base))
+    if key not in _IDX:
+        _IDX[key] = build_index(root, base)
+    return _IDX[key]
+
+
+def indexes(root):
+    if root not in _CACHE:
+        _CACHE[root] = (idx_for(root, root), idx_for(root, os.path.join(root, PKG_BASE)))
+    return _CACHE[root]
+
+
+def local_tops(root):
+    ir, ip = indexes(root)
+    return set(k.split('.')[0] for k in ir) | set(k.split('.')[0] for k in ip)
+
+
+def package_of(rel):
+    dirs = rel.split(os.sep)[:-1]
+    return '.'.join(dirs)
+
+
+def edges(root):
+    """(from_rel, module, level, lineno)"""
     out = []
-    for p in walk_py():
-        rel = os.path.relpath(p, ROOT)
+    for rel in tracked_py(root):
+        p = os.path.join(root, rel)
         try:
             tree = ast.parse(open(p, 'rb').read())
         except SyntaxError as e:
-            out.append((rel, '<SYNTAX_ERROR:%s>' % e))
+            out.append((rel, '<SYNTAX_ERROR:%s>' % e, 0, 0))
             continue
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for a in node.names:
-                    out.append((rel, a.name))
+                    out.append((rel, a.name, 0, node.lineno))
             elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    out.append((rel, node.module))
-                    for a in node.names:
-                        out.append((rel, node.module + '.' + a.name))
+                if node.level:
+                    out.append((rel, node.module or '', node.level, node.lineno))
+                elif node.module:
+                    out.append((rel, node.module, 0, node.lineno))
             elif isinstance(node, ast.Call):
                 fn = node.func
                 name = getattr(fn, 'attr', getattr(fn, 'id', ''))
                 if name in ('import_module', '__import__') and node.args:
                     arg = node.args[0]
-                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                        out.append((rel, arg.value))
+                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str) \
+                            and not arg.value.startswith('.'):
+                        out.append((rel, arg.value, 0, node.lineno))
     return out
 
 
-def resolve(mod, idx):
-    """模块或模块前缀是否可解析（返回命中的相对路径列表）。"""
-    parts = mod.split('.')
-    for i in range(len(parts), 0, -1):
-        key = '.'.join(parts[:i])
-        if key in idx:
-            return idx[key]
-    return []
+def resolve(root, rel, mod, level):
+    """绝对导入：按 importer 的运行时 sys.path 解析 —— [脚本所在目录, 仓库根, 包层]；
+    相对导入：按 importer 的包解析（根目录文件的相对导入必然 ImportError，由 analyse 单列 exempt）。"""
+    ir, ip = indexes(root)
+    importer_dir = os.path.dirname(os.path.abspath(os.path.join(root, rel)))
+    if level:
+        # 相对导入必须按 **importer 所在包** 解析，而"包名"取决于 importer 是从哪个 base 看的：
+        #   base=ROOT              → bitsandbytes/bitsandbytes/__init__.py 的包名是 bitsandbytes.bitsandbytes
+        #   base=ROOT/bitsandbytes → 同一个文件的包名是 bitsandbytes
+        # 两个 base 都试；任一命中即视为可解析。
+        abs_p = os.path.abspath(os.path.join(root, rel))
+        tried = []
+        for base in (root, os.path.join(root, PKG_BASE)):
+            base_abs = os.path.abspath(base)
+            if not abs_p.startswith(base_abs + os.sep):
+                continue
+            relb = os.path.relpath(abs_p, base_abs)
+            parts = relb.split(os.sep)[:-1]           # 目录链 = 包
+            if level > 1:
+                if len(parts) < level - 1:
+                    continue
+                parts = parts[:len(parts) - (level - 1)]
+            if not parts:
+                continue
+            cand = '.'.join(parts + ([mod] if mod else []))
+            tried.append(cand)
+            if cand in ir or cand in ip:
+                return True, 'relative:' + cand
+        return False, 'relative_unresolved:' + '|'.join(tried)
+    # 3) 绝对导入：依次试 [importer 目录, 仓库根, 包层]
+    seen = []
+    for base in (importer_dir, root, os.path.join(root, PKG_BASE)):
+        base_abs = os.path.abspath(base)
+        if base_abs in seen:
+            continue
+        seen.append(base_abs)
+        bidx = idx_for(root, base_abs)
+        if mod in bidx:
+            return True, 'exact@%s' % os.path.relpath(base_abs, root)
+        parts = mod.split('.')
+        for i in range(len(parts) - 1, 0, -1):
+            cand = '.'.join(parts[:i])
+            if cand in bidx:
+                return True, 'prefix:%s@%s' % (cand, os.path.relpath(base_abs, root))
+    return False, 'not_found'
+
+
+def analyse(root, baseline_json=None):
+    ir, ip = indexes(root)
+    tops = local_tops(root)
+    es = edges(root)
+    syntax_bad = sorted({f for f, m, _l, _n in es if m.startswith('<SYNTAX_ERROR')})
+    real = [(f, m, l, n) for f, m, l, n in es if not m.startswith('<SYNTAX_ERROR')]
+    # "本地"判定：顶层名命中【当前可导入名】或【仓库里任何 .py 的文件名 stem】。
+    # 后者是必要的：模块被移到不可导入的位置后，它的 stem 仍存在于仓库，
+    # 引用它的边必须继续被检查（否则 S2 那种断边会被整体跳过）。
+    stems = {os.path.basename(rel)[:-3] for rel in tracked_py(root)}
+    local = [(f, m, l, n) for f, m, l, n in real
+             if l > 0 or (m and (m.split('.')[0] in tops or m.split('.')[0] in stems))]
+    unresolved = []
+    exempt = []
+    for f, m, l, n in local:
+        ok, why = resolve(root, f, m, l)
+        if ok:
+            continue
+        if l > 0 and not package_of(f):
+            # 根目录文件（非包内）的 `from . import x` 在 Python 语义下必定 ImportError，
+            # 这类代码必然自带 except ImportError 的绝对导入 fallback（实测 bitsandbytes_cpu_cli.py:1086）。
+            # 单列 exempt，不计失败，但要报出来供人核。
+            exempt.append((f, m, l, n, why))
+        else:
+            unresolved.append((f, m, l, n, why))
+    root_py = len([f for f in os.listdir(root) if f.endswith('.py')
+                   and os.path.isfile(os.path.join(root, f))])
+    tracked = subprocess.run(['git', '-C', root, 'ls-files'], capture_output=True, text=True,
+                             encoding='utf-8', errors='replace').stdout.splitlines()
+    return dict(root_py=root_py, tracked=len(tracked), py_files=sum(1 for _ in tracked_py(root)),
+                edges=len(real), local_edges=len(local), syntax_bad_files=syntax_bad,
+                unresolved=unresolved, exempt=exempt, idx_root=len(ir), idx_pkg=len(ip))
+
+
+def report(st, baseline_json=None):
+    print('== 统计 ==')
+    print('  仓库内 .py      : %d' % st['py_files'])
+    print('  根目录 .py      : %d' % st['root_py'])
+    print('  git ls-files    : %d' % st['tracked'])
+    print('  导入边          : %d（本地 %d）' % (st['edges'], st['local_edges']))
+    print('  可导入名        : root=%d / pkg=%d' % (st['idx_root'], st['idx_pkg']))
+    print('  语法错误文件    : %d' % len(st['syntax_bad_files']))
+    print('  **无法解析的边**: %d' % len(st['unresolved']))
+    print('  根目录相对导入（exempt）: %d' % len(st.get('exempt') or []))
+    for f, m, l, n, why in (st.get('exempt') or [])[:10]:
+        print('    [EXEMPT] %s:%d  .%s' % (f, n, m))
+    for f, m, l, n, why in st['unresolved'][:30]:
+        print('    [UNRESOLVED] %s:%d  %s  (%s)' % (f, n, '.' * l + m, why))
+    if len(st['unresolved']) > 30:
+        print('    … 其余 %d 条省略' % (len(st['unresolved']) - 30))
+    new_bad = []
+    if baseline_json and os.path.exists(baseline_json):
+        base = json.load(open(baseline_json, encoding='utf-8'))
+        base_bad = set(base.get('syntax_bad_files') or [])
+        new_bad = [f for f in st['syntax_bad_files'] if f not in base_bad]
+        if base_bad:
+            print('  既有语法错误（基线内，仅提示）: %s' % ', '.join(sorted(base_bad)))
+    else:
+        new_bad = st['syntax_bad_files']
+    if new_bad:
+        print('  新增语法错误: %s' % ', '.join(new_bad))
+    return (len(st['unresolved']) == 0 and not new_bad)
+
+
+def run_selftest(root, baseline_json):
+    print('== S1：当前树应 PASS ==')
+    st = analyse(root, baseline_json)
+    ok1 = report(st, baseline_json)
+    print('  S1: %s' % ('PASS' if ok1 else 'FAIL'))
+    if not ok1:
+        return False
+
+    import shutil
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix='rgselftest_')
+    dest = os.path.join(tmp, 'clone')
+    try:
+        print('\n== S2：移动一个被 import 的模块、不改引用 ⇒ 必须 FAIL ==')
+        subprocess.run(['git', 'clone', '--quiet', '--no-hardlinks', root, dest], check=True)
+        target = 'small_image_model_v2.py'
+        if not os.path.exists(os.path.join(dest, target)):
+            cands = sorted(f for f in os.listdir(dest) if f.endswith('.py'))
+            if not cands:
+                print('  S2: SKIP（副本无 .py）')
+                return True
+            target = cands[0]
+        os.makedirs(os.path.join(dest, 'scripts_moved'), exist_ok=True)
+        subprocess.run(['git', '-C', dest, 'mv', target, 'scripts_moved/' + target], check=True)
+        _CACHE.clear()
+        st2 = analyse(dest, baseline_json)
+        print('  unresolved = %d（移动 %s）' % (len(st2['unresolved']), target))
+        ok2 = len(st2['unresolved']) > 0
+        print('  S2: %s' % ('PASS（抓住断边）' if ok2 else 'FAIL（门禁对断边无感）'))
+        return ok1 and ok2
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument('--root', default=ROOT)
     ap.add_argument('--baseline', action='store_true')
     ap.add_argument('--check', action='store_true')
-    ap.add_argument('--edges', action='store_true')
-    ap.add_argument('--hygiene', action='store_true')
+    ap.add_argument('--selftest', action='store_true')
     ap.add_argument('--json', default=None)
-    ap.add_argument('--baseline-json', default=r'D:\work\video_mvp\regroup_baseline.json',
-                    help='基线 JSON：其中已存在的语法错误只作提示，不算本批新增')
+    ap.add_argument('--baseline-json', default=r'D:\work\video_mvp\regroup_baseline.json')
     a = ap.parse_args()
 
-    idx = module_index()
-    # 只关心【仓库内的本地导入】；stdlib/第三方（os/sys/torch/PIL/…）不参与解析断言
-    local_top = set()
-    for rels in idx.values():
-        for rel in rels:
-            local_top.add(rel.split(os.sep)[0].split('.')[0])
-    es = edges()
-    syntax_bad = [(f, m) for f, m in es if m.startswith('<SYNTAX_ERROR')]
-    real = [(f, m) for f, m in es if not m.startswith('<SYNTAX_ERROR')]
-    local_edges = [(f, m) for f, m in real if m.split('.')[0] in local_top]
-    unresolved = [(f, m) for f, m in local_edges if not resolve(m, idx)]
+    if a.selftest:
+        ok = run_selftest(a.root, a.baseline_json)
+        print('\n自测结果: %s' % ('PASS' if ok else 'FAIL'))
+        return 0 if ok else 1
 
-    root_py = len([f for f in os.listdir(ROOT) if f.endswith('.py') and os.path.isfile(os.path.join(ROOT, f))])
-    tracked = subprocess.run(['git', '-C', ROOT, 'ls-files'], capture_output=True, text=True,
-                             encoding='utf-8', errors='replace').stdout.splitlines()
-    print('== 基线统计 ==')
-    print('  仓库内 .py        : %d' % len(list(walk_py())))
-    print('  根目录 .py        : %d' % root_py)
-    print('  git ls-files      : %d' % len(tracked))
-    print('  导入边（四类合计）: %d（其中本地：%d）' % (len(real), len(local_edges)))
-    print('  语法错误文件      : %d' % len(syntax_bad))
-    print('  无法解析的边      : %d' % len(unresolved))
-
-    if a.edges:
-        for f, m in real:
-            if not resolve(m, idx):
-                print('  [UNRESOLVED] %s -> %s' % (f, m))
-
-    if syntax_bad:
-        print('\n语法错误：')
-        for f, m in syntax_bad[:20]:
-            print('  %s  %s' % (f, m))
-
-    if unresolved:
-        print('\n无法解析的引用边（前 30）：')
-        for f, m in unresolved[:30]:
-            print('  %s -> %s' % (f, m))
-
-    result = dict(root_py=root_py, tracked=len(tracked), edges=len(real), local_edges=len(local_edges),
-                  syntax_bad=len(syntax_bad), syntax_bad_files=sorted({f for f, _ in syntax_bad}),
-                  unresolved=len(unresolved))
+    st = analyse(a.root, a.baseline_json)
+    ok = report(st, None if a.baseline else a.baseline_json)
     if a.json:
-        open(a.json, 'w', encoding='utf-8').write(json.dumps(result, indent=2))
+        payload = dict(st)
+        payload['unresolved'] = [list(x) for x in st['unresolved']]
+        open(a.json, 'w', encoding='utf-8').write(json.dumps(payload, ensure_ascii=False, indent=2))
         print('\n已写 %s' % a.json)
-
-    if a.hygiene:
-        print('\n== repo hygiene ==')
-        r = subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'check_repo_hygiene.py')],
-                           capture_output=True, text=True, encoding='utf-8', errors='replace')
-        print(r.stdout.strip()[-1500:] or r.stderr.strip()[-1500:])
-        result['hygiene_exit'] = r.returncode
-
-    bad_files = sorted({f for f, _ in syntax_bad})
-    pre_existing = []
-    if a.baseline and a.json:
-        pass
-    if os.path.exists(a.baseline_json) and not a.baseline:
-        try:
-            base = json.load(open(a.baseline_json, encoding='utf-8'))
-            base_bad = set(base.get('syntax_bad_files') or [])
-            pre_existing = [f for f in bad_files if f in base_bad]
-            new_bad = [f for f in bad_files if f not in base_bad]
-        except Exception:
-            new_bad = bad_files
-    else:
-        new_bad = bad_files
-    if pre_existing:
-        print('\n已存在的语法错误（非本批引入，只作提示）：%s' % ', '.join(pre_existing))
-    if new_bad:
-        print('\n本批新增语法错误：%s' % ', '.join(new_bad))
-
     if a.baseline:
-        # 打基线时：当前语法错误全部记入基线，不算"新增"
-        ok = (len(unresolved) == 0)
-    else:
-        ok = (len(new_bad) == 0 and len(unresolved) == 0)
+        ok = True
     print('\n结果: %s' % ('PASS（无新增违规）' if ok else 'FAIL（见上）'))
     return 0 if ok else 1
 
