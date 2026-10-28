@@ -396,8 +396,10 @@ optimizer allocates state only to trainable parameters).
 ### 3.8 iGPU (DirectML) block-level resident executor (gpu_scheduler.py, experimental)
 
 **Motivation**: on machines with no dedicated VRAM (R5-4500U shares DDR4-2667 with the
-CPU; measured usable bandwidth is only ~21-22 GB/s, about half the 42.7 GB/s
-theoretical), there is no bandwidth slack to "schedule". The only viable form is
+CPU). Measured per access mode: streaming read ~25 GB/s, NT store ~22 GB/s, plain store
+payload ~8.7 GB/s (~17 GB/s of real DRAM traffic once RFO is counted), copy ~25-26 GB/s both
+directions (~12.5-13.1 GB/s one way). The 42.7 GB/s theoretical figure is a reference only and
+is never used as a percentage denominator). There is no bandwidth slack to "schedule". The only viable form is
 **fewer bytes moved + fewer syncs**: frozen base weights stay resident on the iGPU
 (zero weight transfer per step), forward and backward run on the iGPU for the whole
 step, and the device is synchronized once per step.

@@ -281,8 +281,9 @@ The first `gpu_scheduler.py` dispatched large operators by the compute/transfer 
 **Root-cause correction**: the 2x slowdown was not "transfer bandwidth" — every
 `.to("cpu")/item()` in `torch_directml` is a **full queue drain (~10-15ms each)**;
 8 layers × 2 round trips ≈ 20 drains ≈ 200ms+. Bandwidth measurement confirms it:
-multi-process memcpy reaches only ~21-22 GB/s (about half the 42.7 GB/s theoretical)
-— the platform's bandwidth ceiling, with nothing to schedule.
+copy reaches ~25-26 GB/s both directions (~12.5-13.1 GB/s one way), streaming read ~25 GB/s
+and NT store ~22 GB/s — the platform's bandwidth ceiling, with nothing to schedule. The
+42.7 GB/s theoretical figure is a reference only, never a percentage denominator.
 
 **Phase 2: block-level resident executor**
 
