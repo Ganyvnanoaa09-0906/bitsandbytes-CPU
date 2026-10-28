@@ -9,6 +9,9 @@
 2. **不绑定本机绝对路径。** 仓库根默认由 `git rev-parse --show-toplevel` 发现，CI 可直接跑。
 3. **追溯链四段**：源码 commit → 构建定义（工具链 + -D）→ DLL sha256 → sdist 内嵌 sha256。
    缺任何一段 ⇒ 退出码 2（而不是静默通过）。
+   **默认归一化**：两次构建的原始字节不同（成员 mtime / gzip 头），归一化后字节相同；
+   启用时发布物身份取归一化 sha（字段 publish_sha256 / publish_basis），原始 sha 仅作构建日志。
+   三件必须写进发布记录：① 发布物是哪个 sha ② `pip download` 字节 == 该 sha ③ 内嵌 DLL 检查对归一化文件做。
    **语义限度**：前两段是**操作者声明（attested）**，不是机器证明。任何人填三个字符串都能
    让 attested=true。要变成证明（verified），必须用该 commit + 该 defines **重建一次并比对 .text**；
    本工具不做重建，所以记录里恒为 provenance_verified=false。
@@ -94,8 +97,10 @@ def main():
     ap.add_argument('--dll-toolchain', default=None, help='工具链描述，例如 "zig 0.14.1 windows-gnu"')
     ap.add_argument('--root', default=None)
     ap.add_argument('--json', default=None)
-    ap.add_argument('--normalize', action='store_true',
-                    help='构建后做确定性归一化（tar 元数据 + gzip 头），并记录两个 sha256')
+    ap.add_argument('--normalize', dest='normalize', action='store_true', default=True,
+                    help='（默认开启）构建后做确定性归一化；用 --no-normalize 关闭')
+    ap.add_argument('--no-normalize', dest='normalize', action='store_false',
+                    help='关闭归一化；此时发布物身份就是原始 sha256')
     ap.add_argument('--keep', action='store_true')
     a = ap.parse_args()
 
@@ -197,10 +202,15 @@ def main():
             'sdist_bytes': os.path.getsize(sdist),
             'sdist_sha256': sha_file(sdist),
             'sdist_sha256_normalized': norm_sha,
+            'publish_sha256': norm_sha if a.normalize else sha_file(sdist),
+            'publish_basis': 'normalized' if a.normalize else 'raw',
             'sdist_normalized_bytes': norm_bytes,
             'normalized': bool(a.normalize),
             'member_count': len(mnames),
         }
+        basis = 'normalized' if a.normalize else 'raw'
+        pub = norm_sha if a.normalize else sha_file(sdist)
+        print('  发布物身份(%s) = %s' % (basis, pub[:16]))
         if a.json:
             io.open(a.json, 'w', encoding='utf-8', newline='').write(
                 json.dumps(rec, ensure_ascii=False, indent=2))
