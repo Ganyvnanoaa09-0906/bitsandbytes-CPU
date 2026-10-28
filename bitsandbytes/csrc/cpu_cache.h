@@ -231,13 +231,43 @@ inline int get_cache_blocks(int chunk_size) {
 }
 
 // 非临时存储的分档阈值：输出超过它就值得走 NT store。
-// 实测（int8->fp32 dequantize，存储占 80% 流量）：
+//
+// 原始实测（int8->fp32 dequantize，存储占 80% 流量）：
 //     输出 <= 1.0 MB : 普通存储赢（NT 亏 0.69~0.73x）
-//     输出 >= 4.2 MB : NT 赢 2.0~3.1x
-// 交叉点在 L3/2 附近；而 L3 在 8 / 12 / 32+ MB 之间变化 ⇒ 必须运行时推导。
+//     输出 >= 4.2 MB : NT 赢 2.0~3.1x   <- 见下方注：很可能是 cold 目标，已不采用
+// 阈值原为 L3/2。问题：本机 CPUID 的第一条 L3 leaf 报的是**每 CCX 的 4 MiB**
+// （2 CCX x 4 MiB = 8 MiB，已用 GetLogicalProcessorInformationEx 交叉确认），
+// 于是 L3/2 = 2 MiB —— 落在下表的退化区里。
+//
+// 2026-10-28 独立 A/B（另一实现：C# AVX 手写内核、Avx.StoreAlignedNonTemporal、
+// 交错 A/B + 5 次中位 + 两臂输出逐元素一致）。**只保留经复核的尺寸**：
+//     纯写 dst[i]=v ： 16 MiB 2.20~2.45x   256 MiB 2.20~2.74x
+//     两遍 rmsnorm  ： 16 MiB 1.15~1.51x   256 MiB 1.43~1.51x（与本地 1.44~1.52x 吻合）
+//     绝对带宽      ： 纯写 regular 7.9~8.6 -> NT 20.5~22.2 GB/s（RFO 被消除）
+// （初版曾记 "2 MiB 0.75~0.90x"，那条已由作者撤回：当时单次计时仅 0.19 ms，线程起停
+//  与效应同量级。真值见下面 4 MiB 行，更差也更清楚。注释不保留撤回值。）
+//
+// 同一位审计者随后用"单次计时内重复 20 次（每次 >20 ms）+ 15 次中位 + hot 目标"重测
+// 2D 表（输出字节 x 线程数，speedup = regular/NT）：
+//     4 MiB  T=1 0.89x  T=3 0.28x  T=5 0.23x    <- 4 MiB 是退化区，不能作为阈值
+//     6 MiB  T=1 2.61x  T=3 0.67x  T=5 0.27x
+//     8 MiB  T=1 2.73x  T=3 2.79x  T=5 0.30x    <- 8 MiB 恰好塞满聚合 L3（2 x 4 MiB）
+//    12 MiB  T=1 2.87x  T=3 2.87x  T=5 1.11x
+//    16 MiB  T=1 2.86x  T=3 2.77x  T=5 2.74x    <- 与线程数无关的稳定赢区
+// 拐点随并行度右移：胜负取决于"常规写"能否被聚合 L3 完全吸收。
+// T=1 时工作集 = 容量会自我驱逐 ⇒ 6 MiB 就开始赢；T=5 时 8 MiB 仍全命中 ⇒ 0.30x。
+//
+// ⇒ 本处取**保守安全版**：输出 >= 16 MiB 才开 NT（2.7~2.9x，且与线程数无关）。
+// 更进取的二维判据（threads 超过单 CCX 核数时 12 MiB、否则 6 MiB）需要先能可靠拿到
+// "每 CCX 核数"，留作后续；在那之前宁可少用 NT，也不要把开关开在退化区。
+// 另注：旧记录">4.2 MB 赢 2.0~3.1x"很可能是 cold 目标（新 buffer、常规写也要付 RFO），
+// 训练稳态（hot，同一 dst 反复写）才是 4 MiB 输的那个场景 —— 复测必须标明 hot/cold。
+// 编译期可覆盖，用于做 A/B：BNB_NT_THRESHOLD_MB=20000 表示"实际上从不 NT"。
+#ifndef BNB_NT_THRESHOLD_MB
+#define BNB_NT_THRESHOLD_MB 16
+#endif
 inline size_t bnb_nt_threshold_bytes() {
-    const size_t l3 = bnb_cache_detail::cache_info().l3;
-    return l3 ? (l3 / 2) : (size_t)(2u << 20);
+    return (size_t)BNB_NT_THRESHOLD_MB << 20;
 }
 
 // NT store 还需 32 字节对齐；调用方用它做运行时检查
