@@ -220,7 +220,13 @@ def analyse(root, baseline_json=None):
                 unresolved=unresolved, exempt=exempt, idx_root=len(ir), idx_pkg=len(ip))
 
 
-def report(st, baseline_json=None):
+def report(st, baseline_json=None, root=None):
+    # 规则 10（蓝军）：任何"扫描某个根"的工具必须打印它实际扫了哪里 ——
+    # --root 用错时输出格式与 PASS 完全一样，看着像成功。
+    if root:
+        print('== 扫描根 ==')
+        print('  root = %s   (来源：%s)' % (os.path.abspath(root),
+              '--root 显式传入' if os.path.abspath(root) != os.path.abspath(ROOT) else '--root 默认值'))
     print('== 统计 ==')
     print('  仓库内 .py      : %d' % st['py_files'])
     print('  根目录 .py      : %d' % st['root_py'])
@@ -253,7 +259,7 @@ def report(st, baseline_json=None):
 def run_selftest(root, baseline_json):
     print('== S1：当前树应 PASS ==')
     st = analyse(root, baseline_json)
-    ok1 = report(st, baseline_json)
+    ok1 = report(st, baseline_json, root=root)
     print('  S1: %s' % ('PASS' if ok1 else 'FAIL'))
     if not ok1:
         return False
@@ -300,7 +306,7 @@ def main():
         return 0 if ok else 1
 
     st = analyse(a.root, a.baseline_json)
-    ok = report(st, None if a.baseline else a.baseline_json)
+    ok = report(st, None if a.baseline else a.baseline_json, root=a.root)
     if a.json:
         payload = dict(st)
         payload['unresolved'] = [list(x) for x in st['unresolved']]
