@@ -8,6 +8,10 @@
 5. 用夏弥（龙族）场景对话微调若干步
 6. 验证 loss 下降 + 微调前后生成对比
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import json
 import os
 import sys

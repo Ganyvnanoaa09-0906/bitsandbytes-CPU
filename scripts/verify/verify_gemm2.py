@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """verify_gemm2.py — 修正载入逻辑后的 SGEMM，先验证正确性再测速
 
 上一版的 bug：
@@ -19,6 +19,10 @@
     全局读 B[(k0+k)*N + bx + cq*4]
     LDS 写 Bs[k][cq*4+..]
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import sys, time
 import numpy as np
 import pyopencl as cl

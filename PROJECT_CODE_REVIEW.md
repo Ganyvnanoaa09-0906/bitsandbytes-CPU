@@ -39,7 +39,7 @@
    - 嵌套 MoE 块（block 同时有 `gate` 与 `experts`）被识别成 2 个"专家"→ 路由器被当专家、非选中专家永远冻结不了；修复为三层优先级（3D 张量专家 → ModuleList/ModuleDict → 兜底）并丢弃祖先候选。
    - 3D 张量专家 forward 用 `F.linear` 语义，但 Qwen3Next/Qwen3.5 权重是 `[E, in, out]`（grouped-mm 语义）→ 形状不匹配；改为按最后一维自动判别两种布局。
    - 非 MoE 模型上 `apply_efst` 只告警然后冻结全部参数（可训练数 0，训练静默无效）；现在默认 `ValueError`，需要时显式 `EFSTConfig(allow_no_experts=True)`。
-   - 回归测试：`test_efst_regressions.py`（嵌套块 / 3D 张量专家 / 非 MoE 安全），`test_efst_full.py` 5/5，`efst_selftest.py` PASS，`verify_efst_8bit.py` PASS。
+   - 回归测试：`test_efst_regressions.py`（嵌套块 / 3D 张量专家 / 非 MoE 安全），`test_efst_full.py` 5/5，`efst_selftest.py` PASS，`scripts/verify/verify_efst_8bit.py` PASS。
 
 ### 中危
 
@@ -87,5 +87,5 @@
 ## 5. 本次审查产生的代码/测试文件
 
 - 修复：`bitsandbytes/bitsandbytes/_cpu_caps.py`、`cextension.py`、`disk_balancer.py`、`detect_cpu.py`、`efst.py`（含包内 `bitsandbytes/efst.py`）、`bitsandbytes/csrc/cpu_features.h`、`bitsandbytes/setup.py`、`bitsandbytes/pyproject.toml`、`gt1030/igpu_train.py`、`gt1030/llama_resident.py`、`efst.py`（根目录兼容 shim）。
-- 新增测试：`test_efst_regressions.py`、`test_cpu_caps_selection.py`、`test_disk_balancer_safety.py`、`verify_gdn_patch_real_model.py`、`audit_project.py`。
+- 新增测试：`test_efst_regressions.py`、`test_cpu_caps_selection.py`、`test_disk_balancer_safety.py`、`scripts/verify/verify_gdn_patch_real_model.py`、`audit_project.py`。
 - 文档：`EFST_README.md` 修复记录；本文件；技术报告 §7.126。

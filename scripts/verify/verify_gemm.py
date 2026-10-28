@@ -3,6 +3,10 @@
 
 一个快的错 kernel 毫无价值。这里跟 numpy 的参考实现对拍。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import sys, time
 import numpy as np
 import pyopencl as cl

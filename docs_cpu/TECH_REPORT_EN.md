@@ -67,7 +67,7 @@ diffusers 0.40. All fp32 (bf16 disabled on AVX2).
 | Backward accuracy (vs double reference, fp32/bf16/fp16) | — | 1e-7 / 1e-3 / 1e-4 | OK |
 | Checkpoint memory (T=8192, 8 layers, auto C) | 1074 MB | **134 MB** | **≈8×** |
 
-**0.8B-level Qwen3Next backward measured** (`verify_qwen3next_patch.py`, CPU):
+**0.8B-level Qwen3Next backward measured** (`scripts/verify/verify_qwen3next_patch.py`, CPU):
 a real Qwen3Next decoder layer (with Gated DeltaNet linear attention), with
 `patch_transformers()` applied:
 

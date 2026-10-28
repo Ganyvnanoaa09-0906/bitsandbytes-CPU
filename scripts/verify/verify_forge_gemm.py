@@ -13,6 +13,10 @@
 ★ 顺序也是错的来源：这个内核沿 R 分块累加，跟 torch 的累加顺序【不同】，
   所以不可能 bit 级一致。判据只能是相对误差。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import os
 import sys
 

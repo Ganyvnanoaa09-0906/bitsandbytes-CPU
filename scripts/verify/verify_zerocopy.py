@@ -9,6 +9,10 @@
   V5. update_step() 在内存紧张时一次能迁移多个（视频模型场景）。
   V6. 负控制：故意把源张量写成不同数值，验证比对方法能抓到差异（防止"永远 PASS"）。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import os
 import gc
 import sys

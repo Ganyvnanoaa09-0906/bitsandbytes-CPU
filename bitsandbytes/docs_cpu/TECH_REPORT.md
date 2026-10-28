@@ -59,7 +59,7 @@ diffusers 0.40。全部 fp32（AVX2 上 bf16 禁用）。
 | 反向精度（相对 double 参考，fp32/bf16/fp16） | — | 1e-7 / 1e-3 / 1e-4 | 达标 |
 | 检查点内存（T=8192, 8 层，自动 C） | 1074 MB | **134 MB** | **≈8×** |
 
-**0.8B 级 Qwen3Next 反向传播实测**（`verify_qwen3next_patch.py`，CPU）：
+**0.8B 级 Qwen3Next 反向传播实测**（`scripts/verify/verify_qwen3next_patch.py`，CPU）：
 真实 Qwen3Next 解码层（含 Gated DeltaNet 线性注意力），`patch_transformers()` 生效：
 
 | 指标 | 值 |

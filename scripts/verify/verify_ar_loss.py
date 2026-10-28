@@ -5,6 +5,10 @@
 若也对不上 ⇒ 报告里的 1.0024 有误（或那个数是别的东西）
 若对得上 ⇒ 我上一个测试（用随机图编码的 token）有问题
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import sys, os
 import torch
 import torch.nn.functional as F
