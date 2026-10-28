@@ -1,6 +1,6 @@
-﻿import os,sys,time,torch
+import os,sys,time,torch
 sys.path.insert(0,r'D:\work\bitsandbytes-CPU')
-import wan_vae_profile as P
+from scripts.wan import wan_vae_profile as P
 from diffusers.models.autoencoders.autoencoder_kl_wan import WanCausalConv3d
 torch.set_num_threads(6)
 model=P.load_decoder(); dec=model.decoder

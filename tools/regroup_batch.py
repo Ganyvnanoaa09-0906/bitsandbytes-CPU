@@ -199,9 +199,10 @@ def main():
         # importer 目录里若已有同名文件，运行时优先命中它（如 gt1030/wan_vae_profile.py），
         # 把它改写成 scripts.<theme>.X 会反而把它变成跨目录依赖。
         importer_dir = os.path.dirname(os.path.abspath(target))
+        # 注意：重写发生在 git mv 之后，根目录原文件已不存在 —— 不能再用"根文件存在"作条件。
+        # 判据只剩一条：importer 自己目录里是否有同名兄弟文件（有则运行时优先命中它）。
         movable = {n for n in names
-                   if not os.path.exists(os.path.join(importer_dir, n + '.py'))
-                   and os.path.exists(os.path.join(ROOT, n + '.py'))}
+                   if not os.path.exists(os.path.join(importer_dir, n + '.py'))}
         try:
             new_text, n_edits = rewrite_imports(src_text, movable, a.theme, target)
         except SyntaxError:

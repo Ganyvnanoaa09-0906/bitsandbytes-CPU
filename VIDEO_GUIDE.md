@@ -254,7 +254,7 @@ GET https://hf-mirror.com/<repo>/resolve/main/<path>            # 下文件
 
 ### 4.3 内存账：**量化 transformer 不够，关键是卸载文本编码器**
 
-（`wan_footprint.py`）
+（`scripts/wan/wan_footprint.py`）
 
 | 组件 | 大小 |
 |---|---|

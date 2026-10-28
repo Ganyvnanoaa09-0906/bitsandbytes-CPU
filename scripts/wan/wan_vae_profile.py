@@ -4,6 +4,10 @@ Loads decoder-only weights (mapping from wan_vae_decoder_map.py), runs one decod
 (latent (1,16,5,8,8) -> video (1,3,17,64,64)) under torch profiler, prints groups.
 """
 from __future__ import annotations
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 
 import os
 import sys

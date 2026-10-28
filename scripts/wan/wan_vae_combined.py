@@ -1,4 +1,8 @@
-﻿import os,sys,time,torch
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
+import os,sys,time,torch
 sys.path.insert(0,r'D:\work\bitsandbytes-CPU')
 import wan_vae_profile as P
 from diffusers.models.autoencoders.autoencoder_kl_wan import WanCausalConv3d, WanRMS_norm

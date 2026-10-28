@@ -12,7 +12,7 @@ from PIL import Image
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU\gt1030')
-import wan_vae_profile as VP
+from scripts.wan import wan_vae_profile as VP
 from wan21_convert import load_wan_transformer
 from wan21_4bit import quantize_linears
 

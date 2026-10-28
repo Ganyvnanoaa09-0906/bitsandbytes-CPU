@@ -8,7 +8,7 @@ import time
 import torch
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-import wan_vae_profile as P
+from scripts.wan import wan_vae_profile as P
 from diffusers.models.autoencoders.autoencoder_kl_wan import WanCausalConv3d, WanRMS_norm
 
 torch.set_num_threads(int(os.environ.get('THREADS', '6')))
