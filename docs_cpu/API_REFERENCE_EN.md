@@ -293,7 +293,7 @@ print(opt.state_bytes(), 'bytes for', p.numel(), 'params =',
 ```bash
 # scripts at the repo root; needs pyopencl + the CLBlast shared library
 py -3.11 clblast_colmajor_shapes.py     # real model shapes vs CPU
-py -3.11 igpu_clblast_resident.py       # device-resident single-layer step
+py -3.11 scripts/igpu/igpu_clblast_resident.py       # device-resident single-layer step
 ```
 
 **`the call convention`** -- CLBlast's C API is column-major; a row-major call on non-cubic shapes returns -1011/-1015/-1016 -- argument validation, not a crashing kernel

@@ -535,8 +535,8 @@ so concurrency gives 1.1-1.3x against 1.51x for sequential execution.
 
 ```bat
 py -3.11 clblast_colmajor_shapes.py     :: column-major fix + real-shape GFLOPS table
-py -3.11 igpu_clblast_resident.py       :: device-resident single-layer step (check, then time)
-py -3.11 igpu_fp16_tune.py              :: fp16 pure-compute tuning (nacc/worksize/unroll)
+py -3.11 scripts/igpu/igpu_clblast_resident.py       :: device-resident single-layer step (check, then time)
+py -3.11 scripts/igpu/igpu_fp16_tune.py              :: fp16 pure-compute tuning (nacc/worksize/unroll)
 ```
 
 ⚠️ **Status: experimental, not wired into the training/inference path** and not shipped as a Python

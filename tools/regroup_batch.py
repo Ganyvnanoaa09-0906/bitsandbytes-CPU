@@ -195,8 +195,15 @@ def main():
                 changed += 1
             continue
         src_text = io.open(target, encoding='utf-8-sig').read()
+        # 只重写"真的解析到被移动文件"的引用：
+        # importer 目录里若已有同名文件，运行时优先命中它（如 gt1030/wan_vae_profile.py），
+        # 把它改写成 scripts.<theme>.X 会反而把它变成跨目录依赖。
+        importer_dir = os.path.dirname(os.path.abspath(target))
+        movable = {n for n in names
+                   if not os.path.exists(os.path.join(importer_dir, n + '.py'))
+                   and os.path.exists(os.path.join(ROOT, n + '.py'))}
         try:
-            new_text, n_edits = rewrite_imports(src_text, names, a.theme, target)
+            new_text, n_edits = rewrite_imports(src_text, movable, a.theme, target)
         except SyntaxError:
             continue
         if n_edits:
