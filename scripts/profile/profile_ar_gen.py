@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """profile_ar_gen.py — 拆解 AR 采样的 16.43 ms/token 到底花在哪
 
 已知:
@@ -13,6 +13,10 @@
   ④ 每步的算子数量（dispatch 开销）
   ⑤ logits 的 top-k 采样
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import os, sys, time
 import torch
 

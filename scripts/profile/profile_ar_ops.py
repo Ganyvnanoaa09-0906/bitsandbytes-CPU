@@ -15,6 +15,10 @@ GEMM 真的占大头时才值钱。profile_ar_train.py 只能分出 前向/反�
 ★ 关键判读：如果 GEMM 占比 < 50%，那么就算 GEMM 快 2 倍，整步也只快 ~1.3 倍，
   优先级要往后放；如果 > 70%，那 AVX2 内核就是主线。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import os
 import sys
 import time

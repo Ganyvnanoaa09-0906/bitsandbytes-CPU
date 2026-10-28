@@ -279,5 +279,5 @@ tune_ar.py             AR 模型开关消融（mkldnn/SDPA/线程/autocast）
 test_loop.py           loop_times 消融
 test_loop2.py          等算力对比（循环 vs 加层）
 gemm_probe.py          云端 CPU 特性 + GEMM + Conv 基准
-profile_ar_gemm.py     AR batch 扫描
+scripts/profile/profile_ar_gemm.py     AR batch 扫描
 ```

@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """profile_ar_train.py — 拆 AR 训练步，找可优化点
 
 当前: 30.49M, T=256, batch 8, 1.31 s/step (7线程 ARM)
@@ -7,6 +7,10 @@
   ② 有没有可以做的：更大 batch（每图成本几乎不变）、梯度累积、融合算子
   ③ 数据加载有没有成为瓶颈
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import os, sys, time
 import torch
 import torch.nn.functional as F

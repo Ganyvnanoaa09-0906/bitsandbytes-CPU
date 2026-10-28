@@ -2,7 +2,7 @@
 
 机器：R5-4500U（6C/6T）+ 15.4GB，Windows，torch 2.13.0+cpu，fp32。
 模型：Qwen3.5-0.8B（混合线性注意力 GDN + 全注意力），LoRA r=8 包 96 个线性层，
-可训 3.19M；AdamW8bit。脚本：`profile_real_step.py`、`profile_step_extra.py`。
+可训 3.19M；AdamW8bit。脚本：`scripts/profile/profile_real_step.py`、`scripts/profile/profile_step_extra.py`。
 
 ## 1. 一步的时间构成（median）
 

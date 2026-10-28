@@ -11,6 +11,10 @@
 
 本脚本回答：20.11 ms/步 里，多少是「读权重」（带宽），多少是别的？
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import sys, time, math
 import torch
 import torch.nn as nn

@@ -7,6 +7,10 @@
   ③ SR 网络前向+反向
   ④ VGG 感知损失（512×512 上跑 VGG16 前 16 层）
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import glob
 import os
 import random

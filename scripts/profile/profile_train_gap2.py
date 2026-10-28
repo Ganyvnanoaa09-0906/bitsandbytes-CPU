@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """profile_train_gap2.py — 找到训练加速的真正空间
 
 上一轮发现：
@@ -10,6 +10,10 @@
   B) 非 GEMM 时间花在哪些模块上（RMSNorm / SwiGLU / LayerScale / 优化器）
   C) 真实模型各 GEMM 形状的效率（找出拖后腿的）
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import sys, time, math
 import torch
 import torch.nn as nn
