@@ -117,17 +117,26 @@ def edges(root):
         try:
             tree = ast.parse(open(p, 'rb').read())
         except SyntaxError as e:
-            out.append((rel, '<SYNTAX_ERROR:%s>' % e, 0, 0))
+            out.append((rel, '<SYNTAX_ERROR:%s>' % e, 0, 0, False))
             continue
+        raw = open(p, 'rb').read().split(b'\n')
+        marker_line = 0
+        for idx, line in enumerate(raw, start=1):
+            if b'import os as _os' in line and b'sys as _sys' in line:
+                marker_line = idx
+                break
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for a in node.names:
-                    out.append((rel, a.name, 0, node.lineno))
+                    instr = bool(marker_line and node.lineno == marker_line
+                                 and a.name in ('os', 'sys')
+                                 and (a.asname or '') in ('_os', '_sys'))
+                    out.append((rel, a.name, 0, node.lineno, instr))
             elif isinstance(node, ast.ImportFrom):
                 if node.level:
-                    out.append((rel, node.module or '', node.level, node.lineno))
+                    out.append((rel, node.module or '', node.level, node.lineno, False))
                 elif node.module:
-                    out.append((rel, node.module, 0, node.lineno))
+                    out.append((rel, node.module, 0, node.lineno, False))
             elif isinstance(node, ast.Call):
                 fn = node.func
                 name = getattr(fn, 'attr', getattr(fn, 'id', ''))
@@ -135,7 +144,7 @@ def edges(root):
                     arg = node.args[0]
                     if isinstance(arg, ast.Constant) and isinstance(arg.value, str) \
                             and not arg.value.startswith('.'):
-                        out.append((rel, arg.value, 0, node.lineno))
+                        out.append((rel, arg.value, 0, node.lineno, False))
     return out
 
 
@@ -190,8 +199,10 @@ def analyse(root, baseline_json=None):
     ir, ip = indexes(root)
     tops = local_tops(root)
     es = edges(root)
-    syntax_bad = sorted({f for f, m, _l, _n in es if m.startswith('<SYNTAX_ERROR')})
-    real = [(f, m, l, n) for f, m, l, n in es if not m.startswith('<SYNTAX_ERROR')]
+    syntax_bad = sorted({f for f, m, _l, _n, _i in es if m.startswith('<SYNTAX_ERROR')})
+    all_real = [(f, m, l, n) for f, m, l, n, _i in es if not m.startswith('<SYNTAX_ERROR')]
+    instrumentation = [(f, m, l, n) for f, m, l, n, i in es if i]
+    real = [(f, m, l, n) for f, m, l, n, i in es if not i and not m.startswith('<SYNTAX_ERROR')]
     # "本地"判定：顶层名命中【当前可导入名】或【仓库里任何 .py 的文件名 stem】。
     # 后者是必要的：模块被移到不可导入的位置后，它的 stem 仍存在于仓库，
     # 引用它的边必须继续被检查（否则 S2 那种断边会被整体跳过）。
@@ -220,7 +231,8 @@ def analyse(root, baseline_json=None):
     fail_closed = (len(tracked) == 0 and fs_root_py > 0)
     return dict(root_py=root_py, tracked=len(tracked), py_files=sum(1 for _ in tracked_py(root)),
                 fail_closed=fail_closed, fs_root_py=fs_root_py,
-                edges=len(real), local_edges=len(local), syntax_bad_files=syntax_bad,
+                edges=len(real), instrumentation_edges=len(instrumentation),
+                local_edges=len(local), syntax_bad_files=syntax_bad,
                 unresolved=unresolved, exempt=exempt, idx_root=len(ir), idx_pkg=len(ip))
 
 
@@ -244,7 +256,8 @@ def report(st, baseline_json=None, root=None):
     print('  仓库内 .py      : %d' % st['py_files'])
     print('  根目录 .py      : %d' % st['root_py'])
     print('  git ls-files    : %d' % st['tracked'])
-    print('  导入边          : %d（本地 %d）' % (st['edges'], st['local_edges']))
+    print('  导入边          : %d（本地 %d）  ［已剔除仪器边 %d］'
+          % (st['edges'], st['local_edges'], st.get('instrumentation_edges', 0)))
     print('  可导入名        : root=%d / pkg=%d' % (st['idx_root'], st['idx_pkg']))
     print('  语法错误文件    : %d' % len(st['syntax_bad_files']))
     if st.get('fail_closed'):

@@ -210,7 +210,14 @@ def main():
         if n_edits:
             io.open(target, 'w', encoding='utf-8', newline='').write(new_text)
             changed += 1
-    print('已改写 %d 个文件里的引用' % changed)
+    print('已改写 %d 个文件里的引用（不含新建的 __init__.py）' % changed)
+    # 口径分明：新建 / 重命名 / 改写是三类不同的事实
+    st = subprocess.run(['git', '-C', ROOT, 'status', '--porcelain'], capture_output=True,
+                        text=True, encoding='utf-8', errors='replace').stdout.splitlines()
+    renamed = sum(1 for x in st if x[:2].strip() in ('R', 'RM', 'RM'))
+    added = sum(1 for x in st if x[:2].strip() == 'A' or x.startswith('??'))
+    modified = sum(1 for x in st if x[:2].strip() == 'M')
+    print('  git status: 重命名 %d / 新建 %d / 修改 %d' % (renamed, added, modified))
 
     # 5) 门禁
     print('\n== 归组验收 ==')
