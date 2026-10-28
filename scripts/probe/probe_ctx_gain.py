@@ -20,6 +20,10 @@
   - 表稀疏会让 CE 偏高，但【所有上下文集合受到同样的偏差】
     ⇒ 它们之间的比较是公平的
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import sys, math, itertools
 import numpy as np
 import torch

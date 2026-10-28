@@ -192,7 +192,7 @@ layer `quant_lora.QuantLinearTrainable`, reusing this repo's `quantize_blockwise
 
 ### 3.5.1 Fused elementwise kernel family: the only block left in a training step (+5~8%)
 
-**Where it comes from** (`probe_step_breakdown.py`, R5-4500U pure CPU, ~30M model):
+**Where it comes from** (`scripts/probe/probe_step_breakdown.py`, R5-4500U pure CPU, ~30M model):
 ```
 one step = 2.819 s:
     GEMM        63.6%   already at 92% of a same-shape pure-GEMM baseline => no room

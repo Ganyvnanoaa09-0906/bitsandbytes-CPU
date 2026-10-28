@@ -174,7 +174,7 @@ void cgemm_8bit_inference_cpu_fp32(A, B_uint8, absmax, out, M,N,K, lda,ldb,ldc, 
 
 ### 3.5.2 融合 elementwise 内核族（本 fork 新增，12 个导出）
 
-**为什么加这一族**（实测，`probe_step_breakdown.py`，R5-4500U 纯 CPU、30M 级模型）：
+**为什么加这一族**（实测，`scripts/probe/probe_step_breakdown.py`，R5-4500U 纯 CPU、30M 级模型）：
 ```
 训练步 2.819 s = GEMM 63.6% / elementwise 20.8% / attention 7.6% / 其它 ~8%
 GEMM 已达同形状纯 GEMM 基准的 92% ⇒ 唯一还有空间的是 elementwise 20.8%

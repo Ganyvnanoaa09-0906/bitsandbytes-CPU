@@ -219,7 +219,7 @@ Android 用 bionic；Termux 仓库里这些包**一个都没有**。硬啃等于
 
 **但那是正交的事。** 要回答的问题是"8-bit 训练路径在 ARM64 上能不能让 loss 下降"，
 这既不需要 transformers 也不需要预训练配置。所以改用 `bnb.nn.Linear8bitLt` 搭模型 ——
-写之前先用 `probe_quant_layers.py` 探清能力边界：
+写之前先用 `scripts/probe/probe_quant_layers.py` 探清能力边界：
 
 ```
 nn.Linear8bitLt   forward OK   backward OK   |w.grad|max = 4.0000e+00

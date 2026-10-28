@@ -12,6 +12,10 @@ each接力块 starts from an already "hot" latent, and VAE decode pushes highlig
 Usage:
   python probe_latent.py --res 512 --chunk 10 --overlap 2 --chunks 4 --steps 5 --carry-noise 500
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import argparse
 import os
 import re

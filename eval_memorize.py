@@ -30,7 +30,7 @@ except AttributeError:
     pass
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-from probe_exposure import load_ar, topk_sample, decode_grid  # noqa: E402
+from scripts.probe.probe_exposure import load_ar, topk_sample, decode_grid
 
 
 def gen_logits(model, seq):

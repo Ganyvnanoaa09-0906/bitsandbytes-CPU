@@ -28,6 +28,10 @@
     没被 AR 榨出来 ⇒ 归纳偏置确实是瓶颈，邻居融合/局部注意力值得做
   * 看 CE 随上下文集合增大的【饱和点】—— 那就是"够用"的窗口宽度
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import sys, os, math, time, json
 import numpy as np
 import torch

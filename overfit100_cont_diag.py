@@ -18,7 +18,7 @@ except AttributeError:
     pass
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-from probe_exposure import load_ar, topk_sample  # noqa: E402
+from scripts.probe.probe_exposure import load_ar, topk_sample
 
 model, cfg = load_ar(r'D:\work\bitsandbytes-CPU\i5build\ar_overfit100_v3\ckpt_last.pt')
 T = cfg.total_tokens

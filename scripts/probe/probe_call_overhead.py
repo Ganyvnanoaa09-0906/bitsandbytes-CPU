@@ -13,6 +13,10 @@
   · 极小的形状（64x64x64，算量 0.5 MFLOP）—— 计算本身 < 10µs，测到的几乎全是固定开销
   · 真实形状重启一遍作为对照
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import os
 import sys
 import time

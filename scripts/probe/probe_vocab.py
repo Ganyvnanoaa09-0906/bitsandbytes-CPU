@@ -25,6 +25,10 @@
 降 K 会同时降低分词器的信息容量（重建变差），所以"结构/图"上升不自动等于更好
 —— 还需要在**同等或更好的重建质量**下比较。本探针只给方向，不给结论。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import sys, math
 import numpy as np
 import torch

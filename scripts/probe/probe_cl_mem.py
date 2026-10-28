@@ -4,6 +4,10 @@ Hypothesis: cl.Buffer(..., COPY_HOST_PTR, 202MB) x N exhausts/destabilises the d
 even though the device reports 6.5 GB. Test three allocation strategies and then run a trivial kernel.
 """
 from __future__ import annotations
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 
 import sys
 

@@ -5,6 +5,10 @@
 带水印残留、COS 人像）没有判别力，zero-shot 打标不可用。
 那就得换方案：要么用真实 captioning 模型（BLIP），要么放弃文本条件。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import os, sys, json
 import numpy as np
 import torch

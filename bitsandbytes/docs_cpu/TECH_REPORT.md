@@ -174,7 +174,7 @@ i5 才是主训练机；R5（开发机）已到其硬件天花板。两台机做
 
 ### 3.5.1 融合 elementwise 内核族：训练步里唯一还有空间的一块（+5~8%）
 
-**定位**（`probe_step_breakdown.py`，R5-4500U 纯 CPU、30M 级模型）：
+**定位**（`scripts/probe/probe_step_breakdown.py`，R5-4500U 纯 CPU、30M 级模型）：
 ```
 训练步 2.819 s 的构成
     GEMM        63.6%   已到同形状纯 GEMM 基准的 92% ⇒ 没空间

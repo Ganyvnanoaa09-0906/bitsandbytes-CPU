@@ -189,7 +189,7 @@ no `cgemv_4bit_inference_cpu_*`, and no `_GEMM_4BIT_FUSED_MAX_M` (upstream 489 l
 
 ### 3.5.2 Fused elementwise kernel family (new in this fork, 12 exports)
 
-**Why it exists** (measured, `probe_step_breakdown.py`, R5-4500U pure CPU, ~30M model):
+**Why it exists** (measured, `scripts/probe/probe_step_breakdown.py`, R5-4500U pure CPU, ~30M model):
 ```
 one step = 2.819 s = GEMM 63.6% / elementwise 20.8% / attention 7.6% / other ~8%
 GEMM is already at 92% of a same-shape pure-GEMM baseline => elementwise 20.8% is the only block left

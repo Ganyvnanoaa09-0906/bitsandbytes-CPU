@@ -10,6 +10,10 @@
 方法：大形状跑够 20 秒以上（避开突发窗口），取稳态吞吐；同时按秒采样
 % Processor Performance 换算出实际运行频率，避免"其实是降频了"的误判。
 """
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import os
 import sys
 import time
