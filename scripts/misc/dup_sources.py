@@ -7,17 +7,16 @@ clean_char2_1024/images/img_x.jpg->  D:\work\sujvji\<原 char2 源>
 """
 from __future__ import annotations
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.abspath(__file__))
+_here = _os.path.dirname(_os.path.abspath(__file__))
+_root = _here
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
     if _parent == _root:
         break
     _root = _parent
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
+for _p in (_root, _here):
+    if _p and _p not in _sys.path:
+        _sys.path.insert(0, _p)
 import collections, json, os
 
 BASE = r'D:\work\bitsandbytes-CPU\.autopilot'

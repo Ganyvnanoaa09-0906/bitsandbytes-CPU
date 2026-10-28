@@ -9,19 +9,17 @@
   V5. update_step() 在内存紧张时一次能迁移多个（视频模型场景）。
   V6. 负控制：故意把源张量写成不同数值，验证比对方法能抓到差异（防止"永远 PASS"）。
 """
-import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.abspath(__file__))
+_here = _os.path.dirname(_os.path.abspath(__file__))
+_root = _here
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
     if _parent == _root:
         break
     _root = _parent
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
+for _p in (_root, _here):
+    if _p and _p not in _sys.path:
+        _sys.path.insert(0, _p)
 import os
 import gc
 import sys
@@ -36,7 +34,7 @@ import torch.nn as nn
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from scripts.lib import disk_balancer
+from scripts.lib import disk_balancer as db
 
 # Paths are resolved relative to this file, and the scratch tree goes under the
 # system temp directory. They used to be hard-coded to D:\work\..., which meant

@@ -25,19 +25,17 @@ No algorithm change is made. The audit is read-only apart from the corrected met
 a measurement, and the old metric is kept in the output for comparison.
 """
 from __future__ import annotations
-import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.abspath(__file__))
+_here = _os.path.dirname(_os.path.abspath(__file__))
+_root = _here
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
     if _parent == _root:
         break
     _root = _parent
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
+for _p in (_root, _here):
+    if _p and _p not in _sys.path:
+        _sys.path.insert(0, _p)
 
 import dataclasses
 import io
@@ -92,7 +90,7 @@ w()
 
 # the real shapes, read from the live model
 from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
-import torch.nn as nn
+import torch.nn as nn  # noqa: E402
 
 ck = torch.load(r'D:\work\bitsandbytes-CPU\i5build\ar32_run1\ckpt_3000.pt',
                 map_location='cpu', weights_only=False)

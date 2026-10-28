@@ -29,19 +29,17 @@
   out/clean_report.json   分阶段耗时与统计
 """
 from __future__ import annotations
-import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.abspath(__file__))
+_here = _os.path.dirname(_os.path.abspath(__file__))
+_root = _here
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
     if _parent == _root:
         break
     _root = _parent
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
+for _p in (_root, _here):
+    if _p and _p not in _sys.path:
+        _sys.path.insert(0, _p)
 import argparse, json, os, sys, time
 
 # torchvision 权重缓存重定向到工作区内（默认的 C:\Users\...\.cache 在沙箱里不可写）
@@ -262,7 +260,7 @@ def main():
     if a.dewatermark:
         try:
             sys.path.insert(0, repo)
-            from scripts.lib import dewatermark
+            from scripts.lib import dewatermark as dw
             print('[fast_clean] dewatermark ENABLED (slow: scipy EDT per image)', flush=True)
         except Exception as e:
             dw = None

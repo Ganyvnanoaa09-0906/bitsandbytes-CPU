@@ -17,19 +17,17 @@ Reported: validation loss before and after training, the number of trainable
 parameters against the total, and the bytes actually held by the quantised weights.
 """
 from __future__ import annotations
-import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.abspath(__file__))
+_here = _os.path.dirname(_os.path.abspath(__file__))
+_root = _here
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
     if _parent == _root:
         break
     _root = _parent
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
+for _p in (_root, _here):
+    if _p and _p not in _sys.path:
+        _sys.path.insert(0, _p)
 
 import dataclasses
 import sys
@@ -50,7 +48,7 @@ except AttributeError:
 # resolves to the main checkout's copy, which has no 'nf2' branch -- the first run of
 # this test failed exactly there. bitsandbytes itself still comes from the main
 # checkout, because that is where the compiled extension lives.
-import importlib.util
+import importlib.util  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location('quant_lora_nf2',
                                                r'D:\work\bnb-quant\quant_lora.py')
@@ -63,7 +61,7 @@ QuantLinearLora = quant_lora.QuantLinearLora
 quantize_model_8bit_lora = quant_lora.quantize_model_8bit_lora
 from scripts.lib.small_image_model_v2 import SmallARImageModelV2, SmallImageConfigV2
 from scripts.lib.loop_transformer import LoopConfig
-import bitsandbytes as bnb
+import bitsandbytes as bnb  # noqa: E402
 
 torch.set_num_threads(6)
 CKPT = r'D:\work\bitsandbytes-CPU\i5build\ar32_run1\ckpt_3000.pt'

@@ -6,7 +6,7 @@ import os
 import shutil
 
 import onnx
-from onnx import TensorProto, helper, numpy_helper as _nh
+from onnx import TensorProto, helper, numpy_helper
 from onnxconverter_common import float16
 
 SRC = r'D:\work\sd15_onnx'

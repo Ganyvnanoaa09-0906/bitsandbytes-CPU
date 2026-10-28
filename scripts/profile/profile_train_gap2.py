@@ -10,22 +10,20 @@
   B) 非 GEMM 时间花在哪些模块上（RMSNorm / SwiGLU / LayerScale / 优化器）
   C) 真实模型各 GEMM 形状的效率（找出拖后腿的）
 """
-import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.abspath(__file__))
+_here = _os.path.dirname(_os.path.abspath(__file__))
+_root = _here
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
     if _parent == _root:
         break
     _root = _parent
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
+for _p in (_root, _here):
+    if _p and _p not in _sys.path:
+        _sys.path.insert(0, _p)
 import sys, time, math
 import torch
-import torch.nn
+import torch.nn as nn
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU\bitsandbytes')
@@ -77,7 +75,7 @@ opt1 = torch.optim.AdamW(m.parameters(), lr=1e-4)
 s_torch = bench('torch.optim.AdamW', opt1)
 
 try:
-    import bitsandbytes
+    import bitsandbytes as bnb
     opt2 = bnb.optim.AdamW8bit(m.parameters(), lr=1e-4)
     s_bnb = bench('bnb.optim.AdamW8bit', opt2)
     print('    ⇒ bnb 8-bit 快 %.2fx' % (s_torch / s_bnb))

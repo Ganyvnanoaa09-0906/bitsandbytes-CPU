@@ -4,19 +4,17 @@
 上一轮单次测量噪声大（SwiGLU 单独 -2.2%，但加上 RMSNorm 却变成 +0.9%）。
 本轮：每组跑 3 轮，取中位数；并做 A/B/A 交叉验证排除漂移。
 """
-import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.abspath(__file__))
+_here = _os.path.dirname(_os.path.abspath(__file__))
+_root = _here
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
     if _parent == _root:
         break
     _root = _parent
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
+for _p in (_root, _here):
+    if _p and _p not in _sys.path:
+        _sys.path.insert(0, _p)
 import sys, time, statistics
 import torch
 import torch.nn as nn
@@ -29,7 +27,7 @@ print('融合核最终确认（3 轮中位数 + A/B/A 交叉验证）')
 print('=' * 84)
 
 from scripts.lib import fused_cpu
-from scripts.lib import small_image_model_v2
+from scripts.lib import small_image_model_v2 as M2
 
 B, T = 8, 256
 cfg = M2.SmallImageConfigV2(

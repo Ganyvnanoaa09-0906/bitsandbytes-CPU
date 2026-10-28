@@ -13,19 +13,17 @@
 
 模型：SD1.5 UNet + AnimateDiff motion adapter（1.7GB 适配器，5D 前向）。
 """
-import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.abspath(__file__))
+_here = _os.path.dirname(_os.path.abspath(__file__))
+_root = _here
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
     if _parent == _root:
         break
     _root = _parent
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
+for _p in (_root, _here):
+    if _p and _p not in _sys.path:
+        _sys.path.insert(0, _p)
 import os
 import sys
 import gc
@@ -59,7 +57,7 @@ _MISSING = []
 if not os.path.isfile(os.path.join(HERE, "video_models.py")):
     _MISSING.append(f"video_models.py (repo file) in {HERE}")
 if not _MISSING:
-    from scripts.lib import video_models
+    from scripts.lib import video_models as _vm_probe
     for label, path in (("SD1.5 UNet", _vm_probe.DEFAULT_UNET),
                         ("AnimateDiff motion adapter", _vm_probe.DEFAULT_ADAPTER)):
         if not os.path.isdir(path):
@@ -82,8 +80,8 @@ if _MISSING:
 import torch
 import psutil
 
-from scripts.lib import disk_balancer
-from scripts.lib import video_models
+from scripts.lib import disk_balancer as db
+from scripts.lib import video_models as vm
 
 ROOT = os.path.join(os.environ.get("TEMP", HERE), "_integration_video")
 R = []

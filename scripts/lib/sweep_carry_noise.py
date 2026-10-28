@@ -14,19 +14,17 @@ Usage:
   python sweep_carry_noise.py --res 256 --chunk 10 --overlap 2 --chunks 3 --steps 6 \
       --carry-noises 300,400,500,600,700
 """
-import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.abspath(__file__))
+_here = _os.path.dirname(_os.path.abspath(__file__))
+_root = _here
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
     if _parent == _root:
         break
     _root = _parent
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
+for _p in (_root, _here):
+    if _p and _p not in _sys.path:
+        _sys.path.insert(0, _p)
 import argparse
 import json
 import os
@@ -41,7 +39,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 
 from anime_adiff import build, ANIME_PROMPT, ANIME_NEG, OUT_DIR  # noqa: E402
-import temporal_metrics as tm
+import temporal_metrics as tm  # noqa: E402
 
 GUIDANCE = 7.5
 

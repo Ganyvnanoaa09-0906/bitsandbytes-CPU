@@ -16,25 +16,23 @@
   - sd_denoise（lora/ti/dreambooth/full）        —— 完整训练循环，可实测
   - controlnet / ip_adapter / video               —— 注入就绪，训练循环待 D 阶段后续接入
 """
-import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.abspath(__file__))
+_here = _os.path.dirname(_os.path.abspath(__file__))
+_root = _here
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
     if _parent == _root:
         break
     _root = _parent
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
+for _p in (_root, _here):
+    if _p and _p not in _sys.path:
+        _sys.path.insert(0, _p)
 import argparse
 import hashlib
 import json
-import math
+import math          # ← set_lr() 的余弦退火要用；原来没导入（ast.parse 查不出来）
 import os
-import random as _rnd
+import random
 import sys
 import time
 from collections import OrderedDict
@@ -251,7 +249,7 @@ print(f"[env] method={args.method} threads={TH} torch={torch.__version__} seed={
 
 import bitsandbytes as bnb
 import psutil
-from PIL import Image as _PIL
+from PIL import Image
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms

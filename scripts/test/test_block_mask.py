@@ -8,19 +8,17 @@
      （这是"块 = 尺度"的前提，必须成立）
   ④ 模型能跑起来，且 block mask 与 causal mask 数值上不同
 """
-import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.abspath(__file__))
+_here = _os.path.dirname(_os.path.abspath(__file__))
+_root = _here
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
     if _parent == _root:
         break
     _root = _parent
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
+for _p in (_root, _here):
+    if _p and _p not in _sys.path:
+        _sys.path.insert(0, _p)
 import sys
 import torch
 
@@ -30,7 +28,7 @@ print('=' * 80)
 print('VAR 风格 block-causal mask 验证')
 print('=' * 80)
 
-from scripts.lib import small_image_model_v2
+from scripts.lib import small_image_model_v2 as M
 
 T = 256
 side = 16

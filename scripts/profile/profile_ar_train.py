@@ -7,22 +7,20 @@
   ② 有没有可以做的：更大 batch（每图成本几乎不变）、梯度累积、融合算子
   ③ 数据加载有没有成为瓶颈
 """
-import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.abspath(__file__))
+_here = _os.path.dirname(_os.path.abspath(__file__))
+_root = _here
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
     if _parent == _root:
         break
     _root = _parent
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
+for _p in (_root, _here):
+    if _p and _p not in _sys.path:
+        _sys.path.insert(0, _p)
 import os, sys, time
 import torch
-import torch.nn.functional
+import torch.nn.functional as F
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU\bitsandbytes')
@@ -48,7 +46,7 @@ print('  模型 %.2fM  T=%d  d=%d L=%d' % (NP / 1e6, T, cfg.d_model, cfg.n_layer
 print()
 
 try:
-    import bitsandbytes
+    import bitsandbytes as bnb
     Opt = bnb.optim.AdamW8bit
     print('  优化器: bnb AdamW8bit')
 except Exception:

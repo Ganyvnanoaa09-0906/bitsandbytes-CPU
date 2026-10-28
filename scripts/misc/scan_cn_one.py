@@ -8,19 +8,17 @@ from a single number.
 Usage:
   python scan_cn_one.py --res 512 --chunk 10 --overlap 2 --chunks 3 --steps 6 --carry-noise 500
 """
-import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.abspath(__file__))
+_here = _os.path.dirname(_os.path.abspath(__file__))
+_root = _here
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
     if _parent == _root:
         break
     _root = _parent
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
+for _p in (_root, _here):
+    if _p and _p not in _sys.path:
+        _sys.path.insert(0, _p)
 import argparse
 import os
 import re
@@ -35,7 +33,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 
 from scripts.lib.anime_adiff import build, ANIME_PROMPT, ANIME_NEG
-from scripts.lib import temporal_metrics
+from scripts.lib import temporal_metrics as tm
 from scripts.lib.sweep_carry_noise import generate, measure
 
 OUT_ROOT = r"D:\work\output\adiff_out"

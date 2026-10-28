@@ -7,19 +7,17 @@
   3) batch 从 8 到 128，单步时间和吞吐怎么变？
   4) mkldnn 开关对真实模型的影响？
 """
-import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.abspath(__file__))
+_here = _os.path.dirname(_os.path.abspath(__file__))
+_root = _here
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
     if _parent == _root:
         break
     _root = _parent
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
+for _p in (_root, _here):
+    if _p and _p not in _sys.path:
+        _sys.path.insert(0, _p)
 import os, sys, time
 import torch
 
@@ -138,7 +136,7 @@ else:
                  if any(t in k for t in ('mm', 'addmm', 'bmm', 'matmul', 'linear')))
         print('  矩阵乘类合计 %.1f%% (%.1f ms/步)' % (100 * mm / total, mm / N / 1e3), flush=True)
     except Exception:
-        import traceback
+        import traceback; traceback.print_exc()
 
 print()
 print('DONE', flush=True)

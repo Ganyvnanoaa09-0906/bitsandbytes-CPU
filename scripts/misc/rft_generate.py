@@ -7,19 +7,17 @@
   · 按"高通 D"挑   → 挑出的是【颜料/笔触般的纹理】，且保留率高达 23%（≈每 4 张留 1 张）
   ⇒ D 问的是"纹理像不像真的"，对噪声免疫；统计量只会被噪声骗到。
 """
-import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.abspath(__file__))
+_here = _os.path.dirname(_os.path.abspath(__file__))
+_root = _here
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
     if _parent == _root:
         break
     _root = _parent
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
+for _p in (_root, _here):
+    if _p and _p not in _sys.path:
+        _sys.path.insert(0, _p)
 import argparse, os, sys, time
 import torch
 import torch.nn.functional as F

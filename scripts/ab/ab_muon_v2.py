@@ -24,19 +24,17 @@ the comparison. Reported as loss at matched step counts and as steps-to-target.
 Run as:  python ab_muon_vs_adamw.py [steps]
 """
 from __future__ import annotations
-import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.abspath(__file__))
+_here = _os.path.dirname(_os.path.abspath(__file__))
+_root = _here
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
     if _parent == _root:
         break
     _root = _parent
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
+for _p in (_root, _here):
+    if _p and _p not in _sys.path:
+        _sys.path.insert(0, _p)
 
 import dataclasses
 import math
@@ -56,7 +54,7 @@ except AttributeError:
 
 from scripts.lib.small_image_model_v2 import SmallARImageModelV2, SmallImageConfigV2
 from scripts.lib.loop_transformer import LoopConfig
-import bitsandbytes as bnb
+import bitsandbytes as bnb  # noqa: E402
 
 TOKENS = r'D:\work\cloud_salvage\ScPeP7\tokens_32x32_full.pt'
 torch.set_num_threads(6)

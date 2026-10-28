@@ -15,19 +15,17 @@ matter in practice. Below that the saving exists on paper and not in the trainin
 happened with the L2 blocking result in 7.54.
 """
 from __future__ import annotations
-import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.abspath(__file__))
+_here = _os.path.dirname(_os.path.abspath(__file__))
+_root = _here
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
     if _parent == _root:
         break
     _root = _parent
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
+for _p in (_root, _here):
+    if _p and _p not in _sys.path:
+        _sys.path.insert(0, _p)
 
 import os
 import statistics
@@ -45,7 +43,7 @@ except AttributeError:
            #   （正常终端里是 io.TextIOWrapper,有这个方法）
 
 
-import av
+import av  # noqa: E402
 from scripts.lib.measure_guard import assert_idle, stamp
 from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 from scripts.lib.loop_transformer import LoopConfig

@@ -9,22 +9,20 @@
 本脚本把候选取法两两组合，直接看哪一种能把"匹配对"的余弦抬到正常量级。
 判据：**正确取法的匹配余弦应在 0.2~0.35**（CLIP ViT-B/32 的典型值）。
 """
-import os, sys
 import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.abspath(__file__))
+_here = _os.path.dirname(_os.path.abspath(__file__))
+_root = _here
 while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
     _parent = _os.path.dirname(_root)
     if _parent == _root:
         break
     _root = _parent
-if _root not in _sys.path:
-    _sys.path.insert(0, _root)
-_here = _os.path.dirname(_os.path.abspath(__file__))
-if _here not in _sys.path:
-    _sys.path.insert(0, _here)
+for _p in (_root, _here):
+    if _p and _p not in _sys.path:
+        _sys.path.insert(0, _p)
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import torch as T
+import torch
 import torch.nn.functional as F
 from PIL import Image
 
