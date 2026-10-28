@@ -7,8 +7,13 @@
   2. 3D 张量专家（transformers 5.15+ Qwen3Next/Qwen3.5 风格：权重 [E, ...]）路径。
   3. 非 MoE 模型上 apply_efst 不再静默冻结全部参数，而是明确报错（可显式放行）。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os
@@ -17,13 +22,9 @@ os.environ.setdefault("OMP_NUM_THREADS", "6")
 os.environ.setdefault("MKL_NUM_THREADS", "6")
 
 import torch
-import torch.nn as nn
+import torch.nn
 
-from efst import (
-    EFSTConfig,
-    apply_efst,
-    find_expert_groups,
-)
+from scripts.lib.efst import EFSTConfig, apply_efst, find_expert_groups
 
 
 # ---------------------------------------------------------------- case 1
@@ -194,7 +195,7 @@ def case_tensor_usage_counts():
     stayed 0 -> select_top_experts always returned the first keys ([0,1]). This case pins
     the int/str normalization.
     """
-    import torch.nn as nn
+    import torch.nn
     from bitsandbytes.efst import (collect_expert_usage, find_expert_groups,
                                    select_top_experts)
 

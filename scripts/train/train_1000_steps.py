@@ -27,8 +27,13 @@ WHAT WOULD MAKE THIS FAIL (the assertions are meant to be able to fail):
     - throughput collapses mid-run       -> memory pressure / swap thrash
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 
@@ -41,7 +46,7 @@ import time
 
 os.environ.setdefault("OMP_NUM_THREADS", os.environ.get("THREADS", "6"))
 
-import torch  # noqa: E402
+import torch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "bitsandbytes"))
@@ -116,7 +121,7 @@ def main():
         return 1
     print("GDN patch: OK", flush=True)
 
-    from efst import EFSTConfig, apply_efst
+    from scripts.lib.efst import EFSTConfig, apply_efst
 
     calib_x = [torch.randint(0, 256, (4, 16)) for _ in range(4)]
     info = apply_efst(model, EFSTConfig(
@@ -131,7 +136,7 @@ def main():
     ))
     print(info.summary(), flush=True)
 
-    import bitsandbytes as bnb
+    import bitsandbytes
 
     trainable = [p for p in model.parameters() if p.requires_grad]
     n_tr = sum(p.numel() for p in trainable)

@@ -1,5 +1,14 @@
 """AnimateDiff motion adapter + NF4 UNet one-step video smoke (CPU)."""
 from __future__ import annotations
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 
 import argparse
 import json
@@ -7,20 +16,20 @@ import os
 import sys
 import time
 
-import numpy as np
+import numpy
 import psutil
 import torch
 from PIL import Image
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU\gt1030')
-import anime_adiff as A
+from scripts.lib import anime_adiff
 from sd15_nf4_unet import replace_linear_4bit
 
 
 
 def replace_unet_nf4(module, skip_sub='motion_modules', prefix=''):
-    import bitsandbytes as bnb
+    import bitsandbytes
     n = 0
     for name, child in list(module.named_children()):
         full = f'{prefix}.{name}' if prefix else name

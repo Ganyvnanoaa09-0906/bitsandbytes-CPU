@@ -13,8 +13,13 @@
   修法：按 basename 匹配，把 caption 的 path **改写成 token 文件里的那条原样字符串**，
   这样无论在哪个平台，两边 abspath 的输入字符串完全相同。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import json, os, sys, collections

@@ -10,20 +10,25 @@ Answers two questions about `animate_pose`:
 Usage:
   python pose_cycle_check.py --pose-src D:\\work\\output\\motion\\L4_runjump\\frames --pose-frame 5
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse
 import os
 import sys
 
-import numpy as np
+import numpy
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 
-from controlnet_pose import animate_pose, extract_openpose18, get_pose_model  # noqa: E402
+from scripts.lib.controlnet_pose import animate_pose, extract_openpose18, get_pose_model
 
 # (child, parent) pairs whose distance must stay constant
 BONES = [(3, 2), (4, 3), (6, 5), (7, 6), (8, 1), (11, 1),

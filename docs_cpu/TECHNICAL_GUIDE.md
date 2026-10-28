@@ -292,7 +292,7 @@ cache line 已经被读过，普通 store 只是标脏，NT 反而强制刷出 �
 · C 侧：已实现、已导出（pythonInterface.cpp L886-904）、已编进 DLL
 · Python 侧：没有调用点（全仓 grep `gemv_fp16w` 只命中 C 侧）
 ⇒ 目前只能从 C/C++ 或 ctypes 直接调用；还没有 LinearFP16W 之类的 nn.Module 封装。
-   若要在 Python 里用，最小做法是照 fused_cpu.py 的样子写个 ctypes 绑定。
+   若要在 Python 里用，最小做法是照 scripts/lib/fused_cpu.py 的样子写个 ctypes 绑定。
 ```
 ★ 记录这一条的目的：**不要让读者以为它已经能用** —— 已导出 ≠ 已接线。
 
@@ -316,7 +316,7 @@ py -3.11 scripts/bench/bench_r5_threads.py          :: 线程数（本机 5 线�
   在 dispatch 层补缩放；顺序改为「先 L2 归一化、后缩放」；
 - 非 CPU 张量 / 非 GDN 场景保持原行为；varlen（`cu_seqlens`）不支持时回退原路径。
 
-### 3.7 EFST：MoE 专家专项微调（efst.py）
+### 3.7 EFST：MoE 专家专项微调（scripts/lib/efst.py）
 
 **目标**：MoE 模型在纯 CPU / 低内存环境下微调——只训练被选中的专家（及可选 router），
 冻结其余全部参数。冻结参数不产生梯度、不占优化器状态，直接压缩内存。
@@ -358,7 +358,7 @@ py -3.11 scripts/bench/bench_r5_threads.py          :: 线程数（本机 5 线�
 `bitsandbytes.gdn_cpu.patch_transformers()` + `bnb.optim.AdamW8bit(...)` 使用
 （8bit 优化器只给可训练参数分配状态）。
 
-### 3.8 核显（DirectML）块级常驻执行器（gpu_scheduler.py，实验性）
+### 3.8 核显（DirectML）块级常驻执行器（scripts/lib/gpu_scheduler.py，实验性）
 
 **设计动机**：无独立显存机型（R5-4500U 共享 DDR4-2667，实测可用带宽约 21~22 GB/s，
 约为理论值 42.7 的一半）上，带宽调度没有增量可挖；唯一有效的形态是**减流量 + 少
@@ -394,7 +394,7 @@ py -3.11 scripts/bench/bench_r5_threads.py          :: 线程数（本机 5 线�
   `GPU_SCHED_CALIB_MIN`（默认 1.10，`--igpu_min_gain 0` 跳过）自动回退并打印实测值。
   本机（Vega 6）稳态校准 1.2~1.5x → 启用；UHD 630 预期低于门槛 → 自动回退，
   即「弱核显机器开 --igpu 无害，只是自动不生效」。换机自查：
-  `python gpu_scheduler.py` 末行直接打印校准值与判定。
+  `python scripts/lib/gpu_scheduler.py` 末行直接打印校准值与判定。
 
 **CPU/核显异步并发：技术成立、训练负收益（R9，收关）**：torch-directml 为
 「排空时才执行」的懒执行模型（入队 ~0.3ms，CPU 空转 800ms 后排空仍需完整执行
@@ -442,7 +442,7 @@ cat / 切片 / RoPE / embedding 查表+反向 —— 全部可用；
 Graphics（R5-4500U）实测；Intel UHD 630（i5-10400 等）走同一接口，但核显相对
 CPU 更弱，预期收益低于 AMD 机型。`prepare()` 会在检测到软件适配器
 （Microsoft Basic Render Driver）时拒绝启用并提示安装厂商驱动；经 `iGPU_name()`
-上报设备名（`description()` 输出）。换机自查入口：`py -3.11 gpu_scheduler.py`
+上报设备名（`description()` 输出）。换机自查入口：`py -3.11 scripts/lib/gpu_scheduler.py`
 （打印设备名与可用性）。
 
 **另一条路**：跨平台的 OpenCL/CLBlast（§3.9）不依赖 DirectML，用于测量核显的真实能力；

@@ -29,16 +29,21 @@
   python mosaic_mask.py --data <目录> --viz <viz目录> --res 512 --grid 4 --threshold 1.30 --viz-n 24
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse, json, os, random, sys, time
-import numpy as np
+import numpy
 from PIL import Image, ImageDraw
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from mosaic_detect_v2 import list_images, load_gray, score_patch, jpeg_roundtrip
+from scripts.lib.mosaic_detect_v2 import list_images, load_gray, score_patch, jpeg_roundtrip
 
 JPEG_B = (8, 16, 24)   # JPEG 网格尺寸，排除（验证显示能显著降低误报）
 
@@ -117,7 +122,7 @@ def main():
         return
 
     if a.paths:
-        import json as _json
+        import json
         paths = _json.load(open(a.paths, encoding='utf-8'))
         print('从路径清单读入 %d 条（与 token 同序）' % len(paths))
     else:

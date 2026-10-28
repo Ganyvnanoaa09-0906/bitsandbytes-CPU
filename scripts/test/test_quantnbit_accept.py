@@ -15,8 +15,13 @@ divide 8 -- which the self-test covers synthetically and this covers on real dat
 Anything else, including "it ran and the number looks plausible", is not a pass.
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 
@@ -33,9 +38,9 @@ except AttributeError:
            #   （正常终端里是 io.TextIOWrapper,有这个方法）
 
 
-import quantnbit as qn  # noqa: E402
-from small_image_model_v2 import SmallARImageModelV2, SmallImageConfigV2  # noqa: E402
-from loop_transformer import LoopConfig  # noqa: E402
+from scripts.lib import quantnbit
+from scripts.lib.small_image_model_v2 import SmallARImageModelV2, SmallImageConfigV2
+from scripts.lib.loop_transformer import LoopConfig
 
 torch.set_num_threads(6)
 CKPT = r'D:\work\bitsandbytes-CPU\i5build\ar32_run1\ckpt_3000.pt'

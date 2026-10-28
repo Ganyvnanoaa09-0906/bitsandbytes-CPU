@@ -35,7 +35,7 @@
    - 修复：include 后 `#undef __cpuid`（保留 `__cpuid_count`，`cpu_cache.h` 在用）；x86_64-windows-gnu 的 generic/AVX2 编译恢复；aarch64 不受影响。
    - 注：仓库里分发的 Windows DLL 是历史 MSVC 构建（imports VCOMP140），本次无法在本机重建；其代码路径不经过新头，行为不变。
 
-4. **EFST 三个真实 bug**（用户反馈"efst.py 有 bug"）
+4. **EFST 三个真实 bug**（用户反馈"scripts/lib/efst.py 有 bug"）
    - 嵌套 MoE 块（block 同时有 `gate` 与 `experts`）被识别成 2 个"专家"→ 路由器被当专家、非选中专家永远冻结不了；修复为三层优先级（3D 张量专家 → ModuleList/ModuleDict → 兜底）并丢弃祖先候选。
    - 3D 张量专家 forward 用 `F.linear` 语义，但 Qwen3Next/Qwen3.5 权重是 `[E, in, out]`（grouped-mm 语义）→ 形状不匹配；改为按最后一维自动判别两种布局。
    - 非 MoE 模型上 `apply_efst` 只告警然后冻结全部参数（可训练数 0，训练静默无效）；现在默认 `ValueError`，需要时显式 `EFSTConfig(allow_no_experts=True)`。
@@ -86,6 +86,6 @@
 
 ## 5. 本次审查产生的代码/测试文件
 
-- 修复：`bitsandbytes/bitsandbytes/_cpu_caps.py`、`cextension.py`、`disk_balancer.py`、`detect_cpu.py`、`efst.py`（含包内 `bitsandbytes/efst.py`）、`bitsandbytes/csrc/cpu_features.h`、`bitsandbytes/setup.py`、`bitsandbytes/pyproject.toml`、`gt1030/igpu_train.py`、`gt1030/llama_resident.py`、`efst.py`（根目录兼容 shim）。
+- 修复：`bitsandbytes/bitsandbytes/_cpu_caps.py`、`cextension.py`、`scripts/lib/disk_balancer.py`、`detect_cpu.py`、`scripts/lib/efst.py`（含包内 `bitsandbytes/efst.py`）、`bitsandbytes/csrc/cpu_features.h`、`bitsandbytes/setup.py`、`bitsandbytes/pyproject.toml`、`gt1030/igpu_train.py`、`gt1030/llama_resident.py`、`scripts/lib/efst.py`（根目录兼容 shim）。
 - 新增测试：`scripts/test/test_efst_regressions.py`、`scripts/test/test_cpu_caps_selection.py`、`scripts/test/test_disk_balancer_safety.py`、`scripts/verify/verify_gdn_patch_real_model.py`、`scripts/misc/audit_project.py`。
 - 文档：`EFST_README.md` 修复记录；本文件；技术报告 §7.126。

@@ -1,13 +1,18 @@
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
-import sys, time, json, torch, torch.nn.functional as F
+import sys, time, json, torch, torch.nn.functional
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU\bitsandbytes')
-from small_image_model import SmallImageConfig
-from kda_model import SmallARImageModelKDA
-import bitsandbytes as bnb
+from scripts.lib.small_image_model import SmallImageConfig
+from scripts.lib.kda_model import SmallARImageModelKDA
+import bitsandbytes
 torch.set_num_threads(6); torch.backends.mkldnn.enabled=True
 cfg=SmallImageConfig(d_model=1280,n_layer=16,n_head=16,ffn_dim=7168,total_tokens=256); cfg.chunk_size=128; cfg.use_qk_norm=True
 m=SmallARImageModelKDA(cfg); n=sum(p.numel() for p in m.parameters()); opt=bnb.optim.AdamW8bit(m.parameters(),lr=1e-4)

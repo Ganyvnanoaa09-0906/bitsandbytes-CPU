@@ -8,8 +8,13 @@
 
 7B nf4 内存：权重 ~3.5GB + 激活；加载峰值也 ~3.5GB（meta 构建不占内存）。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import json
@@ -17,9 +22,9 @@ import os
 import sys
 
 import torch
-import safetensors.torch as st
+import safetensors.torch
 
-from quant_lora import QuantLinearLora
+from scripts.lib.quant_lora import QuantLinearLora
 
 
 def load_quant_model(quant_dir: str, lora_r: int = 8, lora_alpha: int = 16,

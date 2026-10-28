@@ -27,12 +27,15 @@ import sys
 ROOT = r'D:\work\bitsandbytes-CPU'
 sys.path.insert(0, os.path.join(ROOT, 'tools'))
 
-BOOTSTRAP = ('import os as _os, sys as _sys  '
-             '# 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path\n'
-             '_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))\n'
+BOOTSTRAP = ('import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path\n'
+             '_root = _os.path.dirname(_os.path.abspath(__file__))\n'
+             'while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):\n'
+             '    _parent = _os.path.dirname(_root)\n'
+             '    if _parent == _root:\n'
+             '        break\n'
+             '    _root = _parent\n'
              'if _root not in _sys.path:\n'
              '    _sys.path.insert(0, _root)\n')
-
 
 def tracked(patterns):
     out = subprocess.run(['git', '-C', ROOT, 'ls-files'] + patterns, capture_output=True,
@@ -75,24 +78,37 @@ def insert_bootstrap(src):
 
 
 def rewrite_imports(src, names, theme, from_rel):
-    """把对 names 的引用改写成 scripts.<theme>.*。返回 (新源码, 改动行数)。"""
+    """把对 names 的引用改写成 scripts.<theme>.*。
+
+    两个 must（2026-10-28 B6 首跑踩坏 49 个文件得出的）：
+      1. **保留缩进**：Import 语句可能位于函数体/try 块内，改写成第 0 列会让整份文件语法错误；
+      2. **保留未被移动的名字**：`import a, b` 只移动 a 时不能把 b 丢掉。
+    返回 (新源码, 改动处数)。
+    """
     tree = ast.parse(src)
     lines = src.splitlines(keepends=True)
-    edits = []          # (起行, 止行, 新文本)
+    edits = []          # (起行, 止行, [新行...])
     for node in ast.walk(tree):
+        if not hasattr(node, 'lineno'):        # Module 等容器节点没有位置信息
+            continue
+        line0 = lines[node.lineno - 1]
+        indent = re.match(r'[ \t]*', line0).group(0)
         if isinstance(node, ast.Import):
-            for a in node.names:
-                top = a.name.split('.')[0]
-                if top in names:
-                    as_part = (' as %s' % a.asname) if a.asname else ''
-                    edits.append((node.lineno, node.end_lineno,
-                                  'from scripts.%s import %s%s' % (theme, a.name, as_part)))
+            mov, keep = [], []
+            for al in node.names:
+                (mov if al.name.split('.')[0] in names else keep).append(al.name)
+            new_lines = []
+            if keep:
+                new_lines.append(indent + 'import ' + ', '.join(keep))
+            if mov:
+                new_lines.append(indent + 'from scripts.%s import %s' % (theme, ', '.join(mov)))
+            if new_lines:
+                edits.append((node.lineno, node.end_lineno, [l + '\n' for l in new_lines]))
         elif isinstance(node, ast.ImportFrom):
             if node.module and node.module.split('.')[0] in names:
-                newmod = 'scripts.%s.%s' % (theme, node.module)
+                aliases = ', '.join(a.name + ((' as ' + a.asname) if a.asname else '') for a in node.names)
                 edits.append((node.lineno, node.end_lineno,
-                              'from %s import %s' % (newmod, ', '.join(
-                                  a.name + ((' as ' + a.asname) if a.asname else '') for a in node.names))))
+                              [indent + 'from scripts.%s.%s import %s\n' % (theme, node.module, aliases)]))
         elif isinstance(node, ast.Call):
             fn = node.func
             name = getattr(fn, 'attr', getattr(fn, 'id', ''))
@@ -102,13 +118,13 @@ def rewrite_imports(src, names, theme, from_rel):
                     top = arg.value.split('.')[0]
                     if top in names:
                         edits.append((node.lineno, node.end_lineno,
-                                      lines[node.lineno - 1].replace(
-                                          '"%s"' % arg.value,
-                                          '"scripts.%s.%s"' % (theme, arg.value))))
+                                      [line0.replace('"%s"' % arg.value,
+                                                     '"scripts.%s.%s"' % (theme, arg.value))]))
     if not edits:
         return src, 0
-    for start, end, text in sorted(edits, reverse=True):
-        lines[start - 1:end] = [text if text.endswith('\n') else text + '\n']
+    edits.sort(key=lambda e: e[0], reverse=True)
+    for start, end, new_lines in edits:
+        lines[start - 1:end] = new_lines
     return ''.join(lines), len(edits)
 
 
@@ -119,6 +135,8 @@ def main():
                     help='逗号分隔的多个前缀，合并成一批（如 train,eval,analyze）')
     ap.add_argument('--theme', default=None, help='目标子目录名，如 bench')
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--all-root-except', default=None,
+                    help='移动根目录所有 .py，除了逗号分隔的这些文件名（B6 用）')
     ap.add_argument('--rest-safe', action='store_true',
                     help='把根目录所有"零入边"文件成批移走（B5 收尾）')
     ap.add_argument('--limit', type=int, default=0, help='每批最多移动多少个（0=不限）')
@@ -126,7 +144,12 @@ def main():
                     help='只移动没有被其他脚本 import 的文件（有入边的库留到 B6 统一处理）')
     a = ap.parse_args()
 
-    if a.rest_safe:
+    if a.all_root_except:
+        keep = {x.strip() for x in a.all_root_except.split(',') if x.strip()}
+        files = sorted(p for p in tracked(['*.py'])
+                       if os.sep not in p and '/' not in p and p not in keep)
+        prefix_list = []
+    elif a.rest_safe:
         import json
         safe = set(json.load(io.open(r'D:\work\video_mvp\regroup_safeset.json', encoding='utf-8'))['safe'])
         files = [p for p in tracked(['*.py']) if os.sep not in p and '/' not in p
@@ -241,6 +264,13 @@ def main():
         except SyntaxError:
             continue
         if n_edits:
+            # 写盘前自检：任何一次改写都不许产出语法错误的文件（B6 首跑就是在这里丢了 49 个文件）
+            try:
+                import ast
+                _ast.parse(new_text)
+            except SyntaxError as exc:
+                print('  [SKIP] 改写后语法错误，未写盘: %s (%s)' % (target, exc.msg))
+                continue
             # 被改写的 importer 可能不在 scripts/ 下（如 gt1030/），它需要仓库根在 sys.path 才能
             # import scripts.<theme>.*；移动集合内的文件已各自插过 bootstrap，这里只补外部文件。
             if 'scripts' + os.sep not in target and '_root = _os.path.dirname' not in new_text:

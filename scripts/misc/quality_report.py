@@ -14,8 +14,13 @@
 用法：
   python quality_report.py --ckpt <ckpt.pt> [--arch looped|unet] [--tag name]
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse
@@ -23,9 +28,9 @@ import json
 import os
 import sys
 
-import numpy as np
+import numpy
 import torch
-import torch.nn.functional as F
+import torch.nn.functional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # 线程数可调：训练在跑时用少线程做评估，避免抢 CPU 把训练拖慢。
@@ -34,7 +39,7 @@ if _TH:
     torch.set_num_threads(int(_TH))
 else:
     try:
-        from autotune_threads import best_threads
+        from scripts.lib.autotune_threads import best_threads
         torch.set_num_threads(best_threads(verbose=False))
     except Exception:
         torch.set_num_threads(max(1, (os.cpu_count() or 4) // 2))
@@ -83,8 +88,8 @@ def _resolve_paths(lat_path, n_rows, explicit=None, verbose=True):
       2) latents 同目录下的 *.paths.json，取行数匹配的那个
       3) 项目历史上的默认 tokens_16x16_full.pt.paths.json（同样要行数匹配）
     """
-    import glob as _glob
-    import json as _json
+    import glob
+    import json
     d = os.path.dirname(os.path.abspath(lat_path))
     # 编码器（encode_sdxl_latents.py / 各 tokens 生成脚本）实际用的是
     # tokens_16x16_full.pt.paths.json，所以把它排在最前面，别的按字母序兜底。
@@ -142,7 +147,7 @@ def build_model(arch, C, H, ck):
                            down_block_types=tuple(['DownBlock2D'] * (len(ch) - 1) + ['AttnDownBlock2D']),
                            up_block_types=tuple(['AttnUpBlock2D'] + ['UpBlock2D'] * (len(ch) - 1)),
                            norm_num_groups=32)
-    from looped_dit import LoopedDiT
+    from scripts.lib.looped_dit import LoopedDiT
     # 条件化 ckpt 必须按 cond_dim 建模型，否则 load_state_dict 会缺 18 个条件层参数
     # （strict=False 会静默吞掉，然后拿无条件模型去算 —— 那种结果看着正常但没意义）。
     #
@@ -233,7 +238,7 @@ def main():
     N = L.shape[0]
     C, H = L.shape[1], L.shape[2]
     # 归一化必须与训练时一致：新 ckpt 记了 chan_mean/chan_std（逐通道），旧 ckpt 只有 scale。
-    from latent_norm import meta_from_ckpt, normalize, denormalize, describe
+    from scripts.lib.latent_norm import meta_from_ckpt, normalize, denormalize, describe
     nmeta_ck = meta_from_ckpt(ck)
     scale = float(ck.get('scale', 1.0))
     if nmeta_ck.get('chan_norm') and nmeta_ck.get('chan_mean') is not None:
@@ -351,7 +356,7 @@ def main():
             with _I.open(_paths[i]) as im:
                 _xs.append(_tf(im.convert('RGB')))
         _x = torch.stack(_xs)
-        from vae_decode import Decoder as _Dec
+        from scripts.lib.vae_decode import Decoder as _Dec
         _dec = _Dec(VQ, verbose=False)
         with torch.no_grad():
             _rec_img = _dec_chunked(_dec, denormalize(x, nmeta_ck))
@@ -402,7 +407,7 @@ def main():
                 xg = sc.step(pe, t, xg).prev_sample
         try:
             from PIL import Image
-            from vae_decode import Decoder as _Dec2
+            from scripts.lib.vae_decode import Decoder as _Dec2
             _dec2 = _Dec2(VQ, verbose=False)
             with torch.no_grad():
                 img = _dec_chunked(_dec2, denormalize(xg, nmeta_ck))

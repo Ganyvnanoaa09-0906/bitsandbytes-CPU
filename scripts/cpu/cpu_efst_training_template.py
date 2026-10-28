@@ -30,8 +30,13 @@
 """
 
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 
@@ -95,7 +100,7 @@ def _parse_flash_config(args):
     if flash_val is None:
         return None
 
-    from disk_balancer import DiskBalancerConfig
+    from scripts.lib.disk_balancer import DiskBalancerConfig
 
     raw_mode = str(flash_val).lower()
     if raw_mode in ("true", "1", "yes", "auto", "a"):
@@ -131,19 +136,19 @@ def main():
     flash_cfg = _parse_flash_config(args)
     balancer = None
     if flash_cfg is not None:
-        from disk_balancer import DiskLoadBalancer
+        from scripts.lib.disk_balancer import DiskLoadBalancer
         balancer = DiskLoadBalancer(flash_cfg)
 
     # 1) CPU 环境：必须在 import torch 之前
-    import torch_cpu_kit as tck
+    import torch_cpu_kit
     tck.apply_env(verbose=True)
 
-    import torch  # noqa: F401  (确保 import 顺序)
+    import torch
     tck.init(verbose=True)
 
     # 2) bitsandbytes GDN patch（Qwen3-Next / Qwen3.5 这类模型）
     try:
-        import bitsandbytes as bnb
+        import bitsandbytes
         from bitsandbytes.gdn_cpu import patch_transformers
         patch_transformers()
     except Exception as e:  # noqa: BLE001
@@ -170,7 +175,7 @@ def main():
         balancer.start(script_dir=os.path.dirname(os.path.abspath(__file__)))
 
     # 3) EFST：专家专项微调
-    from efst import EFSTConfig, apply_efst
+    from scripts.lib.efst import EFSTConfig, apply_efst
 
     # 这里只是示意：实际数据加载请替换成你自己的 DataLoader
     dummy_loader = []

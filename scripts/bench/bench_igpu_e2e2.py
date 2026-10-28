@@ -11,8 +11,13 @@
   - 每轮之间留间隔
   - 同时报告每轮的离散度，离散大就说明数据不可信
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os, sys, time
@@ -20,7 +25,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
-    import torch_directml as dml
+    import torch_directml
     HAS_DML = True
 except Exception:
     HAS_DML = False
@@ -28,7 +33,7 @@ except Exception:
 torch.set_num_threads(6)
 CPU = torch.device('cpu')
 DEV = dml.device() if HAS_DML else CPU
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 
 
 def build(T, grid):
@@ -42,7 +47,7 @@ def build(T, grid):
 
 
 def one_round(dev, T, grid, B, iters=4):
-    import torch.nn.functional as F
+    import torch.nn.functional
     torch.manual_seed(0)
     m = build(T, grid).to(dev)
     opt = torch.optim.SGD(m.parameters(), lr=0.0)

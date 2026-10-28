@@ -12,14 +12,19 @@
   准确率 ≈ exp(-loss) 的量级
 ```
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import sys, os, glob, random
 import torch
-import torch.nn.functional as F
-import numpy as np
+import torch.nn.functional
+import numpy
 from PIL import Image
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
@@ -29,7 +34,7 @@ print('=' * 82)
 print('AR 条件续写能力（决定能不能做脏区域修补）')
 print('=' * 82)
 
-from small_vqvae import vqvae_from_ckpt
+from scripts.lib.small_vqvae import vqvae_from_ckpt
 
 HERE = r'D:\work\cloud_results'
 SIZE, N = 256, 128
@@ -49,7 +54,7 @@ def load_real(paths):
 
 
 def load_ar(ckpt):
-    from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+    from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
     ck = torch.load(ckpt, map_location='cpu', weights_only=False)
     cfgd = ck['cfg']
     keep = set(SmallImageConfigV2.__dataclass_fields__.keys())
@@ -57,7 +62,7 @@ def load_ar(ckpt):
     m = SmallARImageModelV2(cfg)
     sd = ck['model']
     if any(k.startswith('loop_mods.') for k in sd):
-        from loop_transformer import LoopConfig
+        from scripts.lib.loop_transformer import LoopConfig
         mx = 4
         for k, v in sd.items():
             if k.endswith('step_enc.table.weight'):

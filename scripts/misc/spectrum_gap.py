@@ -11,12 +11,17 @@
 用法:
   python spectrum_gap.py --sample D:\\work\\cloud_results\\SAMPLE_flat256_29500.png
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse, json, os, sys
-import numpy as np
+import numpy
 from PIL import Image
 import torch
 
@@ -70,7 +75,7 @@ def main():
     real = np.stack(real)
 
     # 2) 分词器重建（天花板）
-    from small_vqvae import vqvae_from_ckpt
+    from scripts.lib.small_vqvae import vqvae_from_ckpt
     from torchvision import transforms
     tf = transforms.Compose([transforms.Resize((256, 256)), transforms.ToTensor(),
                              transforms.Normalize([0.5] * 3, [0.5] * 3)])

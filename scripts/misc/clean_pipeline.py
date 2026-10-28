@@ -12,18 +12,23 @@
   out/rejected.jsonl     被过滤的图及原因
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse, json, os, sys
 from typing import Optional, Tuple
-import numpy as np
+import numpy
 import torch
-import torch.nn.functional as F
+import torch.nn.functional
 from PIL import Image, ImageDraw
 try:
-    from dewatermark import detect_boxes, boxes_to_mask, inpaint_nearest
+    from scripts.lib.dewatermark import detect_boxes, boxes_to_mask, inpaint_nearest
 except Exception:
     detect_boxes = boxes_to_mask = inpaint_nearest = None
 
@@ -116,7 +121,7 @@ def extract_pose(path: str, out_pose: str, model_name: str = "keypointrcnn") -> 
     """
     global _pose_extractor
     try:
-        import controlnet_pose as cp
+        from scripts.lib import controlnet_pose
         if _pose_extractor is None:
             _pose_extractor = cp.get_pose_model()
         persons = cp.extract_openpose18_multi(_pose_extractor, path, thresh=0.4, max_persons=2)

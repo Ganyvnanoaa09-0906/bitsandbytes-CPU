@@ -11,19 +11,24 @@
   python sample_latent_diffusion.py --ckpt <.autopilot/diff_cmse/ckpt_last.pt> --vqvae ckpt_C_mse.pt --out grid.png
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse, os, sys, time
-import numpy as np
+import numpy
 import torch
-import torch.nn.functional as F
+import torch.nn.functional
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from small_vqvae import vqvae_from_ckpt
-from train_latent_diffusion import build_unet
+from scripts.lib.small_vqvae import vqvae_from_ckpt
+from scripts.lib.train_latent_diffusion import build_unet
 
 
 def main():
@@ -100,7 +105,7 @@ def main():
     S = int(ck.get('sample_size', 16))
     Cin = int(ck.get('in_ch', 64))
     if a.arch == 'looped':
-        from looped_dit import LoopedDiT
+        from scripts.lib.looped_dit import LoopedDiT
         model = LoopedDiT(in_ch=Cin, latent_size=S, d=a.d, n_unique=a.n_unique,
                           loop_start=a.loop_start, loop_end=a.loop_end,
                           n_loops=a.n_loops, loop_t_emb=a.loop_t_emb,
@@ -116,7 +121,7 @@ def main():
              S, S, Cin, len(miss), len(unexp)), flush=True)
 
     # ---- 推理设备：采样循环放核显（实测端到端 DDIM 20 NFE 快 1.72x）----
-    from infer_backend import InferBackend
+    from scripts.lib.infer_backend import InferBackend
     ibe = InferBackend(model, a.infer_device, verbose=True)
 
     g = torch.Generator().manual_seed(a.seed)
@@ -137,7 +142,7 @@ def main():
     if a.prompt:
         if int(ck.get('cond_dim', 0)) <= 0:
             raise SystemExit('[diff] ckpt 是无条件模型（cond_dim=0），不能配 --prompt')
-        from prompt_cond import encode as _encode
+        from scripts.lib.prompt_cond import encode as _encode
         plist = a.prompt
         e = _encode(plist)
         if len(plist) == 1:
@@ -203,7 +208,7 @@ def main():
 
     # 训练时把潜变量变换到单位尺度，采样必须做【完全一致的逆变换】才是 decoder 认的尺度。
     # 2026-09-23 起默认是逐通道标准化（旧 ckpt 只有单标量 scale，走兼容分支）。
-    from latent_norm import meta_from_ckpt, denormalize, describe
+    from scripts.lib.latent_norm import meta_from_ckpt, denormalize, describe
     nmeta = meta_from_ckpt(ck)
     print('[diff] 反归一化: %s' % describe(nmeta), flush=True)
     x = denormalize(x, nmeta)

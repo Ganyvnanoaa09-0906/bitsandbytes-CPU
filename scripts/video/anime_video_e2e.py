@@ -26,8 +26,13 @@ oracle:
     python anime_video_e2e.py all
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 
@@ -39,7 +44,7 @@ import os
 import sys
 import time
 
-import numpy as np
+import numpy
 import torch
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -73,7 +78,7 @@ def frames_stats(frames, tag):
 # 阶段 1：生成
 # --------------------------------------------------------------------------
 def stage_gen(frames, res, steps, seed, use_lcm, adapter, lora=""):
-    from anime_adiff import build
+    from scripts.lib.anime_adiff import build
     from PIL import Image
 
     os.makedirs(LR_DIR, exist_ok=True)
@@ -151,7 +156,7 @@ def stage_gen(frames, res, steps, seed, use_lcm, adapter, lora=""):
 # --------------------------------------------------------------------------
 def stage_sr(scale, fps, keep_frames):
     from PIL import Image
-    from sr_cost import ANIME_6B, X4PLUS, load as load_rrdb
+    from scripts.lib.sr_cost import ANIME_6B, X4PLUS, load as load_rrdb
 
     os.makedirs(SR_DIR, exist_ok=True)
     for f in glob.glob(os.path.join(SR_DIR, "*.png")):

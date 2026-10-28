@@ -18,8 +18,13 @@ try/except + flush，避免一处崩溃丢掉全部数据。
     T=8192 时单层 attention SDPA 1.598 s ⇒ 30 层 ≈ 48 s / 步
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 
@@ -35,7 +40,7 @@ sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(_HERE, "bitsandbytes"))
 
 torch.set_num_threads(int(os.environ.get("THREADS", "6")))
-import sr_cost as S  # noqa: E402
+from scripts.lib import sr_cost
 
 
 def timed(fn, reps=2):

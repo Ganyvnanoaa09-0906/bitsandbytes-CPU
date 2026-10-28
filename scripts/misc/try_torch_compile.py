@@ -21,8 +21,13 @@ Decision rule, fixed in advance per the 7.39.4 discipline: steady-state step tim
 more than 5% to keep it. Below that it is not worth the compile cost on every run.
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 
@@ -40,9 +45,9 @@ except AttributeError:
            #   （正常终端里是 io.TextIOWrapper,有这个方法）
 
 
-from measure_guard import assert_idle, stamp  # noqa: E402
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2  # noqa: E402
-from loop_transformer import LoopConfig  # noqa: E402
+from scripts.lib.measure_guard import assert_idle, stamp
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+from scripts.lib.loop_transformer import LoopConfig
 
 assert_idle()
 stamp('torch.compile 对照')

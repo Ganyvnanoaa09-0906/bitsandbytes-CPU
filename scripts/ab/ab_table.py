@@ -9,8 +9,13 @@ Usage:
   python ab_table.py --dirs D:\\...\\ctl_L4\\off\\frames D:\\...\\ctl_L4\\on\\frames ^
                      --names L4_nocontrol L4_control
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse
@@ -22,8 +27,8 @@ import torch
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 
-from motion_boundary import analyze                     # noqa: E402
-from face_consistency import analyze_dir, summarize     # noqa: E402
+from scripts.lib.motion_boundary import analyze
+from scripts.lib.face_consistency import analyze_dir, summarize
 
 
 def main():

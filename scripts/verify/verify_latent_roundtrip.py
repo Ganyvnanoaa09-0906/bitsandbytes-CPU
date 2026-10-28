@@ -9,17 +9,22 @@
 
 做法：取验证集的真实 z_q -> dec() -> 存图；并与【VQVAE 直接 forward 的重建】对比。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os, sys
-import numpy as np
+import numpy
 import torch
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from small_vqvae import vqvae_from_ckpt
+from scripts.lib.small_vqvae import vqvae_from_ckpt
 
 SIZE = 256
 VQ = r'D:\work\cloud_results\ckpt_C_mse.pt'
@@ -68,7 +73,7 @@ def main():
           % float((zq - zq2).abs().max()))
     for name, t in (('原图', x), ('VQVAE forward 重建', xr),
                     ('用保存的 z_q 解码', rec_saved), ('用重算的 z_q 解码', rec_recomputed)):
-        import torch.nn.functional as F
+        import torch.nn.functional
         print('  %-22s PSNR=%.2f dB  range=[%.2f, %.2f]'
               % (name, 10 * np.log10(4.0 / max(float(F.mse_loss(t, x)), 1e-12)),
                  float(t.min()), float(t.max())))

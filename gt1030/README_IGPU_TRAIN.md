@@ -32,7 +32,7 @@ python gt1030/igpu_train.py --model <dir> --data corpus.txt --tokens 128 --steps
 | `--task auto\|clm\|mlm` | 自动判断因果语言模型 / masked-LM；一般不用手写 |
 | `--steps` `--tokens` `--batch` `--lr` `--lora-r` | 训练规模 |
 | `--optimizer adamw\|adamw8bit\|muon` | 与 CPU 训练脚本一致的优化器选择（默认 adamw；优化器在 CPU 跑，两种后端相同） |
-| `--weight-decay` `--momentum` `--muon-lr` `--ns-iters` | Muon 超参（2-D 权重走 NS5，其余走 AdamW8bit；与 `train_ar_v2.py` 同一规则） |
+| `--weight-decay` `--momentum` `--muon-lr` `--ns-iters` | Muon 超参（2-D 权重走 NS5，其余走 AdamW8bit；与 `scripts/lib/train_ar_v2.py` 同一规则） |
 | `--data file.txt` | 用 tokenizer 切窗训练真实文本；默认合成 batch |
 | `--save dir` | 保存可训练权重（LoRA 只有 adapter）与 `train_info.json` |
 | `--log-every` | 日志间隔 |
@@ -49,7 +49,7 @@ python gt1030/igpu_train.py --model <dir> --backend igpu --optimizer muon --muon
 ```
 
 - `muon`：2-D 权重（名字不含 `emb`/`head`）走 Newton-Schulz5，其余走 `bnb.optim.AdamW8bit`；
-  与 `train_ar_v2.py --optimizer muon` 是同一规则；
+  与 `scripts/lib/train_ar_v2.py --optimizer muon` 是同一规则；
 - `--save` 现在同时写 `trainable.pt`、`optimizer.pt`、`train_info.json`；
   `--resume` 会恢复权重与优化器状态（恢复后 `--check` 跳过 base-model parity，因为参照已不适用）；
 - 没有 OpenCL 时 `--backend cpu` 用同一优化器，得到完全相同的训练循环语义。

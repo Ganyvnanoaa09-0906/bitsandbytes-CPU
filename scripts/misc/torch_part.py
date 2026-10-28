@@ -44,8 +44,13 @@ Exit codes: 0 all passed, 1 a check failed, 77 torch absent.
 
 ASCII only: the parent re-prints what it captures.
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os
@@ -85,13 +90,13 @@ print(f"  torch {torch.__version__} on {torch.get_num_threads()} thread(s)")
 # ============================================================================
 if not WITH_BNB:
     try:
-        import disk_balancer as db
+        from scripts.lib import disk_balancer
         check("T6 disk_balancer imports", True, os.path.basename(db.__file__))
     except Exception as e:  # noqa: BLE001
         check("T6 disk_balancer imports", False, f"{type(e).__name__}: {e}")
 
     try:
-        import latent_chunk_store as lcs
+        import latent_chunk_store
         check("T7 latent_chunk_store imports", True, os.path.basename(lcs.__file__))
     except Exception as e:  # noqa: BLE001
         check("T7 latent_chunk_store imports", False, f"{type(e).__name__}: {e}")
@@ -111,10 +116,10 @@ if not WITH_BNB:
 # ============================================================================
 print("  about to import bitsandbytes (this is where a double-OpenMP abort lands)")
 try:
-    import torch.nn as nn
+    import torch.nn
 
     sys.path.insert(0, os.path.join(HERE, "bitsandbytes"))
-    import bitsandbytes as bnb
+    import bitsandbytes
     check("T8 bitsandbytes imports alongside torch", True,
           os.path.dirname(getattr(bnb, "__file__", "") or ""))
 except Exception as e:  # noqa: BLE001

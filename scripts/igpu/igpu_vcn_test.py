@@ -20,8 +20,13 @@ under half the CPU time is worth using for video data loading. A hardware path t
 that is slower, is not.
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 
@@ -29,7 +34,7 @@ import os
 import sys
 import time
 
-import numpy as np
+import numpy
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 try:
@@ -39,8 +44,8 @@ except AttributeError:
            #   （正常终端里是 io.TextIOWrapper,有这个方法）
 
 
-import av  # noqa: E402
-from measure_guard import assert_idle, stamp  # noqa: E402
+import av
+from scripts.lib.measure_guard import assert_idle, stamp
 
 CLIP = r'D:\work\bitsandbytes-CPU\_vcn_test.mp4'
 W, H, NFRAMES = 640, 360, 120

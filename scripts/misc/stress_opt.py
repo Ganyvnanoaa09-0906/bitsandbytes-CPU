@@ -1,6 +1,11 @@
 """Stress the fused 8-bit optimizer ctypes path: all optimizers, dtypes, sizes."""
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os
@@ -11,10 +16,10 @@ import sys
 # checkout layout is (the R5 and the i5 disagree about it, and neither installs
 # the package). Put this directory on sys.path first so the import resolves.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import _testpath  # noqa: E402,F401  (side effect: fixes sys.path)
+from scripts.lib import _testpath
 
 import torch
-import bitsandbytes as bnb
+import bitsandbytes
 
 torch.manual_seed(0)
 

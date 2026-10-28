@@ -13,14 +13,19 @@ Infinity 论文的观察：MSB 准确率显著高于 LSB。
   ⇒ 若我们也是"MSB 高、LSB 低"，说明模型学到了粗结构但丢了细节
   ⇒ 若 MSB 也低，说明连结构都没学到（更严重）
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import sys, os, glob, random
 import torch
-import torch.nn.functional as F
-import numpy as np
+import torch.nn.functional
+import numpy
 from PIL import Image
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
@@ -30,8 +35,8 @@ print('=' * 82)
 print('bit 分解诊断：逐位置 top-1 衰减的根因')
 print('=' * 82)
 
-from small_vqvae import vqvae_from_ckpt
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+from scripts.lib.small_vqvae import vqvae_from_ckpt
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 
 N_BITS = 10
 
@@ -44,7 +49,7 @@ def load_ar(ckpt):
     m = SmallARImageModelV2(cfg)
     sd = ck['model']
     if any(k.startswith('loop_mods.') for k in sd):
-        from loop_transformer import LoopConfig
+        from scripts.lib.loop_transformer import LoopConfig
         mx = 4
         for k, v in sd.items():
             if k.endswith('step_enc.table.weight'):

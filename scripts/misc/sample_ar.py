@@ -8,17 +8,22 @@
       --out samples.png --n 16 --top-k 100 --temperature 1.0
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse, os, sys, time
 import torch
-import torch.nn.functional as F
+import torch.nn.functional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # v1 的 small_image_model 只在加载 v1 checkpoint 时才需要，
 # 改成惰性导入：否则云端没上传这个文件时，连 v2 都采不了。
-from small_vqvae import VQVAE, vqvae_from_ckpt
+from scripts.lib.small_vqvae import VQVAE, vqvae_from_ckpt
 
 
 def main():
@@ -85,14 +90,14 @@ def main():
     # 自动识别架构：v2 的 cfg 带 n_kv_head / cond_mode / head_mode 等字段
     is_v2 = any(k in cfgd for k in ('n_kv_head', 'cond_mode', 'head_mode', 'pos_mode'))
     if is_v2:
-        from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+        from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
         keep = set(SmallImageConfigV2.__dataclass_fields__.keys())
         cfg = SmallImageConfigV2(**{k: v for k, v in cfgd.items() if k in keep})
         model = SmallARImageModelV2(cfg)
         # 循环 Transformer：checkpoint 里有 loop_mods.* 就必须先挂载再 load
         sd = ck['model']
         if any(k.startswith('loop_mods.') for k in sd):
-            from loop_transformer import LoopConfig
+            from scripts.lib.loop_transformer import LoopConfig
             # max_steps = loop_L_max + 1，从 step_enc.table.weight 的行数推断
             mx = 4
             for k, v in sd.items():
@@ -112,7 +117,7 @@ def main():
         arch = 'v2'
         cluster_map = (ck.get('cluster_of'), ck.get('offset_of'))
     else:
-        from small_image_model import SmallImageConfig, SmallARImageModel
+        from scripts.lib.small_image_model import SmallImageConfig, SmallARImageModel
         cfg = SmallImageConfig(**{k: v for k, v in cfgd.items()
                                   if k in SmallImageConfig.__dataclass_fields__})
         model = SmallARImageModel(cfg)
@@ -140,10 +145,10 @@ def main():
                 text = ct[rows]
                 print('  条件: --cond-pt 取 %d 个不同行（%d..%d）' % (a.n, rows[0], rows[-1]))
         elif a.text:
-            import sys as _s, os as _o
+            import sys, os
             _s.path.insert(0, _o.path.dirname(_o.path.abspath(__file__)))
-            import torch.nn.functional as _F
-            from clip_score_eval import load_clip, clip_feat
+            import torch.nn.functional
+            from scripts.lib.clip_score_eval import load_clip, clip_feat
             m, p = load_clip('openai/clip-vit-base-patch32')
             with torch.no_grad():
                 inp = p(text=[a.text], return_tensors='pt', padding=True, truncation=True)
@@ -170,7 +175,7 @@ def main():
                 # 这是当年【缺失的一环】：ar_grn256 训练参数是对的，但 val 因协议错误
                 # （验证喂干净输入 ⇒ 双向注意力下直接抄目标 ⇒ 0.97 nats）被判无效后搁置，
                 # 而 sample_ar.py 根本没有 GRN 入口 ⇒ 它【从没出过一张图】。
-                from grn_refine import grn_sample
+                from scripts.lib.grn_refine import grn_sample
                 print('  GRN 精化采样：steps=%d shape=%s top_k=%d temp=%.2f（每步全量重算，允许擦除）'
                       % (a.grn_steps, a.grn_shape, a.grn_top_k, a.grn_temp), flush=True)
                 g = torch.Generator().manual_seed(a.seed)
@@ -230,7 +235,7 @@ def main():
     # 顺手把 token 存下来：只存图的话，两种采样策略的对比就只能比像素，
     # 而像素要过一遍 VQ 解码 + 量化成 uint8，小差异可能被抹掉。
     # token 是逐位可比的（cache_ab 那套 A/B 的判据就靠它）。
-    import os as _os
+    import os
     tok_path = _os.path.splitext(a.out)[0] + '.tokens.pt'
     torch.save(toks, tok_path)
     print('tokens -> %s  %s' % (tok_path, tuple(toks.shape)))

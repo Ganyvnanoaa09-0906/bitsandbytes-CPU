@@ -7,15 +7,20 @@
   ② 逐尺度的重建 PSNR 是否【递进】（粗尺度 → 细尺度 逐步变好）
   ③ 各尺度的码本使用是否正常（没有全用一个码）
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import sys, os, glob, random, time
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
+import torch.nn
+import torch.nn.functional
+import numpy
 from PIL import Image
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
@@ -25,8 +30,8 @@ print('=' * 78)
 print('多尺度残差量化：训练可行性验证')
 print('=' * 78)
 
-from small_vqvae import Encoder, Decoder
-from ms_vq import MultiScaleResidualVQ
+from scripts.lib.small_vqvae import Encoder, Decoder
+from scripts.lib.ms_vq import MultiScaleResidualVQ
 
 SIZE, B = 256, 4
 C_EMB = 64

@@ -19,8 +19,13 @@ Sections:
 Writes a markdown appendix and a directory of the raw log copies.
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 
@@ -173,7 +178,7 @@ w()
 w('## A.4 内存分解：权重 / 梯度 / 优化器状态 / 激活')
 w()
 try:
-    from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+    from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
     ck = torch.load(CKPT, map_location='cpu', weights_only=False)
     names = {f.name for f in dataclasses.fields(SmallImageConfigV2)}
     cfg = SmallImageConfigV2(**{k: v for k, v in (ck.get('cfg') or {}).items()

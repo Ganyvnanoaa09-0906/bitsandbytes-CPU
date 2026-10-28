@@ -5,18 +5,23 @@
 带水印残留、COS 人像）没有判别力，zero-shot 打标不可用。
 那就得换方案：要么用真实 captioning 模型（BLIP），要么放弃文本条件。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os, sys, json
-import numpy as np
+import numpy
 import torch
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from clip_score_eval import load_clip
-from auto_caption import build_text_bank, list_images
+from scripts.lib.clip_score_eval import load_clip
+from scripts.lib.auto_caption import build_text_bank, list_images
 
 torch.set_num_threads(4)
 root = r'.autopilot\clean_nf\images'

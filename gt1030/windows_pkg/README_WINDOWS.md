@@ -59,7 +59,7 @@ train.bat --model <dir> --optimizer muon       --steps 20
 train.bat --model <dir> --optimizer muon --muon-lr 0.02 --ns-iters 3 --steps 20
 ```
 
-- `muon`：2-D 权重（不含 emb/head）Newton-Schulz5，其余 AdamW8bit（与 `train_ar_v2.py` 同一规则）；
+- `muon`：2-D 权重（不含 emb/head）Newton-Schulz5，其余 AdamW8bit（与 `scripts/lib/train_ar_v2.py` 同一规则）；
 - `--save` 同时保存 `trainable.pt` + `optimizer.pt`，`--resume` 恢复两者。
 
 每次训练开始前脚本会自动做 **CPU/iGPU 对拍**：用原始模型算 CPU 参考 loss，替换模块后算第一步

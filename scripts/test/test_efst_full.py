@@ -1,7 +1,12 @@
 # -*- coding: utf-8 -*-
 """test_efst_full.py — EFST 完整测试（MoE 前向/反向收敛 + top_k 选专家 + 非MoE fallback + 参数节省）"""
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os, sys
@@ -9,9 +14,9 @@ os.environ["OMP_NUM_THREADS"] = "6"; os.environ["MKL_NUM_THREADS"] = "6"
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(_HERE, "bitsandbytes"))
-import torch; torch.set_num_threads(6)
-import torch.nn as nn
-from efst import EFSTConfig, apply_efst, find_expert_groups, report_trainable
+import torch
+import torch.nn
+from scripts.lib.efst import EFSTConfig, apply_efst, find_expert_groups, report_trainable
 
 class ExpertMLP(nn.Module):
     def __init__(self, dim): super().__init__(); self.w1 = nn.Linear(dim, dim*2); self.w2 = nn.Linear(dim*2, dim); self.act = nn.GELU()

@@ -2,7 +2,7 @@
 
 > Pipeline: **frozen config** 512x512 · DPM-Solver++(2M) · 5 steps · SD1.5 VAE · independent
 > tiling + hard cuts · FSRCNN post-processing
-> Source: `motion_boundary.py` + `face_consistency.py` + `scripts/misc/streak_metrics.py`, measured on
+> Source: `scripts/lib/motion_boundary.py` + `scripts/lib/face_consistency.py` + `scripts/misc/streak_metrics.py`, measured on
 > 2026-09-11 afternoon
 > Note: this is an independent experiment record of the video-generation project; it is not
 > part of the `bitsandbytes` library API.
@@ -83,13 +83,13 @@ confirmed visually to have intact features. **The metric is invalid for extreme 
 ```powershell
 # degradation sweep (5 levels, about 64 minutes)
 $env:ADIFF_VAE = "D:\work\textmodel\sd15_full\vae"
-& "D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe" -u motion_boundary.py --out "D:\work\output\motion"
+& "D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe" -u scripts/lib/motion_boundary.py --out "D:\work\output\motion"
 
 # analysis only (no generation)
 & "D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe" -u scripts/video/motion_report.py --root "D:\work\output\motion"
 
 # face consistency
-& "D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe" -u face_consistency.py `
+& "D:\work\那很有乐子了~\.venv_dml\Scripts\python.exe" -u scripts/lib/face_consistency.py `
     --root "D:\work\output\motion" --out "D:\work\output\motion\face.json"
 
 # radial-streak quantification

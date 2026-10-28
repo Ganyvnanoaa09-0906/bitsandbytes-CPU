@@ -7,17 +7,22 @@
   ② 有没有可以做的：更大 batch（每图成本几乎不变）、梯度累积、融合算子
   ③ 数据加载有没有成为瓶颈
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os, sys, time
 import torch
-import torch.nn.functional as F
+import torch.nn.functional
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU\bitsandbytes')
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 
 TH = int(os.environ.get('TH', '6'))
 torch.set_num_threads(TH)
@@ -39,7 +44,7 @@ print('  模型 %.2fM  T=%d  d=%d L=%d' % (NP / 1e6, T, cfg.d_model, cfg.n_layer
 print()
 
 try:
-    import bitsandbytes as bnb
+    import bitsandbytes
     Opt = bnb.optim.AdamW8bit
     print('  优化器: bnb AdamW8bit')
 except Exception:

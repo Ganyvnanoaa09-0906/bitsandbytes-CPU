@@ -11,8 +11,13 @@
 
 本脚本用 torch.profiler 给出按算子类别的耗时占比（分别看 forward / 训练步）。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse, os, sys, time
@@ -50,7 +55,7 @@ def main():
     a = ap.parse_args()
     torch.set_num_threads(a.threads)
 
-    from train_latent_diffusion import build_unet
+    from scripts.lib.train_latent_diffusion import build_unet
     ch = [int(x) for x in a.ch.split(',')]
     model = build_unet(ch, sample_size=a.size, in_ch=a.in_ch)
     npar = sum(p.numel() for p in model.parameters())

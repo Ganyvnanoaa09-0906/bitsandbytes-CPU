@@ -15,7 +15,7 @@ EFST 用于 MoE 模型在 **纯 CPU / 低内存** 环境下的微调：
 from bitsandbytes.efst import EFSTConfig, apply_efst
 ```
 
-仓库根目录的 ``efst.py`` 保留为兼容入口（``from efst import ...`` 仍可用）。
+仓库根目录的 ``scripts/lib/efst.py`` 保留为兼容入口（``from efst import ...`` 仍可用）。
 
 ## 快速开始
 

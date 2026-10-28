@@ -14,8 +14,13 @@
   python train_sr.py --data <图片目录> --vqvae <分词器> --out <输出目录> \
       --target 512 --steps 20000 --batch 8 --threads 6
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse
@@ -26,14 +31,14 @@ import random
 import sys
 import time
 
-import numpy as np
+import numpy
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn
+import torch.nn.functional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from small_vqvae import vqvae_from_ckpt
-from sr_net import SRSmall
+from scripts.lib.small_vqvae import vqvae_from_ckpt
+from scripts.lib.sr_net import SRSmall
 
 try:
     from torchvision import transforms

@@ -319,7 +319,7 @@ C side      : implemented, exported (pythonInterface.cpp L886-904), compiled int
 Python side : NO call site (a repo-wide grep for `gemv_fp16w` hits only the C side)
 => today it is callable only from C/C++ or via ctypes; there is no `LinearFP16W`
    nn.Module wrapper yet. The minimal path to Python is a ctypes binding modelled on
-   fused_cpu.py.
+   scripts/lib/fused_cpu.py.
 ```
 This note exists so nobody assumes it already works: **exported is not the same as wired up**.
 
@@ -345,7 +345,7 @@ py -3.11 scripts/bench/bench_r5_threads.py          :: thread count (5 is optima
 - Non-CPU tensors / non-GDN cases keep original behavior; varlen (`cu_seqlens`)
   unsupported → falls back to the original path.
 
-### 3.7 EFST: MoE expert-specific fine-tuning (efst.py)
+### 3.7 EFST: MoE expert-specific fine-tuning (scripts/lib/efst.py)
 
 **Goal**: fine-tune MoE models on a pure-CPU / low-memory machine — train only the
 selected experts (and optionally the router), freeze all other parameters. Frozen
@@ -393,7 +393,7 @@ new-style MoE expert weights are a single `[num_experts, ...]` Parameter
 `bitsandbytes.gdn_cpu.patch_transformers()` + `bnb.optim.AdamW8bit(...)` (the 8-bit
 optimizer allocates state only to trainable parameters).
 
-### 3.8 iGPU (DirectML) block-level resident executor (gpu_scheduler.py, experimental)
+### 3.8 iGPU (DirectML) block-level resident executor (scripts/lib/gpu_scheduler.py, experimental)
 
 **Motivation**: on machines with no dedicated VRAM (R5-4500U shares DDR4-2667 with the
 CPU; measured usable bandwidth is only ~21-22 GB/s, about half the 42.7 GB/s
@@ -437,7 +437,7 @@ no per-machine tuning required:
   the measured value. This machine (Vega 6) steadies at 1.2-1.5x → enabled; UHD 630 is
   expected below the gate → automatic fallback, i.e. "turning on --igpu on a weak-iGPU
   machine is harmless; it simply does not engage". On a new machine run
-  `python gpu_scheduler.py`: the last line prints the calibration value and verdict.
+  `python scripts/lib/gpu_scheduler.py`: the last line prints the calibration value and verdict.
 
 **CPU/iGPU asynchronous concurrency: technique works, training gain negative (R9,
 closed)**: torch-directml uses a lazy execution model — kernels run only at the drain
@@ -501,7 +501,7 @@ runs the same interface, but its iGPU is weaker relative to its CPU, so gains ar
 expected to be lower than the AMD machine. `prepare()` refuses to enable when it
 detects a software adapter (Microsoft Basic Render Driver) and advises installing the
 vendor graphics driver, and reports the device name via `iGPU_name()` (shown in
-`description()`). Machine self-check entry: `py -3.11 gpu_scheduler.py` (prints the
+`description()`). Machine self-check entry: `py -3.11 scripts/lib/gpu_scheduler.py` (prints the
 device name and availability).
 
 **The other route**: cross-platform OpenCL/CLBlast (3.9) does not use DirectML and exists to

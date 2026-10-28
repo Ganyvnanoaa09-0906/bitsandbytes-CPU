@@ -203,7 +203,7 @@ In eager mode `RMSNorm` expands into 6 aten operators (`pow -> mean -> add -> rs
 so the activation is fully read and written 6 times => pure bandwidth waste. This family collapses
 those 6 passes into 1, i.e. the 12 `cfused_*` exports.
 
-**Measured gain** (6 alternating rounds, paired-ratio median; `enable_fused.py`):
+**Measured gain** (6 alternating rounds, paired-ratio median; `scripts/lib/enable_fused.py`):
 ```
 RMSNorm only                +5.0% (conservative) ~ +8.0% (median)
 RMSNorm + SwiGLU + residual +5.5% (conservative) ~ +7.1% (median)
@@ -243,7 +243,7 @@ Usage (`fused_cpu` explicit calls and the `enable_fused` one-liner), the argumen
 the full boundary table: [`QUICKSTART_EN.md`](QUICKSTART_EN.md) section 4.9. C-side signatures and
 implementation details: [`TECHNICAL_GUIDE_EN.md`](TECHNICAL_GUIDE_EN.md) section 3.5.2.
 
-### 3.6 EFST: MoE expert-specific fine-tuning (efst.py)
+### 3.6 EFST: MoE expert-specific fine-tuning (scripts/lib/efst.py)
 
 **Goal**: low-memory MoE fine-tuning — train only the selected experts (and optionally
 the router), freeze the rest, significantly compressing trainable parameters and memory.
@@ -270,7 +270,7 @@ sharing DDR4-2667 with the CPU), can the iGPU speed up training?
 
 **Phase 1: per-operator scheduling = negative**
 
-The first `gpu_scheduler.py` dispatched large operators by the compute/transfer ratio
+The first `scripts/lib/gpu_scheduler.py` dispatched large operators by the compute/transfer ratio
 `M*N/(M+N)`. Same-machine 8-step measurement (8-layer BigLinear(2048²) LoRA-style):
 
 | Config | Time per step | Peak RSS | Loss |
@@ -360,7 +360,7 @@ same machine once read 1.20x and 1.06x). Below `GPU_SCHED_CALIB_MIN` (default 1.
 `--igpu_min_gain` to change, 0 to skip) it falls back automatically and prints the
 measured ratio. This machine (Vega 6) steadies at 1.2-1.5x → enabled; UHD 630 is
 expected below the gate → automatic fallback — "enabling --igpu on a weak-iGPU machine
-is harmless; it simply does not engage". On a new machine run `python gpu_scheduler.py`;
+is harmless; it simply does not engage". On a new machine run `python scripts/lib/gpu_scheduler.py`;
 the last line prints the calibration value and verdict.
 
 **Device applicability**: all measured data come from AMD Radeon(TM) Graphics
@@ -724,7 +724,7 @@ boundary.
 | Issue | Root cause | Fix |
 |-------|-----------|-----|
 | `build_manual.bat` errors `'??具' is not recognized` / `... was unexpected` | tool REM comments were Chinese (GBK non-ASCII); cmd's GBK codepage parses comment bytes as commands | rewrote as pure ASCII English |
-| `gpu_scheduler.py` not in repo | iGPU machine-adaptive (calibrate_gpu / RAM-scaled limit / calibration threshold) was doc-only | committed the feature |
+| `scripts/lib/gpu_scheduler.py` not in repo | iGPU machine-adaptive (calibrate_gpu / RAM-scaled limit / calibration threshold) was doc-only | committed the feature |
 | 8 `.obj` artifacts + `build_release_tmp\` | leftover compile intermediates | removed |
 | LLM real-text training blocked | `deepseek-coder-1.3b-base` **missing tokenizer** (only config/model) | switched to `qwen3.5-0.8B` (MoE) which has a full tokenizer |
 | qwen3-series CPU backward segfault | transformers 5.6.0 Qwen3 backward bug (fails even with pure torch) | upgraded to 5.15.0 |

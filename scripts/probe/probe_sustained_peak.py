@@ -10,8 +10,13 @@
 方法：大形状跑够 20 秒以上（避开突发窗口），取稳态吞吐；同时按秒采样
 % Processor Performance 换算出实际运行频率，避免"其实是降频了"的误判。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os
@@ -21,7 +26,7 @@ import time
 import torch
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-import forge_gemm as FG
+from scripts.lib import forge_gemm
 
 TH = int(os.environ.get('TH', '6'))
 torch.set_num_threads(TH)

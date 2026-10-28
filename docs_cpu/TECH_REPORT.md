@@ -184,7 +184,7 @@ i5 才是主训练机；R5（开发机）已到其硬件天花板。两台机做
 `RMSNorm` 在 eager 下展开成 6 个 aten 算子（`pow → mean → add → rsqrt → mul → mul`），
 激活被完整读写 6 遍 ⇒ 纯带宽浪费。这一族把它们压成 1 遍，即 12 个 `cfused_*` 导出。
 
-**实测收益**（交替测量 6 轮、取配对比值中位；`enable_fused.py`）：
+**实测收益**（交替测量 6 轮、取配对比值中位；`scripts/lib/enable_fused.py`）：
 ```
 只融合 RMSNorm                +5.0%（保守） ~ +8.0%（中位）
 RMSNorm + SwiGLU + 残差       +5.5%（保守） ~ +7.1%（中位）
@@ -218,7 +218,7 @@ GEMV/GEMM，权重流量减半而 fp32 FMA 吞吐不变）在 C 侧已实现、�
 [`QUICKSTART.md`](QUICKSTART.md) §4.9；C 侧签名与实现细节见
 [`TECHNICAL_GUIDE.md`](TECHNICAL_GUIDE.md) §3.5.2。
 
-### 3.6 EFST：MoE 专家专项微调（efst.py）
+### 3.6 EFST：MoE 专家专项微调（scripts/lib/efst.py）
 
 **目标**：MoE 模型低内存微调——只训练选中专家（及可选 router），冻结其余，
 显著压缩可训练量与内存。
@@ -245,7 +245,7 @@ Qwen3Next/Qwen3.5 的 **3D 张量专家**（`[num_experts,...]` 大 Parameter）
 
 **阶段一：逐算子调度 = 负优化**
 
-`gpu_scheduler.py` 初版按「计算量/搬运量」比 `M*N/(M+N)` 自动派发大算子。
+`scripts/lib/gpu_scheduler.py` 初版按「计算量/搬运量」比 `M*N/(M+N)` 自动派发大算子。
 同机 8 步实测（8 层 BigLinear(2048²) LoRA 式训练）：
 
 | 配置 | 每步耗时 | 峰值 RSS | 损失 |
@@ -317,7 +317,7 @@ GPU 强」算子的负载——本训练栈不存在这种形态。另注：非�
 1.06x 的波动），低于 `GPU_SCHED_CALIB_MIN`（默认 1.10，`--igpu_min_gain` 可调、
 0 跳过）自动回退并打印实测值。本机（Vega 6）稳态校准 1.2~1.5x → 启用；UHD 630
 预期低于门槛 → 自动回退，「弱核显机器开 --igpu 无害，只是自动不生效」。换机自查：
-`python gpu_scheduler.py` 末行直接打印校准值与判定。
+`python scripts/lib/gpu_scheduler.py` 末行直接打印校准值与判定。
 
 **核显跑 Stable Diffusion（R5，本次补充）**：上面的异步/常驻结论针对**训练**（反向、需
 同步梯度）。对**图像生成**（SD，纯前向迭代）核显另有一层结论：
@@ -676,7 +676,7 @@ naive 慢 107x，torch oneDNN/MKL 工业级墙），故底层加速到头，走�
 | 问题 | 根因 | 处置 |
 |------|------|------|
 | `build_manual.bat` 报 `'??具' is not recognized` / `... was unexpected` | 灾难工具 REM 注释为中文（GBK 非 ASCII），cmd 的 GBK 代码页把注释字节当命令解析 | 改为纯 ASCII 英文 |
-| `gpu_scheduler.py` 未入库 | 核显换机自适应（calibrate_gpu / 内存按整机缩放 / 校准门槛）此前仅在文档 | 补提交该功能 |
+| `scripts/lib/gpu_scheduler.py` 未入库 | 核显换机自适应（calibrate_gpu / 内存按整机缩放 / 校准门槛）此前仅在文档 | 补提交该功能 |
 | 8 个 `.obj` 编译产物 + `build_release_tmp\` | 编译中间文件残留 | 删除 |
 | LLM 真实文本训练阻塞 | `deepseek-coder-1.3b-base` **缺 tokenizer**（只有 config/model） | 改用有完整 tokenizer 的 `qwen3.5-0.8B`（MoE） |
 | qwen3 系 CPU backward 段错误 | transformers 5.6.0 的 Qwen3 backward bug（纯 torch 也崩） | 升到 5.15.0 根治 |

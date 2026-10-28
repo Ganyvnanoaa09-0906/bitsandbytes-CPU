@@ -6,18 +6,27 @@
     python gt1030/ar_v2_model_selftest.py --steps 10 # 再加 10 步 loss 轨迹对拍
 """
 from __future__ import annotations
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import argparse
 import sys
 import time
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-import numpy as np
+import numpy
 import torch
-import torch.nn.functional as F
+import torch.nn.functional
 
-import gt1030.ar_v2_model as MM
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
-from small_image_model_v2 import run_blocks
+import gt1030.ar_v2_model
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+from scripts.lib.small_image_model_v2 import run_blocks
 
 CKPT = r'F:\weibo_cos\ar_run_full3\ckpt_12000.pt'
 TOKENS = r'F:\weibo_cos\tokens_32x32_weibo.pt'

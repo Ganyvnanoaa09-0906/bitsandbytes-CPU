@@ -25,8 +25,13 @@ No algorithm change is made. The audit is read-only apart from the corrected met
 a measurement, and the old metric is kept in the output for comparison.
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 
@@ -82,8 +87,8 @@ w('| dtype | `.float()` 强制 fp32 | ✓ 数值稳定 |')
 w()
 
 # the real shapes, read from the live model
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2  # noqa: E402
-import torch.nn as nn  # noqa: E402
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+import torch.nn
 
 ck = torch.load(r'D:\work\bitsandbytes-CPU\i5build\ar32_run1\ckpt_3000.pt',
                 map_location='cpu', weights_only=False)
@@ -217,7 +222,7 @@ w()
 w('**完整优化器更新耗时**（含 NS 之外的部分：动量、AdamW、参数写回）:')
 w()
 try:
-    import bitsandbytes as bnb
+    import bitsandbytes
     m2 = SmallARImageModelV2(cfg)
     mp, ap = [], []
     for n_, p in m2.named_parameters():

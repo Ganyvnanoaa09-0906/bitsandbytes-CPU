@@ -11,15 +11,20 @@
   之前测 batch=8 是 37.76 ms/step（看起来更慢），但【每图】只有 4.72 ms
   ⇒ 每图 3.48× 提速。这个要扫清楚。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os, sys, time
 import torch
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 
 torch.set_num_threads(6)
 print('=' * 84)

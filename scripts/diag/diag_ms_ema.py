@@ -3,20 +3,25 @@
 
 打印：self.training / update_ema / ema_count 的统计 / 低于阈值的个数。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import sys, glob, random
-import torch, torch.nn as nn, torch.nn.functional as F
-import numpy as np
+import torch, torch.nn, torch.nn.functional
+import numpy
 from PIL import Image
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 torch.set_num_threads(6)
 Image.MAX_IMAGE_PIXELS = None
-from small_vqvae import Encoder, Decoder
-from ms_vq import MSVQVAE
+from scripts.lib.small_vqvae import Encoder, Decoder
+from scripts.lib.ms_vq import MSVQVAE
 
 B, SIZE = 4, 256
 files = sorted(glob.glob(r'D:\work\bitsandbytes-CPU\.autopilot\clean_nf\**\*.jpg', recursive=True))

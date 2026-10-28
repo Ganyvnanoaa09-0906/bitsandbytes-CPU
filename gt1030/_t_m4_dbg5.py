@@ -1,10 +1,19 @@
 # -*- coding: utf-8 -*-
 """M4 debug 5: bisect why building the torch model first makes device buffers zero."""
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import argparse, sys
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-import numpy as np
+import numpy
 import torch
-import gt1030.ar_v2_model as MM
+import gt1030.ar_v2_model
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--torchmodel', type=int, default=0)
@@ -14,14 +23,14 @@ args = ap.parse_args()
 ckpt = r'F:\weibo_cos\ar_run_full3\ckpt_12000.pt'
 ck = torch.load(ckpt, map_location='cpu', weights_only=False)
 if args.torchmodel:
-    from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+    from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
     m = SmallARImageModelV2(SmallImageConfigV2(**ck['cfg']))
     m.load_state_dict(ck['model'], strict=True)
     print('torch model built, params %.2fM'
           % (sum(p.numel() for p in m.parameters()) / 1e6))
 
 # 设备内存信息
-import pyopencl as cl
+import pyopencl
 dev0 = MM.A.ctx.devices[0]
 print('device: %s  global_mem=%.2fGB  max_alloc=%.2fGB  local=%.1fKB  cu=%d'
       % (dev0.name, dev0.global_mem_size / 1e9, dev0.max_mem_alloc_size / 1e9,

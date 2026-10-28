@@ -18,8 +18,13 @@
                       ⇒ PAR 这类"减少串行步数"的方法【值得做】
   若 A_total ≈ B_1 或更小 ⇒ 增量已经最优，PAR 只会更贵（每次多算 token）
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse, os, sys, time
@@ -36,14 +41,14 @@ def main():
     a = ap.parse_args()
     torch.set_num_threads(a.threads)
 
-    from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+    from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
     ck = torch.load(a.ar, map_location='cpu', weights_only=False)
     keep = set(SmallImageConfigV2.__dataclass_fields__.keys())
     cfg = SmallImageConfigV2(**{k: v for k, v in ck['cfg'].items() if k in keep})
     model = SmallARImageModelV2(cfg)
     sd = ck['model']
     if any(k.startswith('loop_mods.') for k in sd):
-        from loop_transformer import LoopConfig
+        from scripts.lib.loop_transformer import LoopConfig
         mx = 4
         for k, v in sd.items():
             if k.endswith('step_enc.table.weight') or k.endswith('cross_res.gate'):

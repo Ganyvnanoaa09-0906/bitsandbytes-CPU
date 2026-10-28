@@ -36,8 +36,13 @@ Usage:
     --lora_scope temporal --optim adamw8bit
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 
@@ -49,7 +54,7 @@ import sys
 import time
 
 import torch
-import torch.nn.functional as F
+import torch.nn.functional
 from torch.utils.data import DataLoader
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -60,9 +65,8 @@ except AttributeError:
            #   （正常终端里是 io.TextIOWrapper,有这个方法）
 
 
-import bitsandbytes as bnb  # noqa: E402
-from animatediff_train import (PairDataset, load_animatediff_model,  # noqa: E402
-                               resolve_video_model, _rss_gb)
+import bitsandbytes
+from scripts.lib.animatediff_train import PairDataset, load_animatediff_model, resolve_video_model, _rss_gb
 
 
 def _lora_state(model):
@@ -138,7 +142,7 @@ def main():
     model.enable_gradient_checkpointing()
     print('[train] unet=%s adapter=%s rss=%.2fGB' % (unet_dir, adapter_dir, _rss_gb()), flush=True)
 
-    from diffusion_backends import apply_method
+    from scripts.lib.diffusion_backends import apply_method
     setup = apply_method('animatediff_lora', video_transformer=model, rank=a.rank,
                          alpha=a.alpha, dropout=a.lora_dropout,
                          target_modules=[x.strip() for x in a.targets.split(',') if x.strip()],

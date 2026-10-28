@@ -9,15 +9,20 @@
 如果 B 也糊 ⇒ 瓶颈在分词器；如果 B 清晰而 C 糊 ⇒ 瓶颈在 AR。
 同时输出两两 PSNR。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import sys, glob, os, random, time
 import torch
-import torch.nn.functional as F
+import torch.nn.functional
 from PIL import Image
-import numpy as np
+import numpy
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 torch.set_num_threads(6)
@@ -26,8 +31,8 @@ print('=' * 80)
 print('出图精度瓶颈定位')
 print('=' * 80)
 
-from small_vqvae import vqvae_from_ckpt
-import fused_cpu
+from scripts.lib.small_vqvae import vqvae_from_ckpt
+from scripts.lib import fused_cpu
 
 N = 8
 SIZE = 256
@@ -110,7 +115,7 @@ print('[3] AR 生成（token 由模型生成）后解码')
 
 def ar_tokens(ckpt, grid_n):
     """用 sample_ar 的逻辑生成 token"""
-    from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+    from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
     ck = torch.load(ckpt, map_location='cpu', weights_only=False)
     cfgd = ck['cfg']
     keep = set(SmallImageConfigV2.__dataclass_fields__.keys())
@@ -118,7 +123,7 @@ def ar_tokens(ckpt, grid_n):
     m = SmallARImageModelV2(cfg)
     sd = ck['model']
     if any(k.startswith('loop_mods.') for k in sd):
-        from loop_transformer import LoopConfig
+        from scripts.lib.loop_transformer import LoopConfig
         mx = 4
         for k, v in sd.items():
             if k.endswith('step_enc.table.weight'):

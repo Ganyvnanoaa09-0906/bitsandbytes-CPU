@@ -13,8 +13,13 @@
 ★ 先校验数值：融合 RMSNorm 已验证过（check_rmsnorm_equiv.py），但融合 AdamW
   会改变累加顺序，必须确认参数更新量对得上，否则跑了几千步才发现漂移就晚了。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os
@@ -26,8 +31,8 @@ import torch
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU\bitsandbytes')
 
-import small_image_model_v2 as M
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+from scripts.lib import small_image_model_v2
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 
 CK = os.environ.get('CKPT', r'D:\work\bitsandbytes-CPU\.autopilot\v4_bos\ckpt_13000.pt')
 B = int(os.environ.get('B', '8'))
@@ -70,7 +75,7 @@ def flat(o):
 # ---------------- ① 融合 AdamW 的数值一致性 ----------------
 print()
 print('---- ① 融合 AdamW vs bnb AdamW8bit：同样走 30 步，比参数更新量 ----')
-import bitsandbytes as bnb
+import bitsandbytes
 
 res = {}
 for tag, mk in (('bnb AdamW8bit', lambda ps: bnb.optim.AdamW8bit(ps, lr=1e-3)),

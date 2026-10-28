@@ -13,8 +13,13 @@
 （脚本风格对齐仓库既有 test_*.py：独立脚本 + 退出码，不依赖 pytest 配置。）
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 
@@ -30,7 +35,7 @@ import subprocess
 import sys
 import tempfile
 
-import numpy as np
+import numpy
 from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))     # 仓库根
@@ -288,7 +293,7 @@ def test_dry_run():
               f"rc={p.returncode}" + ("" if ok else f" out={p.stdout[-300:]}"))
 
     sys.path.insert(0, HERE)
-    import video_e2e as v_e2e
+    from scripts.lib import video_e2e
     try:
         v_e2e.normalize_lora_path(os.path.join(TMP, "definitely_missing.safetensors"))
         raised = False

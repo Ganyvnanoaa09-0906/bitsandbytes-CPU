@@ -26,8 +26,13 @@ Decision rule, fixed in advance: the hand-written version must beat SDPA by more
 worth pursuing, since anything less would not survive integration into the trainer.
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 
@@ -45,7 +50,7 @@ except AttributeError:
            #   （正常终端里是 io.TextIOWrapper,有这个方法）
 
 
-from measure_guard import assert_idle, stamp  # noqa: E402
+from scripts.lib.measure_guard import assert_idle, stamp
 
 assert_idle()
 stamp('CPU attention: SDPA 对 手写')

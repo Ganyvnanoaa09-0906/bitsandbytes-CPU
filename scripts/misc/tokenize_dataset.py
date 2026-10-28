@@ -11,18 +11,23 @@
   python tokenize_dataset.py --manifest mix.jsonl --ckpt ckpt_last.pt --out tokens.pt
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse, json, os, sys, time
-import numpy as np
+import numpy
 import torch
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 from torchvision import transforms
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from small_vqvae import VQVAE, vqvae_from_ckpt
+from scripts.lib.small_vqvae import VQVAE, vqvae_from_ckpt
 
 EXTS = ('.jpg', '.jpeg', '.png', '.webp', '.bmp')
 
@@ -112,7 +117,7 @@ def main():
     # 这条原则会再次被破坏（8x8 那次 ch 硬编码就踩过）。
     is_ms = bool(ckpt.get('ms_vq', False))
     if is_ms:
-        from ms_vq import msvqvae_from_ckpt
+        from scripts.lib.ms_vq import msvqvae_from_ckpt
         model, _ = msvqvae_from_ckpt(ckpt)
         patch_nums = tuple(model.patch_nums)
         total = int(model.total_tokens)

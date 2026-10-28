@@ -3,14 +3,18 @@
 
 覆盖：window=0（上+左两个 tap）与 window=1（因果半平面 4 tap）、raster 与 zorder。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import sys, torch
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-from small_image_model_v2 import (SmallImageConfigV2, SmallARImageModelV2,
-                                 make_token_order)
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2, make_token_order
 
 G, T, V = 16, 256, 1024
 print('=' * 88)

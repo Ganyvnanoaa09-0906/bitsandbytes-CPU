@@ -8,8 +8,13 @@
 5. 用夏弥（龙族）场景对话微调若干步
 6. 验证 loss 下降 + 微调前后生成对比
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import json
@@ -98,7 +103,7 @@ enc["labels"] = enc["input_ids"].copy()
 print(f"train samples: {len(samples)}")
 
 # ---------------- EFST（仅 MoE 模型适用） ----------------
-from efst import EFSTConfig, apply_efst, find_expert_groups  # noqa: E402
+from scripts.lib.efst import EFSTConfig, apply_efst, find_expert_groups
 
 groups = find_expert_groups(model)
 if groups:
@@ -125,7 +130,7 @@ else:
     print("no MoE experts in this model (dense Qwen3.5-0.8B) - EFST skipped, "
           "training all params with AdamW8bit")
 
-import bitsandbytes as bnb  # noqa: E402
+import bitsandbytes
 
 trainable = [p for p in model.parameters() if p.requires_grad]
 n_tr = sum(p.numel() for p in trainable)

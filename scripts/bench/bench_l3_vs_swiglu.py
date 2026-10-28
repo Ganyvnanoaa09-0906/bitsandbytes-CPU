@@ -9,14 +9,19 @@
 
 测三种配置 × 两种 batch，看前向和训练（前向+反向）的墙钟。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import time
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn
+import torch.nn.functional
 
 torch.set_num_threads(6)
 
@@ -49,7 +54,7 @@ T = G * G
 def make_l3(table_size, k_emb, d_emb, d_up):
     import sys, os
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from spatial_l3 import SpatialL3
+    from scripts.lib.spatial_l3 import SpatialL3
     return SpatialL3(D, G, vocab=1024, table_size=table_size,
                      k_emb=k_emb, d_emb=d_emb, d_up=d_up, key_mode='4gram')
 

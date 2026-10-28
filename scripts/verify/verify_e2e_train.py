@@ -6,8 +6,13 @@
 - AdamW8bit 只给可训练参数分配状态
 - loss 实际下降、无 NaN
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os
@@ -25,7 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # package, so on the i5 it produced ModuleNotFoundError while the DLL and all the
 # kernels were fine.
 sys.path.insert(0, HERE)
-import _testpath  # noqa: E402,F401  (side effect: fixes sys.path)
+from scripts.lib import _testpath
 
 from transformers import Qwen3NextConfig, Qwen3NextForCausalLM  # noqa: E402
 
@@ -64,7 +69,7 @@ assert patch_transformers(), "patch failed"
 print("GDN patch: OK")
 
 # ---------------- EFST：校准选热专家 + LoRA ----------------
-from efst import EFSTConfig, apply_efst  # noqa: E402
+from scripts.lib.efst import EFSTConfig, apply_efst
 
 calib_x = [torch.randint(0, 256, (4, 16)) for _ in range(4)]
 info = apply_efst(model, EFSTConfig(
@@ -79,7 +84,7 @@ info = apply_efst(model, EFSTConfig(
 ))
 print(info.summary())
 
-import bitsandbytes as bnb  # noqa: E402
+import bitsandbytes
 
 trainable = [p for p in model.parameters() if p.requires_grad]
 n_tr = sum(p.numel() for p in trainable)

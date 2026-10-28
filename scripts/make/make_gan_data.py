@@ -7,16 +7,21 @@
                    就从【感知度量】上独立印证了 §10.28 的结论
                    （病在采样，不在每步预测）** —— 频域结论的独立复核
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse, os, sys, time
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from small_vqvae import vqvae_from_ckpt
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+from scripts.lib.small_vqvae import vqvae_from_ckpt
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 
 
 def load_ar(path):
@@ -31,7 +36,7 @@ def load_ar(path):
 
 
 def topk_sample(lg, k, temp=1.0):
-    import torch.nn.functional as F
+    import torch.nn.functional
     lg = lg / max(temp, 1e-6)
     v, _ = torch.topk(lg, k, dim=-1)
     thr = v[..., -1, None]

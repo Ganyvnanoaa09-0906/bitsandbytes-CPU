@@ -9,17 +9,22 @@
   5. 【关键】键无泄漏：改一个未来 token 不应改变早前位置的键
   6. 向后兼容：use_l3=False 的旧 checkpoint 仍能加载
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os, sys, time
 import torch
-import torch.nn.functional as F
+import torch.nn.functional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
-from l3_ffn import build_keys, causal_spatial_key
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+from scripts.lib.l3_ffn import build_keys, causal_spatial_key
 
 T, D, NL, G = 256, 512, 10, 16
 torch.set_num_threads(6)

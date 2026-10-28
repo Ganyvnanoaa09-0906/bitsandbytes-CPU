@@ -17,8 +17,13 @@ Scope limit, stated up front so the number is not over-read: this measures the H
 interchangeable, and the report keeps them in separate rows.
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 
@@ -52,10 +57,10 @@ if not done:
     print('    等 muon3 落盘后再跑本脚本即可。')
     sys.exit(0)
 
-import torch  # noqa: E402
-import bitsandbytes as bnb  # noqa: E402
-from measure_guard import assert_idle, stamp  # noqa: E402
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2  # noqa: E402
+import torch
+import bitsandbytes
+from scripts.lib.measure_guard import assert_idle, stamp
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 
 assert_idle()
 torch.set_num_threads(6)

@@ -39,7 +39,7 @@ T=256 最终 loss 4.79  →  困惑度 e^4.79 ≈ 120
 训练器原来默认 `--lr 1e-4`，**而且完全没有 warmup / 退火调度**。
 对 30M 模型来说 1e-4 偏低，配合只有 9000 步，学不动是必然的。
 
-我给 `train_ar_v2.py` 补了调度（已实测验证）：
+我给 `scripts/lib/train_ar_v2.py` 补了调度（已实测验证）：
 
 ```
 step  1  lr 2.000e-4   warmup 线性上升
@@ -52,7 +52,7 @@ step 10  lr 3.000e-5   退到 --lr-min
 ## 三、本次完整配置
 
 ```powershell
-train_ar_v2.py `
+scripts/lib/train_ar_v2.py `
   --tokens  tokens_final2.pt          # (31017, 256)
   --vqvae   vqvae_ema_full2/ckpt_last.pt
   --out     v2_run2

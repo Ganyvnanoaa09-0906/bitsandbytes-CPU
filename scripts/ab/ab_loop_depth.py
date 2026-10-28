@@ -1,16 +1,21 @@
 # -*- coding: utf-8 -*-
 """ab_loop_depth.py - 对比 loop=1 / loop=2 / 真实14层dense 的速度与 loss。"""
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse, json, os, sys, time, threading
-import torch, torch.nn.functional as F, psutil
+import torch, torch.nn.functional, psutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from small_image_model import SmallImageConfig, SmallARImageModel
+from scripts.lib.small_image_model import SmallImageConfig, SmallARImageModel
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "bitsandbytes"))
-import bitsandbytes as bnb
+import bitsandbytes
 def rss(): return psutil.Process().memory_info().rss/1e9
 class Peak:
     def __init__(self): self.p=rss(); self.stop=threading.Event(); self.t=threading.Thread(target=self.run,daemon=True)

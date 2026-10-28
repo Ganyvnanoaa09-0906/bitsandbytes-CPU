@@ -26,17 +26,22 @@ is not viable and 7.46's closure stands on better evidence. If the curve stays f
 intensive measurement was the anomaly and the offload is worth building.
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 
-import multiprocessing as mp
+import multiprocessing
 import statistics
 import sys
 import time
 
-import numpy as np
+import numpy
 import torch
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
@@ -109,7 +114,7 @@ DUTY = [0.0, 0.25, 0.5, 0.75, 1.0]
 
 
 def gpu_worker(duty, seconds, q):
-    import pyopencl as cl
+    import pyopencl
     plat = cl.get_platforms()[0]
     ctx = cl.Context(devices=[plat.get_devices()[0]])
     cq = cl.CommandQueue(ctx)
@@ -148,9 +153,9 @@ def gpu_worker(duty, seconds, q):
 
 
 def main():
-    from measure_guard import assert_idle, stamp
-    from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
-    from loop_transformer import LoopConfig
+    from scripts.lib.measure_guard import assert_idle, stamp
+    from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+    from scripts.lib.loop_transformer import LoopConfig
 
     assert_idle()
     stamp('核显强度扫描：CPU 拖慢 vs 占空比')

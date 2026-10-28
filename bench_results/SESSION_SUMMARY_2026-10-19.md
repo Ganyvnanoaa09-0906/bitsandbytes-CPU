@@ -12,7 +12,7 @@
 3. **ISA 兼容矩阵**：`isa_build.py` + `isa_matrix.sh`；x86 AVX2/generic/AVX-512 静态审计 +
    aarch64 qemu 运行时自检；C 自检从 5 项扩到 **9 项**，x86 AVX2 原生、x86 generic、
    aarch64 qemu 全部 9/9 PASS；结果 `bench_results/isa_matrix.md`。
-4. **2bit/3bit 训练链路**（`q3bit_proto.py`、`q3bit_kernel.cpp`、`q3bit_gemm.cpp`、
+4. **2bit/3bit 训练链路**（`scripts/lib/q3bit_proto.py`、`q3bit_kernel.cpp`、`q3bit_gemm.cpp`、
    `scripts/misc/q3bit_lmhead_bench.py`、`scripts/misc/q3bit_lmhead_train.py`）：
    - 量化误差：3-bit relL2 0.22–0.28（真实 Qwen3.5-0.8B 权重），2-bit 0.51–0.72；
    - Qwen3.5-0.8B LoRA：权重 **3.202 → 0.378 GB（-88%）**、RSS 5.34 → 2.69 GB、

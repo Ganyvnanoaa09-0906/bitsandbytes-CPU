@@ -27,17 +27,22 @@ Decision rule, fixed in advance: 1.2x or better means the iGPU path reopens, exa
 specified. Below that it stays closed, but this time on evidence that has ruled out the GIL.
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 
-import multiprocessing as mp
+import multiprocessing
 import statistics
 import sys
 import time
 
-import numpy as np
+import numpy
 import torch
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
@@ -125,7 +130,7 @@ SECONDS = 25.0
 
 def gpu_worker(rounds_target, queue):
     """Runs in its own process, so no GIL interaction with the CPU side at all."""
-    import pyopencl as cl
+    import pyopencl
     plat = cl.get_platforms()[0]
     ctx = cl.Context(devices=[plat.get_devices()[0]])
     q = cl.CommandQueue(ctx)
@@ -159,15 +164,15 @@ def gpu_worker(rounds_target, queue):
 
 
 def main():
-    from measure_guard import assert_idle, stamp
+    from scripts.lib.measure_guard import assert_idle, stamp
     assert_idle()
     stamp('并发重测：进程而非线程（排除 GIL）')
     torch.set_num_threads(6)
     tok = torch.load(r'D:\work\cloud_salvage\ScPeP7\tokens_32x32_full.pt', map_location='cpu')
 
     B, T = 2, 1024
-    from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
-    from loop_transformer import LoopConfig
+    from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+    from scripts.lib.loop_transformer import LoopConfig
     cfg = SmallImageConfigV2(vocab_size=1024, d_model=512, n_layer=10, n_head=8, n_kv_head=4,
                              ffn_dim=2048, total_tokens=T, grid=32, head_mode='flat',
                              mask_mode='causal', n_cluster=32, use_bos=False)

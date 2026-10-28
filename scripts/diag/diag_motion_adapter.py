@@ -17,21 +17,26 @@
   T4 同一 prompt、同一 seed 下 8 帧两两之间的**UNet 输入 latent 差异**：
      若初始 latent 就相同，那模型再强也不可能产出运动 —— 这是最底层的检查。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os
 import sys
 import json
 
-import numpy as np
+import numpy
 import torch
 
 sys.path.insert(0, r"D:\work")
 # 导入 motion_exp 即会触发它内置的 bitsandbytes 路径防护（见 motion_exp._load_anime_adiff）
-from motion_exp import anime_adiff  # noqa
-import motion_metric  # noqa
+from scripts.lib.motion_exp import anime_adiff
+from scripts.lib import motion_metric
 
 torch.set_num_threads(6)
 R = []

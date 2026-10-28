@@ -1,6 +1,6 @@
 # CPU MoE 推理基线：fp32 vs 3-bit 物化 vs 3-bit fused（2026-10-19）
 
-脚本：`moe_infer_bench.py`。scaled Mixtral（hidden 512 / 4 层 / 8 专家 / top-2，53.5M 参数，
+脚本：`scripts/lib/moe_infer_bench.py`。scaled Mixtral（hidden 512 / 4 层 / 8 专家 / top-2，53.5M 参数，
 随机权重，eval 模式），单次前向含全部层 + lm_head。这是与 KTransformers 这类推理期专家
 卸载方案对照用的**可复现本机基线**，不是同台对比数字。
 
@@ -31,6 +31,6 @@
 ## 复现
 
 ```bash
-python moe_infer_bench.py
+python scripts/lib/moe_infer_bench.py
 # 依赖：transformers>=5.16（Mixtral 融合专家）、torch CPU、q3bit_kernel.dll / q3bit_gemm.dll
 ```

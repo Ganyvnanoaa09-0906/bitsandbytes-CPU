@@ -22,7 +22,7 @@
 | 开 slicing | 35.36 s | 4.42 s |
 | **关 slicing** | **20.72 s** | **2.59 s** |
 
-`anime_adiff.py` 的示例路径默认**开着**它。**推理时请显式关闭**（report §10.155.3）：
+`scripts/lib/anime_adiff.py` 的示例路径默认**开着**它。**推理时请显式关闭**（report §10.155.3）：
 
 ```python
 try:
@@ -141,17 +141,17 @@ python scripts/train/train_diffusion.py --video_selftest --method animatediff_lo
 做法是注入后把 scope 外的 PEFT `Linear` **换回 `base_layer`**
 （前向等价于未注入），并同步从 `target_modules` 记录剔除。
 
-原理与自检代码：`temporal_only_lora.py`。回归测试：
+原理与自检代码：`scripts/lib/temporal_only_lora.py`。回归测试：
 `scripts/test/test_temporal_only_lora.py`（31 项，含真实模型层）。
 
 ### 2.4 已知缺口
 
 - `--lora_scope` **对 `animatediff_lora` 与 `svd_lora` 生效**。
     原先只在 `animatediff_lora` 上生效；原因不在 pattern 缺失 ——
-    `temporal_only_lora.py` 的 `TEMPORAL_PATTERNS` 本来就含 `r"temporal"`，
+    `scripts/lib/temporal_only_lora.py` 的 `TEMPORAL_PATTERNS` 本来就含 `r"temporal"`，
     而 diffusers 的时序类名全都带它（`TemporalBasicTransformerBlock` /
     `ResidualTemporalBlock1D` / `TemporalConvLayer` / `TemporalResnetBlock` /
-    `SpatioTemporalResBlock`）。挡住其他族的只是 `diffusion_backends.py` 里
+    `SpatioTemporalResBlock`）。挡住其他族的只是 `scripts/lib/diffusion_backends.py` 里
     一句 `video_family == "animatediff_lora"`，现已放开。
 - **`wan_lora` / `cogvideo_lora` 上 `--lora_scope` 没有意义，不是待补的 pattern。**
     这两族是 3D DiT，注意力**时空融合**，模块名是 `attn1` / `attn2`，
@@ -160,7 +160,7 @@ python scripts/train/train_diffusion.py --video_selftest --method animatediff_lo
       否则会把全部 LoRA 换回 `base_layer`，可训练量为 0，而训练照常跑、
       loss 照常打 —— 一个完全静默的空转。这两族要用 `scope="all"`。
 - `Wan2.1-T2V-1.3B` 磁盘上那份（16.7 GB）**不是坏包**，无需重下：那三个 15 B 的文件是 ModelScope 占位符，HF 仓库本就没有；safetensors 已逐字节校验（5676070424 B 对 5676070424 B），详见 §4.1。
-- `diffusion_backends.py` 里五个视频族（`wan_lora`/`cogvideo_lora`/`svd_lora`/
+- `scripts/lib/diffusion_backends.py` 里五个视频族（`wan_lora`/`cogvideo_lora`/`svd_lora`/
   `animatediff_lora`/`video_full`）**架子已就位**，接新模型从那里进。
 
 ---
@@ -181,14 +181,14 @@ RuntimeError: The size of tensor a (8192) must match the size of tensor b (1024)
 **报错里的比值恰好等于帧数**（2 帧→2048/1024、8 帧→8192/1024、8帧@64→32768/4096）。
 看到这个精确比值，**先假设是"约定问题"**，不要推断模型坏了。
 
-正确写法（仓库里 `animatediff_train.py` 本来就有）：
+正确写法（仓库里 `scripts/lib/animatediff_train.py` 本来就有）：
 
 ```python
 e = torch.randn(B, 77, ctx_dim).repeat(T, 1, 1)      # (B*T, 77, D)
 pred = model(noisy, ts, encoder_hidden_states=e).sample
 ```
 
-封装好的加载层见 `video_models.py`（含另两个陷阱的 docstring）。（report §10.149）
+封装好的加载层见 `scripts/lib/video_models.py`（含另两个陷阱的 docstring）。（report §10.149）
 
 ### 3.1 时序模块叫 `motion_modules`，**不含 `temporal` 字样**
 
@@ -362,9 +362,9 @@ RealESRGAN_x4plus.pth           (67.0 MB, 16.70M 参数, 23 块)  ← 256+ 输�
 
 ---
 
-## 7. 端到端管线 `video_e2e.py`（2026-10-27 落库）+ 运动诊断
+## 7. 端到端管线 `scripts/lib/video_e2e.py`（2026-10-27 落库）+ 运动诊断
 
-`video_e2e.py` 把"生成 → 时序指标 → 后处理 → 落盘"串成**一条可复现的 Stage 化管线**，
+`scripts/lib/video_e2e.py` 把"生成 → 时序指标 → 后处理 → 落盘"串成**一条可复现的 Stage 化管线**，
 每个 stage 一个独立子进程（避免两个大模型同进程触发 `0xC0000005`），并写出
 `config.json / plan.json / metrics.json`，用**数字**判 PASS/FAIL 而不是退出码。
 
@@ -372,26 +372,26 @@ RealESRGAN_x4plus.pth           (67.0 MB, 16.70M 参数, 23 块)  ← 256+ 输�
 
 ```powershell
 # ① 推理链路：128²、2 块 × 8 帧 = 16 帧、DPM 6 步、CFG 7.5 → 指标 → FSRCNN → gif+mp4
-python video_e2e.py smoke --profile infer --root runs\smokeA4
+python scripts/lib/video_e2e.py smoke --profile infer --root runs\smokeA4
 
 # ② 带自训 LoRA 生成（.pt 自动转 safetensors；也可直接给 .safetensors）
-python video_e2e.py gen --mode independent --res 128 --frames 16 --chunk 8 `
+python scripts/lib/video_e2e.py gen --mode independent --res 128 --frames 16 --chunk 8 `
   --steps 6 --scheduler dpm --lora runs\my_lora\ckpt_last.pt --out runs\loraA
 
 # ③ 连续镜头（滑窗，带 overlap 混合；seam 指标会按 sliding 判据检查）
-python video_e2e.py gen --mode sliding --res 128 --frames 24 --chunk 8 --overlap 2 `
+python scripts/lib/video_e2e.py gen --mode sliding --res 128 --frames 24 --chunk 8 --overlap 2 `
   --steps 6 --scheduler dpm --out runs\slideA
 
 # ④ 训练 LoRA（分段落盘；每段受 time-limit 截断后自动 --resume 续跑）
 #    ★ --out 必须用【绝对路径】：子进程 cwd 在仓库根，相对路径会让续跑找不到 ckpt
-python video_e2e.py train --data D:\work\video_mvp\data\data_win_S128_T8.pt `
+python scripts/lib/video_e2e.py train --data D:\work\video_mvp\data\data_win_S128_T8.pt `
   --val-data D:\work\video_mvp\data\data_win_S128_T8.pt `
   --out D:\work\video_mvp\runs\t128_f8_win_spatial_r4 `
   --stages 60,100,140 --res 128 --frames 8 --lora-scope spatial --rank 4 --lr 1e-4
 ```
 
 前置条件：
-- 组件脚本（`scripts/misc/sliding_window.py` / `scripts/misc/independent_chunks.py` / `temporal_metrics.py` / `scripts/misc/post_process.py`）
+- 组件脚本（`scripts/misc/sliding_window.py` / `scripts/misc/independent_chunks.py` / `scripts/lib/temporal_metrics.py` / `scripts/misc/post_process.py`）
   已随本分支落在**仓库根**；
 - 训练工具 `video_mvp/` 是外部目录：默认 `..ideo_mvp`，或用环境变量
   `VIDEO_E2E_TOOLS=D:\work\video_mvp` 指定；训练数据用 `--data` 或 `VIDEO_E2E_DATA`；
@@ -455,7 +455,7 @@ python video_e2e.py train --data D:\work\video_mvp\data\data_win_S128_T8.pt `
    原因：每次续接都要把"带着的帧"重新加噪到 t≈300 再走 5 步去噪，步数太少细节回不来。
    命令：
    ```powershell
-   python video_e2e.py gen --mode sliding --res 128 --frames 24 --chunk 8 --overlap 2 `
+   python scripts/lib/video_e2e.py gen --mode sliding --res 128 --frames 24 --chunk 8 --overlap 2 `
      --steps 10 --carry-steps 5 --carry-noise 300 --scheduler dpm --out runs\slideA
    ```
    注：sliding 模式**没有 LoRA 加载入口**（设计如此，见 VIDEO_E2E_PIPELINE_PLAN §2.1）；

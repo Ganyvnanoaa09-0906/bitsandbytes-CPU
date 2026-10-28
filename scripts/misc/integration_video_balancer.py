@@ -13,8 +13,13 @@
 
 模型：SD1.5 UNet + AnimateDiff motion adapter（1.7GB 适配器，5D 前向）。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os
@@ -50,7 +55,7 @@ _MISSING = []
 if not os.path.isfile(os.path.join(HERE, "video_models.py")):
     _MISSING.append(f"video_models.py (repo file) in {HERE}")
 if not _MISSING:
-    import video_models as _vm_probe  # noqa: E402
+    from scripts.lib import video_models
     for label, path in (("SD1.5 UNet", _vm_probe.DEFAULT_UNET),
                         ("AnimateDiff motion adapter", _vm_probe.DEFAULT_ADAPTER)):
         if not os.path.isdir(path):
@@ -73,8 +78,8 @@ if _MISSING:
 import torch
 import psutil
 
-import disk_balancer as db
-import video_models as vm
+from scripts.lib import disk_balancer
+from scripts.lib import video_models
 
 ROOT = os.path.join(os.environ.get("TEMP", HERE), "_integration_video")
 R = []

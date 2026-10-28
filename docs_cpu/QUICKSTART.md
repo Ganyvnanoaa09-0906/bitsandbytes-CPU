@@ -300,7 +300,7 @@ Graphics（R5-4500U）实测；Intel UHD 630（i5-10400 等）走同一接口—
 为**换机自适应，无需人工预判**：内存上限按整机内存等比缩放，启动时 `calibrate_gpu()`
 实测本机核显/CPU GEMM 吞吐比（两轮取较好、长预热促核显爬频——单轮实测有 ±0.1 抖动），
 低于门槛（默认 1.10，`--igpu_min_gain 0` 跳过）自动回退并打印实测值，即「弱核显机器
-开 --igpu 无害，只是自动不生效」。换机后运行 `py -3.11 gpu_scheduler.py`，末行直接
+开 --igpu 无害，只是自动不生效」。换机后运行 `py -3.11 scripts/lib/gpu_scheduler.py`，末行直接
 打印校准值与判定。若提示「Basic Render Driver / 软件适配器」，说明未安装或未启用
 厂商图形驱动，执行器会自动拒绝启用。
 
@@ -334,7 +334,7 @@ print(ex.prepare(tokens=batch_size * seq_len))  # "OK" = 已启用，模型常�
 `RMSNorm` 在 eager 下是 6 个 aten 算子（`pow → mean → add → rsqrt → mul → mul`），
 激活要被完整读写 6 遍 ⇒ 纯带宽浪费。这一族把它们压成 1 遍。
 
-**可用函数**（`fused_cpu.py`）：
+**可用函数**（`scripts/lib/fused_cpu.py`）：
 
 | 函数 | 语义 | 对应 eager 写法 |
 |---|---|---|
@@ -509,10 +509,10 @@ fp32 absmax；16 个对称电平（码 0 = −1，码 15 = +1）。**精确 0 �
 
 ### 4.13 2-bit / 3-bit 量化（quant2bit / quantnbit）
 
-**2-bit（`quant2bit.py`）**：块级（block=64）最近电平量化，**每字节打包 4 个索引**。
+**2-bit（`scripts/lib/quant2bit.py`）**：块级（block=64）最近电平量化，**每字节打包 4 个索引**。
 存储 **2.5 bit/权重**（2 + 32/64），对比 4-bit 路径的 4.5 bit 和 fp32 的 32 bit。
 
-**3-bit（`quantnbit.py`）**：通用 N-bit 打包（LSB 优先，3-bit 会跨字节边界），自带
+**3-bit（`scripts/lib/quantnbit.py`）**：通用 N-bit 打包（LSB 优先，3-bit 会跨字节边界），自带
 "打包→解包"自检。3-bit 选 **uniform** 电平而不是 NF：两者损失只差 0.0003（噪声内），
 uniform 让解码回到一次乘加。
 

@@ -19,8 +19,13 @@
 所以这里用真实命名结构做合成树，把那两个命名陷阱钉住。
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 
@@ -32,7 +37,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 # _testpath.py fixes sys.path for `import bitsandbytes` and the sibling helper
 # modules, whatever the checkout layout is.
 sys.path.insert(0, _HERE)
-import _testpath  # noqa: E402,F401  (side effect: fixes sys.path)
+from scripts.lib import _testpath
 
 FAILED = []
 
@@ -52,7 +57,7 @@ def section_a():
     print("=" * 74)
     print("[A] 分类逻辑（正则，无 torch）")
     print("=" * 74)
-    from temporal_only_lora import _is_temporal, _is_spatial
+    from scripts.lib.temporal_only_lora import _is_temporal, _is_spatial
 
     # 真实 AnimateDiff 路径（实测自 report §10.156.2）
     temporal_names = [
@@ -98,7 +103,7 @@ def _build_synthetic():
     """搭出与 AnimateDiff 同构的模块树：每层同时有 attentions（空间）与
     motion_modules（时序），两者内部都有 transformer_blocks.N.attn1.to_*，
     **叶子名完全相同**，正是 PEFT 无法按父路径区分的那种结构。"""
-    import torch.nn as nn
+    import torch.nn
 
     def attn_set():
         return nn.ModuleDict({
@@ -160,7 +165,7 @@ def section_b():
     print("[B] PEFT 注入 + restrict（合成模型）")
     print("=" * 74)
     import torch
-    from temporal_only_lora import classify_lora_targets, restrict_to_temporal
+    from scripts.lib.temporal_only_lora import classify_lora_targets, restrict_to_temporal
 
     net = _build_synthetic()
     base_trainable = sum(p.numel() for p in net.parameters() if p.requires_grad)
@@ -225,7 +230,7 @@ def section_b():
     for n, m in p3.named_modules():
         if n in before:
             if (m.lora_B["default"].weight - before[n]).abs().max().item() > 0:
-                from temporal_only_lora import _is_temporal
+                from scripts.lib.temporal_only_lora import _is_temporal
                 if _is_temporal(n):
                     moved_tem += 1
                 else:
@@ -252,9 +257,9 @@ def section_c():
     import copy
     import gc
     import torch
-    from animatediff_train import load_animatediff_model, resolve_video_model
-    from diffusion_backends import apply_method
-    from temporal_only_lora import classify_lora_targets
+    from scripts.lib.animatediff_train import load_animatediff_model, resolve_video_model
+    from scripts.lib.diffusion_backends import apply_method
+    from scripts.lib.temporal_only_lora import classify_lora_targets
 
     torch.set_num_threads(int(os.environ.get("THREADS", "6")))
     vm = os.environ.get(

@@ -5,13 +5,18 @@
 若也对不上 ⇒ 报告里的 1.0024 有误（或那个数是别的东西）
 若对得上 ⇒ 我上一个测试（用随机图编码的 token）有问题
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import sys, os
 import torch
-import torch.nn.functional as F
+import torch.nn.functional
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 torch.set_num_threads(6)
@@ -19,7 +24,7 @@ print('=' * 78)
 print('ar_swiglu loss 核验')
 print('=' * 78)
 
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 
 
 def load_ar(ckpt):
@@ -79,9 +84,9 @@ else:
 print()
 print('[2] 用 128 张随机图的 VQ 编码 token（上一个测试的做法）')
 import glob, random
-import numpy as np
+import numpy
 from PIL import Image
-from small_vqvae import vqvae_from_ckpt
+from scripts.lib.small_vqvae import vqvae_from_ckpt
 Image.MAX_IMAGE_PIXELS = None
 
 files = []

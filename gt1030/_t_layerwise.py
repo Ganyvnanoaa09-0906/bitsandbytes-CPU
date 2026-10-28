@@ -1,11 +1,20 @@
 # -*- coding: utf-8 -*-
 """探针 25：多层（N=3）逐层对拍 b['xin'] 与 x_final，找出第几层开始错。"""
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import sys
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-import numpy as np
+import numpy
 import torch
-import gt1030.ar_v2_model as MM
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+import gt1030.ar_v2_model
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 
 CKPT = sys.argv[1] if len(sys.argv) > 1 else r'F:\weibo_cos\ckpt_3l.pt'
 ck = torch.load(CKPT, map_location='cpu', weights_only=False)

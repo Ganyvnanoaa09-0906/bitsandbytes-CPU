@@ -1,12 +1,17 @@
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
-import sys, time, json, argparse, torch, torch.nn.functional as F, psutil, threading
+import sys, time, json, argparse, torch, torch.nn.functional, psutil, threading
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-from small_image_model import SmallImageConfig, SmallARImageModel
+from scripts.lib.small_image_model import SmallImageConfig, SmallARImageModel
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU\bitsandbytes')
-import bitsandbytes as bnb
+import bitsandbytes
 ap=argparse.ArgumentParser(); ap.add_argument('--cls',default='Adam8bit'); ap.add_argument('--bits',type=int,default=8); ap.add_argument('--steps',type=int,default=2); a=ap.parse_args()
 torch.set_num_threads(6); torch.backends.mkldnn.enabled=True
 cfg=SmallImageConfig(d_model=1280,n_layer=16,n_head=16,ffn_dim=7168,total_tokens=256)

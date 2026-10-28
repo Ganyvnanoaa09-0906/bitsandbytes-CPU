@@ -10,22 +10,27 @@
   f 的 RMS / 每级残差 r_k 的 RMS / 归一化因子 sk / 匹配到的码本行 L2 范数 /
   重建 q_k*sk 的 RMS / 累积 f_hat 的 RMS / 承诺损失
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import sys, glob, random
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
+import torch.nn
+import torch.nn.functional
+import numpy
 from PIL import Image
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 torch.set_num_threads(6)
 Image.MAX_IMAGE_PIXELS = None
-from small_vqvae import Encoder, Decoder
-from ms_vq import MultiScaleResidualVQ
+from scripts.lib.small_vqvae import Encoder, Decoder
+from scripts.lib.ms_vq import MultiScaleResidualVQ
 
 SIZE, B, STEPS, C = 256, 4, 15, 64
 PATCH = (1, 2, 4, 8, 16)

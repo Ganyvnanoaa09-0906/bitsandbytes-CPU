@@ -19,18 +19,23 @@
   python vq_kmeans_ceiling.py --ckpt <P.pt> --fit 400 --eval 96 --threads 4
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse, json, os, sys, math, time
 import torch
-import torch.nn.functional as F
+import torch.nn.functional
 from PIL import Image
 from torchvision import transforms
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from small_vqvae import vqvae_from_ckpt
+from scripts.lib.small_vqvae import vqvae_from_ckpt
 
 SIZE = 256
 TF = transforms.Compose([transforms.Resize((SIZE, SIZE)), transforms.ToTensor(),
@@ -134,7 +139,7 @@ def main():
         "The size of tensor a (1024) must match the size of tensor b (2048)"。
         必须整体换掉 nn.Embedding 模块。
         """
-        import torch.nn as nn
+        import torch.nn
         old_mod = model.vq.codebook
         new_mod = nn.Embedding(W.shape[0], W.shape[1])
         new_mod.weight.data.copy_(W)

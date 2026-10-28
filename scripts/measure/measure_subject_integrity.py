@@ -4,20 +4,25 @@
 纵轴 = S1 主体锐度、S2 结构相关、S3 质心抖动
 判据解释见 subject_integrity.py（已用合成控制验证 9/9，平移 S2=1.000、撕裂 S2=0.852）
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os
 import glob
 import json
 
-import numpy as np
+import numpy
 from PIL import Image
 
 import sys
 sys.path.insert(0, r"D:\work")
-from subject_integrity import subject_integrity
+from scripts.lib.subject_integrity import subject_integrity
 
 ROOTS = [r"D:\work\cloud_results\motion_fix",
          r"D:\work\cloud_results\motion_exp"]

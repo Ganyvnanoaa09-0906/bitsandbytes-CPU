@@ -1,16 +1,21 @@
 # -*- coding: utf-8 -*-
 """train_ar.py - 用 VQ-VAE token 预训练小 AR 模型，记录速度/显存/Loss。"""
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse, json, os, sys, time, threading
 import torch
-import torch.nn.functional as F
+import torch.nn.functional
 import psutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from small_image_model import SmallImageConfig, SmallARImageModel
+from scripts.lib.small_image_model import SmallImageConfig, SmallARImageModel
 
 def rss_gb(): return psutil.Process().memory_info().rss/1e9
 class Peak:
@@ -22,7 +27,7 @@ class Peak:
 
 def build_model(a, cfg):
     if a.attn == 'kda':
-        from kda_model import SmallARImageModelKDA
+        from scripts.lib.kda_model import SmallARImageModelKDA
         cfg.chunk_size = a.chunk_size
         return SmallARImageModelKDA(cfg)
     return SmallARImageModel(cfg)

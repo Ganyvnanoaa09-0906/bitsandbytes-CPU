@@ -9,16 +9,21 @@
 如果 C ≈ A 的耗时，就说明「循环」这个机制在纯算力上没有优势，
 而 C 比 A 多了 40% 参数 —— 明显更划算（除非循环的权重共享起了正则作用）。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os, sys, time
 import torch
-import torch.nn.functional as F
+import torch.nn.functional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 
 T, B = 256, 8
 

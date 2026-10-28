@@ -6,6 +6,15 @@ weight bytes, effective weight bandwidth, PPL and saves logits for top-1 compari
 Usage: python thunder2bit_bench.py --precision fp16|nf4|q3bit|q2bit
 """
 from __future__ import annotations
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 
 import argparse
 import gc
@@ -14,7 +23,7 @@ import os
 import sys
 import time
 
-import numpy as np
+import numpy
 import psutil
 import torch
 
@@ -32,7 +41,7 @@ def rss_gb():
 
 
 def replace_4bit(module, prefix=''):
-    import bitsandbytes as bnb
+    import bitsandbytes
     n = 0
     for name, child in list(module.named_children()):
         full = f'{prefix}.{name}' if prefix else name
@@ -86,7 +95,7 @@ def weight_bytes(model, precision):
                      if not any(k in n for k in ('.lora_',)) and 'q3' not in n)
         return total
     if precision == 'q2bit':
-        import linear2bit
+        from scripts.lib import linear2bit
         fp = linear2bit.footprint(model)
         return fp['total']
     return 0
@@ -110,7 +119,7 @@ def load_model(precision):
         n = q3bit.convert_linears_3bit(model, block=64, lora_r=1,
                                        skip_names=('lm_head',))
     elif precision == 'q2bit':
-        import linear2bit
+        from scripts.lib import linear2bit
         n, _ = linear2bit.convert(model)
     tok = AutoTokenizer.from_pretrained(MODEL, local_files_only=True)
     return model, tok, n

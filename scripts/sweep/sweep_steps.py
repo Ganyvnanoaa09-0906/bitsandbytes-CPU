@@ -14,8 +14,13 @@ elapsed time, and seconds/frame.
 Usage:
   python sweep_steps.py --res 512 --chunk 10 --overlap 2 --chunks 2 --steps-list 4,5,6
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse
@@ -24,14 +29,14 @@ import os
 import sys
 import time
 
-import numpy as np
+import numpy
 import torch
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 
-from anime_adiff import build, ANIME_PROMPT, ANIME_NEG, OUT_DIR  # noqa: E402
-from sweep_carry_noise import generate, measure  # noqa: E402
+from scripts.lib.anime_adiff import build, ANIME_PROMPT, ANIME_NEG, OUT_DIR
+from scripts.lib.sweep_carry_noise import generate, measure
 
 
 def main():

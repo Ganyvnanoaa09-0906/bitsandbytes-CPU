@@ -18,8 +18,13 @@ than FSRCNN's 0.27 s/frame -- this test exists to decide whether that cost buys 
 Usage:
   python icr_test.py --src <frames dir> --picks 26,28,30,32 --strength 0.4 --out <dir>
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse
@@ -27,7 +32,7 @@ import os
 import sys
 import time
 
-import numpy as np
+import numpy
 import torch
 from PIL import Image
 
@@ -90,8 +95,8 @@ def main():
     pipe.set_progress_bar_config(disable=True)
     sr = None
     if a.with_fsrcnn:
-        from detail_restore import load_sr
-        import torch.nn.functional as F
+        from scripts.lib.detail_restore import load_sr
+        import torch.nn.functional
         sr = load_sr()
 
     picks = [int(x) for x in a.picks.split(",")]

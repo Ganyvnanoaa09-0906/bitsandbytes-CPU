@@ -15,8 +15,13 @@
   ③ 优化器对照：bnb AdamW8bit vs torch AdamW（fused/非 fused）
   ④ 线程数扫描：复核「6 线程比 5 慢 5.9%（15W 功耗墙）」这个旧结论
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os
@@ -24,11 +29,11 @@ import sys
 import time
 
 import torch
-import torch.nn.functional as F
+import torch.nn.functional
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU\bitsandbytes')
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 
 CK = os.environ.get('CKPT', r'D:\work\bitsandbytes-CPU\.autopilot\v4_bos\ckpt_13000.pt')
 
@@ -80,7 +85,7 @@ print('  ' + '-' * 84)
 
 torch.set_num_threads(6)
 try:
-    import bitsandbytes as bnb
+    import bitsandbytes
     OptCls, oname = bnb.optim.AdamW8bit, 'bnb AdamW8bit'
 except Exception:
     OptCls, oname = torch.optim.AdamW, 'torch AdamW'
@@ -140,7 +145,7 @@ print('  ' + '-' * 52)
 opt_ms = {}
 cands = []
 try:
-    import bitsandbytes as bnb
+    import bitsandbytes
     cands.append(('bnb AdamW8bit', lambda ps: bnb.optim.AdamW8bit(ps, lr=1e-4)))
 except Exception:
     pass

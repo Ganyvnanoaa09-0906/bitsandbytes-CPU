@@ -100,7 +100,7 @@ if i in loop_idx:
         x = blk(x, ...)        # 第 4~7 层再跑一遍
 ```
 
-构造函数默认 `loop_idx=[4,5,6,7]`、`loop_times=2`，而 **`train_ar_v2.py` 里根本没有传这两个参数**
+构造函数默认 `loop_idx=[4,5,6,7]`、`loop_times=2`，而 **`scripts/lib/train_ar_v2.py` 里根本没有传这两个参数**
 —— 所以一直在吃默认值，**每次前向跑 14 个 block pass 而不是 10 个**。
 
 ### 实测消融
@@ -254,7 +254,7 @@ add   256MB  13.5 GB/s
 
 ## 11. 行动项
 
-- [x] `train_ar_v2.py` 加 `--loop_times` / `--loop_start` / `--loop_end`，**默认改为 1**
+- [x] `scripts/lib/train_ar_v2.py` 加 `--loop_times` / `--loop_start` / `--loop_end`，**默认改为 1**
 - [x] v3 对照实验：T=16 阶段确认循环净亏（等 loss 下 v3 快 29%）
 - [x] 混合精度验证 —— **两台机器都不可用**
 - [x] QKV 融合 —— 真实模型只 +0.9%，不采用

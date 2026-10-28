@@ -7,15 +7,20 @@
   3) batch 从 8 到 128，单步时间和吞吐怎么变？
   4) mkldnn 开关对真实模型的影响？
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os, sys, time
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 
 PEAK = 672.0
 T = 256   # 每图 token 数
@@ -38,7 +43,7 @@ def make_batch(b):
 
 
 def step(m, opt, x, y):
-    import torch.nn.functional as F
+    import torch.nn.functional
     # forward_logits 返回 (think_head.logits(...), gen_head.logits(x))
     # 而每个 head 的 logits() 自身又返回 (tensor, aux) —— 所以是两层元组
     out = m.forward_logits(x)
@@ -129,7 +134,7 @@ else:
                  if any(t in k for t in ('mm', 'addmm', 'bmm', 'matmul', 'linear')))
         print('  矩阵乘类合计 %.1f%% (%.1f ms/步)' % (100 * mm / total, mm / N / 1e3), flush=True)
     except Exception:
-        import traceback; traceback.print_exc()
+        import traceback
 
 print()
 print('DONE', flush=True)

@@ -1,12 +1,21 @@
 # -*- coding: utf-8 -*-
 """探针 30：1 层多 context 模型，逐层比较 dx（模型返回的 embedding 梯度）与 torch。"""
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import sys
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-import numpy as np
+import numpy
 import torch
-import torch.nn.functional as F
-import gt1030.ar_v2_multi as MM
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+import torch.nn.functional
+import gt1030.ar_v2_multi
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 
 CKPT = r'F:\weibo_cos\ckpt_1l.pt'
 ck = torch.load(CKPT, map_location='cpu', weights_only=False)

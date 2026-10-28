@@ -32,14 +32,14 @@ top-k 256,  temp 0.8   →  238 码 (23.2%),  熵 4.010   →  更平滑，结�
 ### 第三步：定位根因
 
 ```python
-# train_ar_v2.py:358  训练时
+# scripts/lib/train_ar_v2.py:358  训练时
 loss_gen = F.cross_entropy(flat[:, :-1], x[:, 1:])
 #                       输入 token 0..T-2      目标 token 1..T-1
 ```
 **⇒ 训练时永远不需要预测第一个 token。**
 
 ```python
-# small_image_model_v2.py generate()  采样时
+# scripts/lib/small_image_model_v2.py generate()  采样时
 start = torch.zeros(B, 1)     # token ID 0 当起点
 ```
 **⇒ 而采样时把 token ID 0（一个真实码本条目，对应图左上角那个块）
@@ -63,11 +63,11 @@ start = torch.zeros(B, 1)     # token ID 0 当起点
 
 | 文件 | 改动 |
 |---|---|
-| `small_image_model_v2.py` | `SmallImageConfigV2` 加 `use_bos`；模型加 `bos_emb`/`bos_pos` 两个参数 |
+| `scripts/lib/small_image_model_v2.py` | `SmallImageConfigV2` 加 `use_bos`；模型加 `bos_emb`/`bos_pos` 两个参数 |
 | 同上 | 新增 `embed_bos()`：返回 `[BOS, x0..x_{T-2}]` |
 | 同上 | `forward_logits()` 按 `use_bos` 分支选择嵌入方式 |
 | 同上 | `generate()` 从 BOS 起步（新增 `run_emb`，BOS 没有 token id），`use_bos` 时 token 空间序号从 0 开始 |
-| `train_ar_v2.py` | 加 `--use_bos`；损失按 `use_bos` 分支决定是否移位 |
+| `scripts/lib/train_ar_v2.py` | 加 `--use_bos`；损失按 `use_bos` 分支决定是否移位 |
 | 同上 | `--resume` 改成 `strict=False` 并打印不匹配键，**支持跨配置热启动** |
 
 ### 验证（scripts/test/test_bos.py，全部通过）
@@ -89,7 +89,7 @@ v4 只比 v3 多两个向量（`bos_emb` + `bos_pos` = 1024 个数），**其余
 
 ```powershell
 # v4 = 带 BOS + 从 v3 的 ckpt_12000 热启动
-python train_ar_v2.py ... --use_bos --resume .autopilot\v3_noloop\ckpt_12000.pt
+python scripts/lib/train_ar_v2.py ... --use_bos --resume .autopilot\v3_noloop\ckpt_12000.pt
 ```
 
 启动日志确认：

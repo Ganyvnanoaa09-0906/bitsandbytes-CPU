@@ -18,8 +18,13 @@ E2E-PATCH 列表（详见 PENDING_REPO_PORT.md）：
 用法:
   python post_process_e2e.py --src runs/x/frames --out runs/x --verify --fps 8
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse
@@ -30,7 +35,7 @@ import re
 import sys
 import time
 
-import numpy as np
+import numpy
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
@@ -132,15 +137,15 @@ def main():
     if a.restorer == "fsrcnn":
         # E2E-PATCH[P4]: 惰性 import + 惰性加载权重
         import torch
-        import torch.nn.functional as F
-        from detail_restore import load_sr
+        import torch.nn.functional
+        from scripts.lib.detail_restore import load_sr
         torch.set_num_threads(a.threads)
         sr = load_sr()
         print("[cfg] FSRCNN x4 -> area decimate")
     else:
         import torch
-        import torch.nn.functional as F
-        from sr_cost import ANIME_6B, load as load_rrdb
+        import torch.nn.functional
+        from scripts.lib.sr_cost import ANIME_6B, load as load_rrdb
         torch.set_num_threads(a.threads)
         if a.restorer == "esrgan6b":
             # 6 块模型：23 块在 256 输入下段错误（VIDEO_GUIDE §5.2）

@@ -1,21 +1,30 @@
 # -*- coding: utf-8 -*-
 """M2: one V2 block forward on iGPU vs torch BlockV2 (cond_mode=none, grid=32, T=1024)."""
 from __future__ import annotations
+import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
+if _root not in _sys.path:
+    _sys.path.insert(0, _root)
 import sys
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-import numpy as np
+import numpy
 import torch
-import pyopencl as cl
+import pyopencl
 
-import gt1030.attention_gpu as A
+import gt1030.attention_gpu
 # override dims BEFORE importing full_gpu_layer (it snapshots A.B/A.T)
 A.B, A.T = 2, 1024
 A.M = A.B * A.T
 A.BH = A.B * A.NH
 
-import gt1030.full_gpu_layer as L
-import gt1030.full_gpu_step_v2 as V2
-from small_image_model_v2 import SmallImageConfigV2, BlockV2
+import gt1030.full_gpu_layer
+import gt1030.full_gpu_step_v2
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, BlockV2
 
 B, T, MD, FF, WROW, BH, HD, NH, NKV = L.B, L.T, L.MD, L.FF, L.WROW, L.BH, L.HD, L.NH, L.NKV
 M = L.M

@@ -9,8 +9,13 @@
 对每个系数同时量【运动】(motion_metric.M1) 与【完整性】(subject_integrity.S1/S2)。
 判据：找满足 S2>=0.80 且 S1 相对峰值 >=0.60 的最大系数。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os
@@ -19,14 +24,14 @@ import json
 import time
 import gc
 
-import numpy as np
+import numpy
 import torch
 
 torch.set_num_threads(6)
 sys.path.insert(0, r"D:\work")
-from motion_exp import anime_adiff  # noqa
-from motion_metric import motion_metric, to_gray
-from subject_integrity import subject_integrity
+from scripts.lib.motion_exp import anime_adiff
+from scripts.lib.motion_metric import motion_metric, to_gray
+from scripts.lib.subject_integrity import subject_integrity
 
 OUT = r"D:\work\cloud_results\motion_sweep"
 os.makedirs(OUT, exist_ok=True)

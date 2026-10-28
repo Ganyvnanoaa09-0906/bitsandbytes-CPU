@@ -5,17 +5,22 @@ batch=1 时每个 matmul 只有 (T,512)@(512,2048)，矩阵小到喂不饱缓存
 CPU 虽然 100% 但有效算力很低。本脚本实测不同 batch 下的
   样本/秒 与 token/秒，找出真正的吞吐拐点。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os, sys, time
 import torch
-import torch.nn.functional as F
+import torch.nn.functional
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU\bitsandbytes')
-from small_image_model import SmallImageConfig, SmallARImageModel
-import bitsandbytes as bnb
+from scripts.lib.small_image_model import SmallImageConfig, SmallARImageModel
+import bitsandbytes
 
 THREADS = int(os.environ.get('BENCH_THREADS', '6'))
 torch.set_num_threads(THREADS)

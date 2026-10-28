@@ -20,14 +20,19 @@ train CE 0.0375（困惑度 1.04）而 val CE 16.25（模型"极度自信且极�
    若未掩码位置 top-1 ≈ 100%（抄）且掩码位置 loss 也低 → 泄漏
    若未掩码位置 top-1 正常但掩码位置 loss 低 → 任务本身容易，不是泄漏
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import sys, math, json, torch
-import torch.nn.functional as F
+import torch.nn.functional
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 
 CK = r'D:\work\cloud_results\mg256_4000.pt'
 TOK = r'D:\work\bitsandbytes-CPU\.autopilot\tokens_16x16_full.pt'

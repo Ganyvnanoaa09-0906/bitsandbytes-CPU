@@ -216,7 +216,7 @@ CPU 早已 100%（6/6 逻辑核），**没有余量可挖**。真正的瓶颈是
 
 ## 八、v2 架构改造
 
-用户的评审清单逐条落实在 `small_image_model_v2.py`：
+用户的评审清单逐条落实在 `scripts/lib/small_image_model_v2.py`：
 
 | 评审点 | 落地 | 状态 |
 |---|---|---|
@@ -257,7 +257,7 @@ GQA 缓存体积  ：n_kv_head=8 -> 10.49MB ; n_kv_head=1 -> 1.31MB  (8x)
 v1 训练时 `text = torch.zeros(...)` —— **模型其实是无条件生成**。
 用户的评审点 1（"条件注入太弱"）前提就不成立。
 
-尝试用本地 CLIP 做 zero-shot 自动打标（`auto_caption.py`，65 个标签 / 11 组），
+尝试用本地 CLIP 做 zero-shot 自动打标（`scripts/lib/auto_caption.py`，65 个标签 / 11 组），
 **结论：在这批 cosplay 数据上不可靠**：
 
 ```

@@ -6,18 +6,23 @@
 如果实测最大值只有 0.1 量级，那说明【嵌入本身不对】（例如少了投影层），
 此时无论怎么调阈值都是在错误的尺度上拧螺丝。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import os, sys, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import torch
-import torch.nn.functional as F
+import torch.nn.functional
 from PIL import Image
 
-from clip_score_eval import load_clip, clip_feat
-from auto_caption import TAG_GROUPS, TEMPLATES
+from scripts.lib.clip_score_eval import load_clip, clip_feat
+from scripts.lib.auto_caption import TAG_GROUPS, TEMPLATES
 
 
 def main():

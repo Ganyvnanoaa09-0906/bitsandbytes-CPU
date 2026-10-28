@@ -148,7 +148,7 @@ civitai_nsfw (AI 生成)    6,537    ~22%
 
 用户估计 char2 约 1/3 带码，位置集中在胸/臀。
 
-**检测器做了两版都不够用**（`scripts/misc/mosaic_detect.py` v1 / `mosaic_detect_v2.py`）：
+**检测器做了两版都不够用**（`scripts/misc/mosaic_detect.py` v1 / `scripts/lib/mosaic_detect_v2.py`）：
 
 - v1（FFT 周期峰值）：频段下界算错，把 k=3 超低频收进来，5409/6419 张图的
   "最佳块尺寸"都报 42 —— 它在捡大尺度图像结构

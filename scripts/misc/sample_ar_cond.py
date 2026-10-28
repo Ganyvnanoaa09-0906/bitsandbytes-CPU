@@ -12,17 +12,22 @@
       上排 = 原图重建（tokenizer 天花板），下排 = 前50%真实 + 后50%模型生成。
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse, os, sys, time
 import torch
-import torch.nn.functional as F
+import torch.nn.functional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2, run_blocks
-from small_vqvae import VQVAE, vqvae_from_ckpt
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2, run_blocks
+from scripts.lib.small_vqvae import VQVAE, vqvae_from_ckpt
 
 
 def gen_with_prefix(model, tokens, frac, top_k, temperature, seed):
@@ -81,7 +86,7 @@ def main():
     # loop_cache=perloop is the semantics training used (see sample_ar.py help).
     sd = ck['model']
     if any(k.startswith('loop_mods.') for k in sd):
-        from loop_transformer import LoopConfig
+        from scripts.lib.loop_transformer import LoopConfig
         mx = 4
         for k, v in sd.items():
             if k.endswith('step_enc.table.weight') or k.endswith('cross_res.gate'):

@@ -1,6 +1,6 @@
 # 2bit / 3bit 训练可用原型（CPU，LoRA）
 
-原型：`q3bit_proto.py`（纯 torch/Python，未进 C 内核）。目标先回答两个问题，而不是空谈：
+原型：`scripts/lib/q3bit_proto.py`（纯 torch/Python，未进 C 内核）。目标先回答两个问题，而不是空谈：
 
 1. 块状 2/3-bit 量化在**真实 Qwen3.5-0.8B 权重**上的误差是多少；
 2. **冻结 2/3-bit base + LoRA** 在 CPU 上到底能不能训、省多少内存、慢多少。
@@ -8,9 +8,9 @@
 运行：
 
 ```bash
-python q3bit_proto.py --mode packtest
-python q3bit_proto.py --mode train --model tiny --bits 3 --steps 60 --lr 0.01
-python q3bit_proto.py --mode train --model qwen --bits 3  --steps 2 --seq 64
+python scripts/lib/q3bit_proto.py --mode packtest
+python scripts/lib/q3bit_proto.py --mode train --model tiny --bits 3 --steps 60 --lr 0.01
+python scripts/lib/q3bit_proto.py --mode train --model qwen --bits 3  --steps 2 --seq 64
 ```
 
 ## 1. 量化误差（block=64，per-block absmax，对称均匀量化）
@@ -61,7 +61,7 @@ python q3bit_proto.py --mode train --model qwen --bits 3  --steps 2 --seq 64
 - 2-bit：误差与边际内存收益不划算，除非配合 per-channel/异常值处理（或 2-bit 只用于
   优化器状态而非权重）。
 
-产物：`q3bit_proto.py`；数据归档本文件；报告 §7.139。
+产物：`scripts/lib/q3bit_proto.py`；数据归档本文件；报告 §7.139。
 
 ## 5. 进阶：embedding 量化 + C 融合解包内核（第二轮）
 

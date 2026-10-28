@@ -12,13 +12,18 @@
 
 大样本：用 200 张真实图（12800 token）vs 生成 200 张
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import sys, glob, os, random, time, math
 import torch
-import numpy as np
+import numpy
 from PIL import Image
 from collections import Counter
 
@@ -29,7 +34,7 @@ print('=' * 82)
 print('AR 是否打满了分词器上限（客观指标）')
 print('=' * 82)
 
-from small_vqvae import vqvae_from_ckpt
+from scripts.lib.small_vqvae import vqvae_from_ckpt
 
 SIZE = 256
 N_REAL = 200
@@ -103,7 +108,7 @@ print('[2] AR 生成的 token 统计（%d 张）' % N_GEN)
 
 
 def gen_tokens(ckpt, n, L=0):
-    from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+    from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
     ck = torch.load(ckpt, map_location='cpu', weights_only=False)
     cfgd = ck['cfg']
     keep = set(SmallImageConfigV2.__dataclass_fields__.keys())
@@ -111,7 +116,7 @@ def gen_tokens(ckpt, n, L=0):
     m = SmallARImageModelV2(cfg)
     sd = ck['model']
     if any(k.startswith('loop_mods.') for k in sd):
-        from loop_transformer import LoopConfig
+        from scripts.lib.loop_transformer import LoopConfig
         mx = 4
         for k, v in sd.items():
             if k.endswith('step_enc.table.weight'):

@@ -16,13 +16,18 @@ MaskGIT 的设计恰好绕开：输入是 [MASK]（不含答案信息）+ **loss
      （因为它的输入恒为 MASK 嵌入）⇒ 按构造无泄漏
   ③ 采样的余弦调度正确（迭代结束时应无 MASK 残留）
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import sys, math, torch
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
-from small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
+from scripts.lib.small_image_model_v2 import SmallImageConfigV2, SmallARImageModelV2
 
 G, T, V0 = 16, 256, 1024
 MASK = V0            # MASK id = 1024（vocab 1025）

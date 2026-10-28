@@ -17,8 +17,13 @@ idle rate of 14.8 ms, the residual is the pool and the slice figure rises to nea
 moves it, the residual is something else in the power state and the 1.62x upper bound stands.
 """
 from __future__ import annotations
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 
@@ -28,7 +33,7 @@ import sys
 import threading
 import time
 
-import numpy as np
+import numpy
 import torch
 
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU')
@@ -39,8 +44,8 @@ except AttributeError:
            #   （正常终端里是 io.TextIOWrapper,有这个方法）
 
 
-import pyopencl as cl  # noqa: E402
-from measure_guard import assert_idle, stamp  # noqa: E402
+import pyopencl
+from scripts.lib.measure_guard import assert_idle, stamp
 
 SRC = r'''
 #define TS 64

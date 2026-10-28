@@ -6,15 +6,20 @@
   预计算后只需传 ~30MB(fp16) 的张量，而不是 605MB 的模型快照，
   而且训练时完全不依赖 CLIP，云端更稳。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import json, os, sys
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import train_ar_v2 as T
+from scripts.lib import train_ar_v2
 
 PATHS = r'.autopilot\tokens_16x16_full.pt.paths.json'
 CAPS = r'.autopilot\captions\captions_merged.jsonl'

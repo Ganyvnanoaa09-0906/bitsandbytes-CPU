@@ -60,7 +60,7 @@ ssdlite **漏检率 10%**、误报率 10%。它是合格的**粗筛**，但不�
 
 ### 去水印：砍掉了，而且它本来就没在跑
 
-`dewatermark.py` 第一行就 `from scipy import ndimage`，而**本环境没装 scipy** →
+`scripts/lib/dewatermark.py` 第一行就 `from scipy import ndimage`，而**本环境没装 scipy** →
 `scripts/misc/clean_pipeline.py` 里那个 `try/except` 静默把 `detect_boxes` 置成了 `None`
 （实测打印 `detect_boxes = None`）。**也就是说你之前加不加 `--dewatermark` 完全没有区别，
 它一直是空转的。** 新脚本保留 `--dewatermark` 开关，但默认关闭，且依赖缺失时**显式打印警告**而不是静默跳过。
@@ -249,7 +249,7 @@ CLIP 的文本编码器对 danbooru 标签式长 prompt 本身就不擅长。
 | 文件 | 状态 |
 |---|---|
 | `scripts/misc/fast_clean.py` | **重写**（批处理清洗，19.2× 提速） |
-| `clip_score_eval.py` | **重写**（真 CLIP + 代理兜底） |
+| `scripts/lib/clip_score_eval.py` | **重写**（真 CLIP + 代理兜底） |
 | `scripts/train/train_ar_curriculum.py` | 改（逐步 jsonl / `--seed` / `--no_ckpt`） |
 | `scripts/misc/training_report.py` | **新建**（loss 曲线 + 速度报告） |
 | `.torch_home/` | 新增（ssdlite320 + keypointrcnn 权重缓存） |
@@ -281,7 +281,7 @@ cd D:\work\bitsandbytes-CPU
 & $PY scripts/misc/training_report.py --run .autopilot\ar_curriculum_small
 
 # --- 任务 C：CLIP 评估 ---
-& $PY clip_score_eval.py --images D:\work\lora_action `
+& $PY scripts/lib/clip_score_eval.py --images D:\work\lora_action `
     --prompts D:\work\lora_action\prompts.json `
     --out .autopilot\clip_action.jsonl --batch 32
 ```

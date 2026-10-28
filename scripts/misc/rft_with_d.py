@@ -11,18 +11,23 @@
 
 用法：在 train split 上训高通 D，对 test split 的 FREE 样本打分，取 top-16 看。
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse, os, sys
 import torch
-import torch.nn.functional as F
+import torch.nn.functional
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from train_vqvae_gan import PatchDiscriminator, hinge_d
-from train_diag_disc import t_highpass, hf_energy
+from scripts.lib.train_vqvae_gan import PatchDiscriminator, hinge_d
+from scripts.lib.train_diag_disc import t_highpass, hf_energy
 
 
 def train_d(real, fake, steps, ndf=32, seed=0, bs=16, lr=2e-4):

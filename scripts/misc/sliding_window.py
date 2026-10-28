@@ -20,8 +20,13 @@ E2E-PATCH 列表（详见 PENDING_REPO_PORT.md）：
   python sliding_window_e2e.py --res 128 --chunk 8 --overlap 2 --chunks 4 --steps 6 \
       --outdir D:\\work\\video_mvp\\runs\\x
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse
@@ -30,7 +35,7 @@ import os
 import sys
 import time
 
-import numpy as np
+import numpy
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
@@ -98,7 +103,7 @@ def main():
     # E2E-PATCH[P4]: 惰性 import
     import torch
     from PIL import Image
-    from anime_adiff import build, ANIME_PROMPT, ANIME_NEG, OUT_DIR
+    from scripts.lib.anime_adiff import build, ANIME_PROMPT, ANIME_NEG, OUT_DIR
 
     prompt = a.prompt if a.prompt is not None else ANIME_PROMPT
     neg = a.neg if a.neg is not None else ANIME_NEG

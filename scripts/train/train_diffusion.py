@@ -16,14 +16,19 @@
   - sd_denoise（lora/ti/dreambooth/full）        —— 完整训练循环，可实测
   - controlnet / ip_adapter / video               —— 注入就绪，训练循环待 D 阶段后续接入
 """
-import os as _os, sys as _sys  # 归组 bootstrap：直接运行本文件时把仓库根加回 sys.path
-_root = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import os, sys
+_root = _os.path.dirname(_os.path.abspath(__file__))
+while _root and not _os.path.isdir(_os.path.join(_root, "bitsandbytes")):
+    _parent = _os.path.dirname(_root)
+    if _parent == _root:
+        break
+    _root = _parent
 if _root not in _sys.path:
     _sys.path.insert(0, _root)
 import argparse
 import hashlib
 import json
-import math          # ← set_lr() 的余弦退火要用；原来没导入（ast.parse 查不出来）
+import math
 import os
 import random
 import sys
@@ -159,7 +164,7 @@ P.add_argument("--free_text_encoder", action="store_true",
                help="预热后释放 text_encoder（要求 --sample_every 0）")
 # disk_balancer 硬盘均衡负载（--flash 系列，SSD 保护）：生图训练同样适用
 try:
-    from disk_balancer import add_flash_args
+    from scripts.lib.disk_balancer import add_flash_args
     add_flash_args(P)
 except Exception:
     pass
@@ -240,7 +245,7 @@ random.seed(args.seed)
 torch.manual_seed(args.seed)
 print(f"[env] method={args.method} threads={TH} torch={torch.__version__} seed={args.seed}")
 
-import bitsandbytes as bnb
+import bitsandbytes
 import psutil
 from PIL import Image
 from tqdm import tqdm
@@ -249,17 +254,17 @@ from torchvision import transforms
 from diffusers import StableDiffusionPipeline, DDPMScheduler, ControlNetModel
 from diffusers.optimization import get_scheduler
 
-from diffusion_backends import apply_method, METHODS  # noqa: E402
+from scripts.lib.diffusion_backends import apply_method, METHODS
 
 # 早期分支：AnimateDiff 5D 训练最小验证（不加载 SD pipeline）
 if args.method in ("wan_lora", "cogvideo_lora", "svd_lora", "animatediff_lora", "video_full"):
     if args.video_real_smoke:
-        from animatediff_train import run_animatediff_real_smoke
+        from scripts.lib.animatediff_train import run_animatediff_real_smoke
         res = run_animatediff_real_smoke(args)
         print(json.dumps(res, ensure_ascii=False, indent=2))
         sys.exit(0)
     if args.video_selftest:
-        from animatediff_train import run_animatediff_selftest
+        from scripts.lib.animatediff_train import run_animatediff_selftest
         res = run_animatediff_selftest(args)
         print(json.dumps(res, ensure_ascii=False, indent=2))
         sys.exit(0)
@@ -635,7 +640,7 @@ ds = CachedLatentDataset(base_ds, lat_cache, vae)
 # 两个分布不同（§10.28 曾把这个叫 exposure bias，§10.34 又推翻了那个解释；
 # 不管叫什么，输入分布不一致是事实）。配对模式就是把训练状态改成推理时真正会遇到的那个。
 if args.paired_vqvae:
-    from small_vqvae import vqvae_from_ckpt
+    from scripts.lib.small_vqvae import vqvae_from_ckpt
     _vq, _vk = vqvae_from_ckpt(args.paired_vqvae, map_location='cpu')
     _vq.eval()
     _vq.requires_grad_(False)
@@ -779,7 +784,7 @@ if not args.no_mem_monitor:
 balancer = None
 try:
     if hasattr(args, "flash") and args.flash is not None:
-        from disk_balancer import parse_flash_args, DiskLoadBalancer
+        from scripts.lib.disk_balancer import parse_flash_args, DiskLoadBalancer
         cfg = parse_flash_args(args)
         if cfg is not None:
             balancer = DiskLoadBalancer(cfg)
@@ -959,7 +964,7 @@ def _trainer_state():
       RNG 状态继续 ⇒ 实测「分段 vs 一口气」从续跑的第一个微步起就分岔（30/30 步全不同）。
       加上这两个之后，续跑才可能**逐位重现**一条未分段的训练。
     """
-    import random as _rnd
+    import random
     _st = {"step": global_step, "opt_steps": opt_steps,
            "cursor": global_cursor,          # ★ 数据游标（§10.133 真因 #2）
            "opt": opt.state_dict(), "sched": sched.state_dict(),
@@ -973,7 +978,7 @@ def _trainer_state():
     except NameError:
         pass
     try:
-        import numpy as _np
+        import numpy
         _st["rng_np"] = _np.random.get_state()
     except Exception:
         pass
@@ -1075,7 +1080,7 @@ if args.resume:
                 _rng_missing.append(_k)
         if "rng_py" in _st:
             try:
-                import random as _rnd
+                import random
                 _rnd.setstate(tuple(_st["rng_py"]))
                 _rng_restored.append("python random")
             except Exception as _e:
@@ -1084,7 +1089,7 @@ if args.resume:
             _rng_missing.append("rng_py")
         if "rng_np" in _st:
             try:
-                import numpy as _np
+                import numpy
                 _np.random.set_state(_st["rng_np"])
                 _rng_restored.append("numpy")
             except Exception:
@@ -1263,7 +1268,7 @@ def _controlnet_step(noisy, timesteps, emb, control_lat):
 #   跑完必须退出：探针步骤会做真的 `opt.step()`，会改模型状态 ⇒ 继续训练会污染曲线。
 if args.bw_probe > 0:
     sys.path.insert(0, r"D:\work\membw")
-    import bw_probe as _bwp
+    import bw_probe
 
     _bp_it = max(1, int(args.bw_probe))
 

@@ -360,7 +360,7 @@ no manual pre-judgement needed**: the memory cap scales with system RAM, and at 
 warmup for iGPU clocks — a single round jitters ±0.1); below the gate (default 1.10,
 `--igpu_min_gain 0` to skip) it falls back automatically and prints the measured value,
 so "turning --igpu on a weak-iGPU machine is harmless; it simply does not engage".
-After switching machines run `py -3.11 gpu_scheduler.py`: the last line prints the
+After switching machines run `py -3.11 scripts/lib/gpu_scheduler.py`: the last line prints the
 calibration value and verdict. A "Basic Render Driver / software adapter" message means
 the vendor graphics driver is not installed or not active — the executor refuses to
 enable itself.
@@ -400,7 +400,7 @@ of its baseline, no room left). In eager mode `RMSNorm` is 6 aten operators
 (`pow -> mean -> add -> rsqrt -> mul -> mul`), so the activation is fully read and written
 6 times => pure bandwidth waste. This family collapses those 6 passes into 1.
 
-**Available functions** (`fused_cpu.py`):
+**Available functions** (`scripts/lib/fused_cpu.py`):
 
 | Function | Semantics | Eager equivalent |
 |---|---|---|
@@ -584,10 +584,10 @@ still 0 because its absmax is 0.
 
 ### 4.13 2-bit and 3-bit quantisation (quant2bit / quantnbit)
 
-**2-bit (`quant2bit.py`)**: block-wise (block=64) nearest-level quantisation, **four indices packed per
+**2-bit (`scripts/lib/quant2bit.py`)**: block-wise (block=64) nearest-level quantisation, **four indices packed per
 byte**. Storage is **2.5 bits/weight** (2 + 32/64), against 4.5 bits for the 4-bit path and 32 for fp32.
 
-**3-bit (`quantnbit.py`)**: a general packed N-bit quantiser (LSB first; 3-bit crosses byte
+**3-bit (`scripts/lib/quantnbit.py`)**: a general packed N-bit quantiser (LSB first; 3-bit crosses byte
 boundaries) with a built-in pack/unpack self-test. 3-bit uses **uniform** levels rather than NF: the
 difference is 0.0003 (inside noise), and uniform keeps decoding a multiply-add.
 
