@@ -371,7 +371,7 @@ x  = fused_cpu.fused_add_scale(h, h2, self.ls2)
 
 **核对与复跑**：
 ```bat
-py -3.11 test_fused_kernels.py     :: 四个核 vs eager 对拍（前向+反向）+ 计时
+py -3.11 scripts/test/test_fused_kernels.py     :: 四个核 vs eager 对拍（前向+反向）+ 计时
 py -3.11 scripts/bench/bench_fused_final.py      :: 端到端（RMSNorm + 残差都走融合）
 py -3.11 scripts/bench/bench_fused_e2e3.py       :: v1/v2/v3 三种接法对比
 py -3.11 scripts/bench/bench_l3_vs_swiglu.py     :: 融合 vs 单独算（隔离对照）

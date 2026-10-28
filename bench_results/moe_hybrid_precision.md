@@ -36,7 +36,7 @@
 3. **顺手修了 EFST 一个真实 bug**：融合张量专家（HF 5.x Mixtral/Qwen3Next 风格）的
    `collect_expert_usage` 用 int 去查字符串 key 的计数器 → 所有计数恒为 0，
    `select_top_experts` 永远返回前 k 个专家（[0,1]），校准失效。已修复 int/str 归一化，
-   加了回归用例（`test_efst_regressions.py` case 4），并给出真实路由计数证据。
+   加了回归用例（`scripts/test/test_efst_regressions.py` case 4），并给出真实路由计数证据。
 
 ## 下一步
 

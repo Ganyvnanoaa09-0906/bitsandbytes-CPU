@@ -266,7 +266,7 @@ print(opt.state_bytes(), 'bytes for', p.numel(), 'params =',
 #   30.49M image-AR model
 # our 20-step 1024-param check: parameter relL2 1.2e-3 vs torch AdamW
 # the restored scalar kernel matches the pure-torch fallback to 1.2e-7
-#   over 10 steps (test_adamw4bit.py), so the maths agrees exactly
+#   over 10 steps (scripts/test/test_adamw4bit.py), so the maths agrees exactly
 ```
 
 **`the step is slower, so use it for memory not speed`** -- scalar 4-bit kernel: 28.6 ms vs 3.3 ms (8-bit AVX2) and 8.2 ms (fp32 torch) per step at 1M params, measured on the R5-4500U with 6 threads

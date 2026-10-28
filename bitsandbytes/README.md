@@ -334,12 +334,12 @@ the zig manylinux_2_17 portable build and the devtoolset-8 manylinux_2_17 **Open
 ```bash
 bash build_linux.sh --selftest          # C kernels: 9 checks (quantize/gemm_8bit/gemv_4bit/
                                         # AdamW8bit/vector-vs-scalar/2-3bit dequant/fused GEMM)
-python test_efst_regressions.py         # EFST: nested blocks, 3-D tensor experts, routing usage
-python test_q3bit_kernels.py            # 2/3-bit research prototype (old DLL-based tests)
-python test_q3bit_api.py                # public q3bit API: pack/dequant/gemm, QuantLinear3bit, fallback
-python test_adamw4bit.py                # restored 4-bit optimizer: state bytes, native vs torch, fp32 tracking
-python test_concurrency_plan.py         # planner / memory estimate / tune_threads / launcher
-python test_disk_balancer_safety.py     # data-safety rules for the disk balancer
+python scripts/test/test_efst_regressions.py         # EFST: nested blocks, 3-D tensor experts, routing usage
+python scripts/test/test_q3bit_kernels.py            # 2/3-bit research prototype (old DLL-based tests)
+python scripts/test/test_q3bit_api.py                # public q3bit API: pack/dequant/gemm, QuantLinear3bit, fallback
+python scripts/test/test_adamw4bit.py                # restored 4-bit optimizer: state bytes, native vs torch, fp32 tracking
+python scripts/test/test_concurrency_plan.py         # planner / memory estimate / tune_threads / launcher
+python scripts/test/test_disk_balancer_safety.py     # data-safety rules for the disk balancer
 ```
 
 ## Documentation

@@ -142,7 +142,7 @@ python train_diffusion.py --video_selftest --method animatediff_lora \
 （前向等价于未注入），并同步从 `target_modules` 记录剔除。
 
 原理与自检代码：`temporal_only_lora.py`。回归测试：
-`test_temporal_only_lora.py`（31 项，含真实模型层）。
+`scripts/test/test_temporal_only_lora.py`（31 项，含真实模型层）。
 
 ### 2.4 已知缺口
 

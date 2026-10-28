@@ -439,7 +439,7 @@ x  = fused_cpu.fused_add_scale(h, h2, self.ls2)
 
 **Verify and reproduce**:
 ```bat
-py -3.11 test_fused_kernels.py     :: all four kernels vs eager (fwd+bwd) + timing
+py -3.11 scripts/test/test_fused_kernels.py     :: all four kernels vs eager (fwd+bwd) + timing
 py -3.11 scripts/bench/bench_fused_final.py      :: end to end (RMSNorm and residual both fused)
 py -3.11 scripts/bench/bench_fused_e2e3.py       :: three wiring variants compared
 py -3.11 scripts/bench/bench_l3_vs_swiglu.py     :: fused vs unfused, isolated

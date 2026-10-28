@@ -108,7 +108,7 @@ NF4 / FP4 codes** (`register_buffer("wq")` + `register_buffer("code")`), and the
 **Entry point**: `from quant_lora import QuantLinearTrainable`; top-level entry is
 `train.py --method quant_base` (via `peft_backends._apply_quant_base`, replacing `nn.Linear`).
 
-**Measured** (`jiaoben\test_quant_base.py`, PASSED): 8-bit weight 48.0 KB → 13.2 KB
+**Measured** (`jiaoben\scripts/test/test_quant_base.py`, PASSED): 8-bit weight 48.0 KB → 13.2 KB
 (72.5% saved, rescale max|Δ|=0, scale grad 120.77); NF4/FP4 48.0 KB → 6.8 KB (85.8% saved,
 scale grad 126.32 / 141.14).
 
@@ -326,7 +326,7 @@ This note exists so nobody assumes it already works: **exported is not the same 
 #### Reproducing these numbers
 
 ```bat
-py -3.11 test_fused_kernels.py        :: all four kernels checked against eager (fwd+bwd) + timing
+py -3.11 scripts/test/test_fused_kernels.py        :: all four kernels checked against eager (fwd+bwd) + timing
 py -3.11 scripts/bench/bench_fused_final.py         :: end to end (RMSNorm and residual both fused)
 py -3.11 scripts/bench/bench_fused_e2e3.py          :: three wiring variants compared
 py -3.11 scripts/bench/bench_l3_vs_swiglu.py        :: fused vs unfused, isolated

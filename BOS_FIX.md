@@ -70,7 +70,7 @@ start = torch.zeros(B, 1)     # token ID 0 当起点
 | `train_ar_v2.py` | 加 `--use_bos`；损失按 `use_bos` 分支决定是否移位 |
 | 同上 | `--resume` 改成 `strict=False` 并打印不匹配键，**支持跨配置热启动** |
 
-### 验证（test_bos.py，全部通过）
+### 验证（scripts/test/test_bos.py，全部通过）
 
 ```
 1) 参数量         use_bos=True 比 False 多 1024 = 2×d              ✅

@@ -56,10 +56,10 @@ CLI: `bitsandbytes-cpu detect | doctor | selftest | help`.
 ```bash
 bash build_linux.sh --selftest        # C kernels: 9 checks (incl. 2/3-bit dequant + fused GEMM)
 bash arm64_selftest.sh                # aarch64 static selftest under qemu-aarch64
-python test_efst_regressions.py
-python test_q3bit_kernels.py
-python test_concurrency_plan.py
-python test_disk_balancer_safety.py
+python scripts/test/test_efst_regressions.py
+python scripts/test/test_q3bit_kernels.py
+python scripts/test/test_concurrency_plan.py
+python scripts/test/test_disk_balancer_safety.py
 ```
 
 ## Notes / limitations

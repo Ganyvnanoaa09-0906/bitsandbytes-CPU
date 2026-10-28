@@ -99,7 +99,7 @@ CPU 上经 Transformers 慢路径转成逐时间步（per-step）Python 循环�
 **入口**：`from quant_lora import QuantLinearTrainable`；上层统一入口为
 `train.py --method quant_base`（经 `peft_backends._apply_quant_base` 替换 `nn.Linear`）。
 
-**实测**（`jiaoben\test_quant_base.py`，PASSED）：
+**实测**（`jiaoben\scripts/test/test_quant_base.py`，PASSED）：
 8bit 权重 48.0KB → 13.2KB（省 72.5%，重标度 max|Δ|=0，scale 梯度 120.77）；
 NF4/FP4 48.0KB → 6.8KB（省 85.8%，scale 梯度 126.32 / 141.14）。
 
@@ -299,7 +299,7 @@ cache line 已经被读过，普通 store 只是标脏，NT 反而强制刷出 �
 #### 复跑这些数字
 
 ```bat
-py -3.11 test_fused_kernels.py        :: 四个核的对拍（前向+反向）+ 计时
+py -3.11 scripts/test/test_fused_kernels.py        :: 四个核的对拍（前向+反向）+ 计时
 py -3.11 scripts/bench/bench_fused_final.py         :: 端到端（RMSNorm + 残差都走融合）
 py -3.11 scripts/bench/bench_fused_e2e3.py          :: v1/v2/v3 三种接法对比
 py -3.11 scripts/bench/bench_l3_vs_swiglu.py        :: 融合 vs 单独算（隔离对照）

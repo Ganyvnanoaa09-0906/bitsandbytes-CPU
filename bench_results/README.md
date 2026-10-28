@@ -55,7 +55,7 @@ Zen2 6 核 AVX2 FMA 峰值约 460 GFLOPS（2×FMA256/核），实测约 60%，GE
 
 `torch_cpu_kit.plan_concurrency()`：按物理核数 + 当前/给定单 job 内存，给出
 `n_jobs`/`threads_per_job` 和可直接传给子进程的 `OMP_NUM_THREADS` 等环境变量；
-`apply_job_env(plan)` 用于 launcher 自身。测试：`test_concurrency_plan.py`。
+`apply_job_env(plan)` 用于 launcher 自身。测试：`scripts/test/test_concurrency_plan.py`。
 
 ## E. 优化器更新带宽（决定全参微调能不能跑起来）
 

@@ -108,10 +108,10 @@ The package README covers the full API, platform matrix, limitations and changel
 # C kernels (no torch needed): 9 checks incl. 2/3-bit dequant and fused GEMM
 bash build_linux.sh --selftest
 
-python test_efst_regressions.py          # EFST: nested blocks, 3-D tensor experts, routing usage
-python test_q3bit_kernels.py             # 2/3-bit pack/unpack, error bounds, AVX2 kernel exactness
-python test_concurrency_plan.py          # planner / memory estimate / tune_threads / launcher
-python test_disk_balancer_safety.py      # data-safety rules for the disk balancer
+python scripts/test/test_efst_regressions.py          # EFST: nested blocks, 3-D tensor experts, routing usage
+python scripts/test/test_q3bit_kernels.py             # 2/3-bit pack/unpack, error bounds, AVX2 kernel exactness
+python scripts/test/test_concurrency_plan.py          # planner / memory estimate / tune_threads / launcher
+python scripts/test/test_disk_balancer_safety.py      # data-safety rules for the disk balancer
 # disaster tools (the NTFS ones build real volumes via WSL + ntfs-3g):
 python bitsandbytes/tools/mft_selftest.py               # 7 scenarios, sha256 per file
 python bitsandbytes/tools/carve_selftest.py             # 4 corruption variants + GUI==CLI

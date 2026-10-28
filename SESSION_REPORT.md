@@ -230,7 +230,7 @@ CPU 早已 100%（6/6 逻辑核），**没有余量可挖**。真正的瓶颈是
 | P1-8 GQA/MQA | `n_kv_head` 可配 | 完成 |
 | P1-9 稳定性 | LayerScale | 完成 |
 
-### 实测结果（`test_model_v2.py`）
+### 实测结果（`scripts/test/test_model_v2.py`）
 
 ```
 KV Cache 正确性：全量前向 vs 增量前向 最大差异 1.907e-05   PASS
