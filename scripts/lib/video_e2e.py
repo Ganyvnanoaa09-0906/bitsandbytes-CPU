@@ -398,6 +398,8 @@ def stage_train(args):
            "--lora_scope", args.lora_scope, "--rank", str(args.rank), "--lr", str(args.lr),
            "--threads", str(args.threads), "--ckpt_every", str(args.ckpt_every),
            "--time_limit_s", str(args.time_limit_s), "--max_rss_gb", str(args.max_rss_gb)]
+    if not args.grad_ckpt:
+        cmd.append("--no_grad_ckpt")   # 实测 1.20x 提速（RSS 6.65 -> 7.44 GB）
     if args.val_data:
         cmd += ["--val_data", args.val_data, "--val_every", str(args.val_every)]
     rc = run_cmd(cmd, os.path.join(out, "logs", "train.log"), args.dry_run)
@@ -610,6 +612,8 @@ def main():
     t.add_argument("--ckpt-every", type=int, default=20)
     t.add_argument("--time-limit-s", type=float, default=540)
     t.add_argument("--max-rss-gb", type=float, default=9.5)
+    t.add_argument("--grad-ckpt", action="store_true", default=False,
+                    help="训练时开启 gradient checkpointing（省内存但慢 1.20x；默认关）")
     t.add_argument("--val-every", type=int, default=20)
     t.add_argument("--convert", action="store_true", default=True)
     add_common(t)
