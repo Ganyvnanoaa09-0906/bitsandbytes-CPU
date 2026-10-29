@@ -55,6 +55,11 @@ def build(scheduler="dpm", adapter=ADAPTER_V15):
     from diffusers.models import UNetMotionModel
     from transformers import CLIPTextModel, CLIPTokenizer
 
+    # CPU 上 fp32 扩散会产生去规格化数（denormal），x86 处理极慢。实测 flush 后
+    # UNet 步 6.641 -> 6.351 s (1.046x)、VAE 解码 4.104 -> 4.018 s (1.02x)
+    # （video_prof3，池内 tk-c6685c73）。默认开启，VIDEO_NO_FLUSH_DENORM=1 可关（A/B 用）。
+    if not os.environ.get("VIDEO_NO_FLUSH_DENORM"):
+        torch.set_flush_denormal(True)
     t0 = time.time()
     unet = UNet2DConditionModel.from_pretrained(os.path.join(BASE_DIR, "unet"),
                                                 torch_dtype=torch.float32)
