@@ -564,7 +564,7 @@ def main():
     g.add_argument("--carry-noise", type=float, default=400.0)
     g.add_argument("--scheduler", default="dpm")
     g.add_argument("--seed", type=int, default=1234)
-    g.add_argument("--threads", type=int, default=4)
+    g.add_argument("--threads", type=int, default=6)   # E2E: 6 physical cores; measured 1.10x over 4
     g.add_argument("--lora", default="", help=".pt（PEFT ckpt，自动转换）或 .safetensors")
     g.add_argument("--lora-scale", type=float, default=1.0)
     g.add_argument("--prompt", default=None)
@@ -606,7 +606,7 @@ def main():
     t.add_argument("--rank", type=int, default=8)
     t.add_argument("--lora-scope", default="temporal")
     t.add_argument("--lr", type=float, default=1e-4)
-    t.add_argument("--threads", type=int, default=5)
+    t.add_argument("--threads", type=int, default=6)   # E2E: 6 physical cores; was 5
     t.add_argument("--ckpt-every", type=int, default=20)
     t.add_argument("--time-limit-s", type=float, default=540)
     t.add_argument("--max-rss-gb", type=float, default=9.5)
