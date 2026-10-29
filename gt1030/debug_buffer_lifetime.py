@@ -1,4 +1,4 @@
-﻿import sys, gc, numpy as np
+import sys, gc, numpy as np
 sys.path.insert(0,r'D:\work\bitsandbytes-CPU')
 import gt1030.full_gpu_model as FM
 import gt1030.full_gpu_layer as L

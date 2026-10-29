@@ -1,4 +1,4 @@
-﻿"""Append 7.52: the four measurements, and the two doors that reopened.
+"""Append 7.52: the four measurements, and the two doors that reopened.
 
 The results reverse two conclusions from earlier in the day. The task-split measurement shows the CPU
 slowing by only 4.3% while the iGPU streams GEMM at full rate, which means the 0.76x figure that

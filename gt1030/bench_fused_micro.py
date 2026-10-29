@@ -1,4 +1,4 @@
-﻿import sys, time, statistics, torch
+import sys, time, statistics, torch
 sys.path.insert(0,r'D:\work\bitsandbytes-CPU\bitsandbytes')
 import bitsandbytes.fused as F
 torch.set_num_threads(6)

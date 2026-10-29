@@ -1,4 +1,4 @@
-﻿import sys, torch, time
+import sys, torch, time
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU\gt1030')
 from qwen4bit_loader import load_transformer
 torch.set_num_threads(6)

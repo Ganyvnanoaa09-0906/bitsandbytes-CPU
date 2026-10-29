@@ -1,4 +1,4 @@
-﻿import sys, torch
+import sys, torch
 sys.path.insert(0, r'D:\work\bitsandbytes-CPU\gt1030')
 from qwen4bit_loader import load_transformer
 from qwen4bit_igpu_linear_fp32 import to_igpu_f32
