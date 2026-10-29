@@ -515,13 +515,41 @@ static void avx2_dequant_4bit(
     const long long input_dim_1 = n >> 1;        // packed bytes per row
     const long long absmax_dim_1 = n / blocksize; // scales per row
 
-    // ---- NT store 分档：2026-09-22 实测【不启用】----
-    // 与 avx2_dequant_8bit 的推理相同（out 纯写、8 倍膨胀），但实测无效：
-    //     基线 5.23 / 5.73 / 5.60 / 5.36 GB/s
-    //     加 NT 6.52 / 6.17 / 5.93 / 4.79 GB/s   （4MB 略好，160MB 反而差）
-    // 原因：本 kernel 只跑 ~5.5 GB/s，瓶颈是【LUT 位平面 shuffle 解码】（指令受限），
-    // 不是存储通路 ⇒ NT 无从发挥。留此注释以免以后重复尝试。
-    // 对比：avx2_dequant_8bit 的标量查表解码便宜得多，是写主导的，NT 那里有效（1.6~1.9x）。
+    // ---- NT store 分档：2026-10-29 重测【按尺寸启用】----
+    // out 是【纯写】（从头到尾不读），普通 store 会触发 RFO：写 32 MB 实际产生
+    // "读 32 MB + 写 32 MB" 的 DRAM 流量。NT store 省掉这次读。
+    //
+    // 数据来源：同一脚本（_audit_perf/dll_nt_cache.py）、同一台 4500U、6 线程、NF4 -> float、
+    // 真 DLL 新旧对比，**在测量互斥池内跑**（每次都有 ticket，可从 pool/events.jsonl 反查）。
+    // "cold" = 每轮前先读 96 MB 冲掉 L3。
+    //
+    //   2048x4096 (32 MB, 走 NT):
+    //       cold 1.69x ~ 1.99x  —— 两个**独立运行者/两次运行**的结果（ticket 不同）
+    //       warm 2.1x ~ 3.1x    —— 波动太大，**不作为结论引用**
+    //   4096x4096 (64 MB, 走 NT): cold 1.84x（仅一次运行，另一运行者未复测该 shape）
+    //    512x4096 ( 8 MB, 低于门限): cold 0.98x ~ 0.995x（两版走同一条普通 store 路径）
+    //
+    // 为什么要写区间而不是单点：**同一个脚本、同一台机器，两次运行的比值本身就会漂**
+    // （cold 1.69 vs 1.99 差 18%，warm 3.13 vs 2.11 差 48%）。绝对时间和比值都受频率/热/
+    // 线程摆放影响。所以本注释只断言"方向 + 区间"，不把任何单次比值当常数。
+    // 8 MB 那行反而是最稳的（两次 0.98/0.995），因为两版**代码路径相同**，差异只能来自噪声
+    // ——这正好是"门限取 2x L3 是对的"的直接证据。
+    //
+    // 8 MB 的输出正好等于本机 L3，warm 档同一份代码能在 0.19~0.37 ms 之间摆动（43 vs 23 GB/s），
+    // 那是缓存驻留态噪声，不是实现差异；跨 harness 的数字（早期原型基准，每轮重建线程，
+    // 小 shape 被固定开销主导）同样不可混用。
+    //
+    // 门限取 2x L3（本机 L3 = 8 MB）：输出 <= L3 时普通写会命中缓存，NT 反而把数据赶到 DRAM；
+    // 实测 8 MB 档在旧门限（>= 8 MB）下 NT 慢 1.6x，把门限提到 > 16 MB 后 8 MB 档两版同路径、无回退。
+    //
+    // 2026-09-22 的"NT 无效"是在本 kernel 只有 5.2 GB/s（解码受限）的版本上测的，已过期：
+    // 那时瓶颈在 LUT 位平面解码，不在存储通路；现在 kernel 已到 8.0 GB/s，是写受限。
+    // 注意：_mm256_stream_ps 要求 32 字节对齐；n 为 8 的倍数（调用点保证）=> 行首对齐，
+    //       只要基址对齐即可，故这里额外检查基址。仅对 4 字节输出启用（bf16/fp16 未测）。
+    const bool use_nt = (sizeof(T) == sizeof(float))
+        && ((reinterpret_cast<uintptr_t>(out) & 31) == 0)
+        && (static_cast<unsigned long long>(m) * static_cast<unsigned long long>(n) * sizeof(T)
+            > (16ull << 20));
 
     BNB_OMP_PARALLEL_FOR
     for (long long row = 0; row < m; ++row) {
@@ -547,8 +575,12 @@ static void avx2_dequant_4bit(
             __m128i dhi = _mm_unpackhi_epi16(w01, w23); // floats 4..7
             __m256 v = _mm256_castsi256_ps(_mm256_inserti128_si256(_mm256_castsi128_si256(dlo), dhi, 1));
             v = _mm256_mul_ps(v, _mm256_set1_ps(scale));
-            avx2_store8(orow + k * 2, v);
+            if (use_nt)
+                _mm256_stream_ps(reinterpret_cast<float*>(orow + k * 2), v);
+            else
+                avx2_store8(orow + k * 2, v);
         }
+        if (use_nt) _mm_sfence();  // 每行一次：保证本行的 NT 写在进入下一行前完成
         for (; k < input_dim_1; ++k) {
             const float scale = srow[(k * 2) / blocksize];
             const unsigned char byte = arow[k];
