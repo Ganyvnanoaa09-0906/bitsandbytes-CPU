@@ -606,7 +606,7 @@ def main():
     t.add_argument("--rank", type=int, default=8)
     t.add_argument("--lora-scope", default="temporal")
     t.add_argument("--lr", type=float, default=1e-4)
-    t.add_argument("--threads", type=int, default=6)   # E2E: 6 physical cores; was 5
+    t.add_argument("--threads", type=int, default=5)   # E2E: training measured equal at 5 and 6 threads (fwd+bwd saturates)
     t.add_argument("--ckpt-every", type=int, default=20)
     t.add_argument("--time-limit-s", type=float, default=540)
     t.add_argument("--max-rss-gb", type=float, default=9.5)
