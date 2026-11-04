@@ -40,7 +40,25 @@ import tempfile
 import numpy as np
 from PIL import Image
 
-HERE = os.path.dirname(os.path.abspath(__file__))     # 仓库根
+HERE = os.path.dirname(os.path.abspath(__file__))     # scripts/test（本文件所在目录）
+# 2026-11-04 修复：本文件已从仓库根挪到 scripts/test/，不能再把 __file__ 当仓库根。
+# 上面的归组 bootstrap 已把仓库根算进 _root。
+REPO = _root if "_root" in dir() else os.path.dirname(os.path.dirname(HERE))
+COMPONENT_DIRS = tuple(dict.fromkeys([
+    os.path.join(REPO, "scripts", "lib"),
+    os.path.join(REPO, "scripts", "misc"),
+    REPO,
+]))
+
+
+def comp(name):
+    """按名字在 scripts/lib、scripts/misc、仓库根里找组件脚本。"""
+    for _d in COMPONENT_DIRS:
+        _p = os.path.join(_d, name)
+        if os.path.isfile(_p):
+            return _p
+    raise FileNotFoundError("%s；已搜索 %s" % (name, COMPONENT_DIRS))
+
 PY = sys.executable
 TMP = os.path.join(tempfile.gettempdir(), "video_e2e_selftest")
 TOOLS_DUMMY = os.path.join(TMP, "tools")
@@ -115,7 +133,7 @@ def make_synthetic():
 # ---------------------------------------------------------------------------
 def test_bug1_blend_overlap():
     print("\n=== [A1] bug1: sliding_window.blend_overlap 空实现（已修）===")
-    src = open(os.path.join(HERE, "sliding_window.py"), encoding="utf-8").read()
+    src = open(comp("sliding_window.py"), encoding="utf-8").read()
     check("E2E-PATCH[P3] 标记存在于 blend_overlap 说明中", "E2E-PATCH[P3]" in src)
     tree = ast.parse(src)
     func = None
@@ -130,7 +148,7 @@ def test_bug1_blend_overlap():
           func is not None and has_arith,
           f"body={[type(n).__name__ for n in body_nodes]}")
 
-    sw = load_module(os.path.join(HERE, "sliding_window.py"), "sw_port")
+    sw = load_module(comp("sliding_window.py"), "sw_port")
     prev = [np.zeros((4, 4, 3), dtype=np.uint8)]
     head = [np.full((4, 4, 3), 100, dtype=np.uint8)]
     out = sw.blend_overlap(prev, head)
@@ -142,15 +160,15 @@ def test_bug1_blend_overlap():
 
 def test_bug2_lora_prefix():
     print("\n=== [A2] bug2: LoRA 手动 merge 只认 base_model.model. 前缀（已修）===")
-    src = open(os.path.join(HERE, "independent_chunks.py"), encoding="utf-8").read()
+    src = open(comp("independent_chunks.py"), encoding="utf-8").read()
     check("E2E-PATCH[P1] 标记存在（双前缀归一化 + 0 命中报错）", "E2E-PATCH[P1]" in src)
     # P6 回归：生成脚本必须把 context 按帧展开（否则 diffusers 0.40 直接崩，见 Smoke A 定位）
-    sw_src = open(os.path.join(HERE, "sliding_window.py"), encoding="utf-8").read()
+    sw_src = open(comp("sliding_window.py"), encoding="utf-8").read()
     p6_ok = ("E2E-PATCH[P6]" in src and "E2E-PATCH[P6]" in sw_src
              and "repeat_interleave" in src and "repeat_interleave" in sw_src)
     check("E2E-PATCH[P6] context 按帧展开（两个生成脚本都含 repeat_interleave）", p6_ok)
 
-    ic = load_module(os.path.join(HERE, "independent_chunks.py"), "ic_port")
+    ic = load_module(comp("independent_chunks.py"), "ic_port")
     sd = {
         "base_model.model.down_blocks.0.attn1.to_q.lora_A.default.weight": np.zeros((1,)),
         "base_model.model.down_blocks.0.attn1.to_q.lora_B.default.weight": np.zeros((1,)),
@@ -176,12 +194,12 @@ def test_bug2_lora_prefix():
 
 def test_bug3_boundary():
     print("\n=== [A3] bug3: overlap=0 时边界拆分不执行（已修）===")
-    src = open(os.path.join(HERE, "temporal_metrics.py"), encoding="utf-8").read()
+    src = open(comp("temporal_metrics.py"), encoding="utf-8").read()
     check("E2E-PATCH[P3]/[P3b] 标记存在（条件 + 索引修复）",
           "E2E-PATCH[P3]" in src and "E2E-PATCH[P3b]" in src)
     t = make_synthetic()
     paths = t["frame_paths"]
-    tm = load_module(os.path.join(HERE, "temporal_metrics.py"), "tm_port")
+    tm = load_module(comp("temporal_metrics.py"), "tm_port")
 
     # 旧 API 必须保留（scan_cn_one.py / sweep_carry_noise.py 会 import）
     buf = io.StringIO()
@@ -205,7 +223,7 @@ def test_bug3_boundary():
 def test_metrics_correctness():
     print("\n=== [B] temporal metrics：位移检测 / 噪声不误判 / JSON schema ===")
     t = make_synthetic()
-    tm = load_module(os.path.join(HERE, "temporal_metrics.py"), "tm_port2")
+    tm = load_module(comp("temporal_metrics.py"), "tm_port2")
     r_shift = tm.analyze_sequence(sorted(glob.glob(os.path.join(t["shift"], "*.png"))), "shift")
     te = r_shift["temporal"]
     check("整体平移序列：has_global_motion=True", te["has_global_motion"] is True,
@@ -221,7 +239,7 @@ def test_metrics_correctness():
           f"mad={te2['mad']:.1f} motion={te2['has_global_motion']}")
 
     js = os.path.join(TMP, "metrics_boundary.json")
-    p = subprocess.run([PY, os.path.join(HERE, "temporal_metrics.py"), t["boundary"],
+    p = subprocess.run([PY, comp("temporal_metrics.py"), t["boundary"],
                         "--chunk", "4", "--overlap", "0", "--json-out", js,
                         "--run-id", "selftest"],
                        capture_output=True, text=True, encoding="utf-8", errors="replace")
@@ -244,7 +262,7 @@ def test_metrics_correctness():
 # ---------------------------------------------------------------------------
 def test_dry_run():
     print("\n=== [C] video_e2e.py dry-run：命令拼装（不执行模型） ===")
-    orch = os.path.join(HERE, "video_e2e.py")
+    orch = comp("video_e2e.py")
     run_gen = os.path.join(TMP, "run_dry_gen")
     cases = [
         (["gen", "--mode", "independent", "--res", "128", "--frames", "16", "--chunk", "8",
@@ -294,7 +312,7 @@ def test_dry_run():
         check(f"dry-run {argv[0]} -> 含 {want}", ok,
               f"rc={p.returncode}" + ("" if ok else f" out={p.stdout[-300:]}"))
 
-    sys.path.insert(0, HERE)
+    sys.path.insert(0, REPO)
     from scripts.lib import video_e2e as v_e2e
     try:
         v_e2e.normalize_lora_path(os.path.join(TMP, "definitely_missing.safetensors"))
@@ -323,11 +341,12 @@ def test_dry_run():
 # ---------------------------------------------------------------------------
 def test_no_torch():
     print("\n=== [D] 编排器不 import torch（内存红线：编排器不能自己持有模型） ===")
-    src = open(os.path.join(HERE, "video_e2e.py"), encoding="utf-8").read()
+    src = open(comp("video_e2e.py"), encoding="utf-8").read()
     check("静态：video_e2e.py 无 'import torch'",
           re.search(r"^\s*import torch", src, re.M) is None)
     code = ("import sys; sys.path.insert(0, r'%s'); import video_e2e; "
-            "print('TORCH_LOADED' if 'torch' in sys.modules else 'NO_TORCH')" % HERE)
+            "print('TORCH_LOADED' if 'torch' in sys.modules else 'NO_TORCH')"
+            % os.path.join(REPO, "scripts", "lib"))
     p = subprocess.run([PY, "-c", code], capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
     check("动态：import video_e2e 后 sys.modules 里没有 torch",

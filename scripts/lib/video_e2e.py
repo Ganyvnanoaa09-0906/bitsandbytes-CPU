@@ -2,8 +2,10 @@
 """video_e2e.py — 视频端到端管线编排器（E2E 管线，2026-10-23 port 进仓库）。
 
 设计文档：collab/shared/VIDEO_E2E_PIPELINE_PLAN.md（不在本仓库内）
-组件脚本（本仓库根，已由 E2E 副本 port）：sliding_window.py / independent_chunks.py /
-  temporal_metrics.py / post_process.py
+组件脚本（**按名字解析，见 component()**）：sliding_window.py / independent_chunks.py /
+  post_process.py / convert_lora_ckpt.py 在 `scripts/misc/`，temporal_metrics.py 在 `scripts/lib/`
+  （2026-10-28 根脚本归组后不再与编排器同目录；2026-11-04 修复为搜索式定位，
+  并加 `python scripts/lib/video_e2e.py selftest` 做路径自检）。
 训练工具仍是外部脚本（video_mvp/），通过环境变量 VIDEO_E2E_TOOLS 或默认 ../video_mvp 定位。
 
 三条硬规则（全部来自既有实测/事故）：
@@ -51,12 +53,58 @@ import subprocess
 import sys
 import time
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-E2E = HERE                      # 组件脚本已随 port 落到仓库根
-REPO = HERE                     # stage 子进程 cwd = 仓库根
+HERE = os.path.dirname(os.path.abspath(__file__))          # scripts/lib
+E2E = HERE                      # 兼容旧引用（组件路径一律走 component()）
+
+
+def _find_repo(start):
+    """向上找含 bitsandbytes/ 的目录（= 仓库根）。"""
+    p = start
+    while p:
+        if os.path.isdir(os.path.join(p, "bitsandbytes")):
+            return p
+        nxt = os.path.dirname(p)
+        if nxt == p:
+            break
+        p = nxt
+    return os.path.dirname(os.path.dirname(start))          # 兜底：scripts/lib 的上两级
+
+
+# 2026-11-04 修复：10-28 根脚本归组把组件从"编排器同目录"挪到了 scripts/misc/，
+# 原实现 E2E=REPO=HERE 拼出来的 4 个组件路径全部不存在（gen/post/train 三条链全坏，
+# 只有 metrics 侥幸可用）。现改为按名字在候选目录里搜索，且 REPO 指回真正的仓库根
+# （子进程 cwd 与 convert_lora_ckpt.py 的定位都依赖它）。
+REPO = os.environ.get("VIDEO_E2E_REPO") or _find_repo(HERE)
 RUNS = os.path.join(HERE, "runs")
+COMPONENT_DIRS = tuple(dict.fromkeys([
+    HERE,
+    os.path.join(REPO, "scripts", "misc"),
+    os.path.join(REPO, "scripts", "lib"),
+    REPO,
+]))
 # 训练/数据缓存仍是外部工具（不随本仓库 port；见 PENDING_REPO_PORT.md §8）
-TOOLS = os.environ.get("VIDEO_E2E_TOOLS", os.path.join(os.path.dirname(HERE), "video_mvp"))
+TOOLS = os.environ.get("VIDEO_E2E_TOOLS", os.path.join(os.path.dirname(REPO), "video_mvp"))
+
+
+def resolve_component(name):
+    """在 COMPONENT_DIRS 里按名字找组件脚本；找不到返回 ""。"""
+    for d in COMPONENT_DIRS:
+        p = os.path.join(d, name)
+        if os.path.isfile(p):
+            return p
+    return ""
+
+
+def component(name):
+    """同 resolve_component，但找不到时给可执行的错误（含搜索过的目录）。"""
+    p = resolve_component(name)
+    if not p:
+        raise SystemExit(
+            f"[err] 找不到组件 {name}；已搜索：\n" +
+            "\n".join("      " + d for d in COMPONENT_DIRS) +
+            "\n      仓库根(REPO)=%s（可用 VIDEO_E2E_REPO 覆盖）" % REPO)
+    return p
+
 
 def _tools_path(name):
     p = os.path.join(TOOLS, name)
@@ -170,9 +218,9 @@ def normalize_lora_path(lora, dry_run=False):
 
 
 def build_gen_cmd(args, out, plan):
-    common = [PY, os.path.join(E2E, "independent_chunks.py")]
+    common = [PY, component("independent_chunks.py")]
     if args.mode == "sliding":
-        common = [PY, os.path.join(E2E, "sliding_window.py")]
+        common = [PY, component("sliding_window.py")]
         cmd = common + [
             "--res", str(args.res), "--chunk", str(args.chunk), "--overlap", str(args.overlap),
             "--chunks", str(plan["chunks"]), "--steps", str(args.steps),
@@ -197,7 +245,7 @@ def build_gen_cmd(args, out, plan):
             # PEFT ckpt → diffusers safetensors（convert_lora_ckpt.py 会打印配对自检）
             conv = os.path.join(out, "ckpt", "diffusers_lora.safetensors")
             os.makedirs(os.path.dirname(conv), exist_ok=True)
-            rc = run_cmd([PY, os.path.join(REPO, "convert_lora_ckpt.py"),
+            rc = run_cmd([PY, component("convert_lora_ckpt.py"),
                           "--ckpt", lora, "--out", conv],
                          os.path.join(out, "logs", "convert_lora.log"),
                          getattr(args, "dry_run", False))
@@ -305,7 +353,7 @@ def stage_metrics(args):
         raise SystemExit(f"[err] 没有帧: {frames_dir}")
     tmp = os.path.join(out, "_metrics_tmp.json")
     chunk_metrics = os.path.join(out, "chunk_metrics.json")
-    cmd = [PY, os.path.join(E2E, "temporal_metrics.py"), frames_dir,
+    cmd = [PY, component("temporal_metrics.py"), frames_dir,
            "--chunk", str(args.chunk), "--overlap", str(args.overlap),
            "--json-out", tmp, "--run-id", args.run_id or os.path.basename(out.rstrip("\\/"))]
     if os.path.exists(chunk_metrics):
@@ -353,7 +401,7 @@ def stage_post(args):
     out = os.path.abspath(args.out)
     if not args.dry_run and not glob.glob(os.path.join(out, "frames", "f*.png")):
         raise SystemExit(f"[err] 没有帧: {out}\\frames")
-    cmd = [PY, os.path.join(E2E, "post_process.py"),
+    cmd = [PY, component("post_process.py"),
            "--src", os.path.join(out, "frames"), "--out", out,
            "--name", "video", "--fps", str(args.fps),
            "--restorer", args.restorer, "--verify", "--threads", str(THREADS_DEFAULT)]
@@ -398,7 +446,7 @@ def stage_train(args):
            "--lora_scope", args.lora_scope, "--rank", str(args.rank), "--lr", str(args.lr),
            "--threads", str(args.threads), "--ckpt_every", str(args.ckpt_every),
            "--time_limit_s", str(args.time_limit_s), "--max_rss_gb", str(args.max_rss_gb)]
-    if not args.grad_ckpt:
+    if not getattr(args, "grad_ckpt", False):
         cmd.append("--no_grad_ckpt")   # 实测 1.20x 提速（RSS 6.65 -> 7.44 GB）
     if args.val_data:
         cmd += ["--val_data", args.val_data, "--val_every", str(args.val_every)]
@@ -412,7 +460,7 @@ def stage_train(args):
     if args.convert and os.path.exists(ck):
         conv = os.path.join(out, "ckpt", "diffusers_lora.safetensors")
         os.makedirs(os.path.dirname(conv), exist_ok=True)
-        rc = run_cmd([PY, os.path.join(REPO, "convert_lora_ckpt.py"),
+        rc = run_cmd([PY, component("convert_lora_ckpt.py"),
                       "--ckpt", ck, "--out", conv],
                      os.path.join(out, "logs", "convert_lora.log"), args.dry_run)
         if rc != 0:
@@ -468,6 +516,44 @@ def stage_report(args):
 
 
 # ---------------------------------------------------------------------------
+# stage: selftest（2026-11-04：把"组件路径是否存在"变成可执行检查）
+# ---------------------------------------------------------------------------
+SELFTEST_COMPONENTS = ("independent_chunks.py", "sliding_window.py", "post_process.py",
+                       "temporal_metrics.py", "convert_lora_ckpt.py")
+SELFTEST_TOOLS = ("run_train_stages.py", "train_video_mvp.py", "sample_check.py")
+
+
+def stage_selftest(args):
+    """只检查路径解析，不加载任何模型、不写任何文件。exit 0=PASS / 1=FAIL。"""
+    log("[selftest] REPO  = %s" % REPO)
+    log("[selftest] TOOLS = %s" % TOOLS)
+    log("[selftest] 搜索目录:")
+    for d in COMPONENT_DIRS:
+        log("    %s" % d)
+    bad = []
+    for name in SELFTEST_COMPONENTS:
+        p = resolve_component(name)
+        if p:
+            log("  ok   component %-24s %s" % (name, p))
+        else:
+            bad.append(name)
+            log("  FAIL component %-24s 未找到" % name)
+    for name in SELFTEST_TOOLS:
+        p = os.path.join(TOOLS, name)
+        if os.path.isfile(p):
+            log("  ok   tool      %-24s %s" % (name, p))
+        else:
+            bad.append(name)
+            log("  FAIL tool      %-24s %s" % (name, p))
+    if bad:
+        log("[selftest] FAIL %d 项：%s" % (len(bad), ", ".join(bad)))
+        return 1
+    log("[selftest] PASS  %d 组件 + %d 外部工具全部解析成功"
+        % (len(SELFTEST_COMPONENTS), len(SELFTEST_TOOLS)))
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # stage: smoke（验收脚本，默认真跑；--dry-run 只打印）
 # ---------------------------------------------------------------------------
 SMOKE_EXPECT = {
@@ -507,7 +593,8 @@ def stage_smoke(args):
             out=os.path.join(root, "train"), force=args.force, data=args.data,
             stages="20,40", res=128, frames=8, lora_scope="temporal", rank=4, lr=1e-4,
             threads=4, ckpt_every=20, time_limit_s=540, max_rss_gb=9.5,
-            val_data=args.data, val_every=20, convert=True, dry_run=args.dry_run))))
+            val_data=args.data, val_every=20, grad_ckpt=False, convert=True,
+            dry_run=args.dry_run))))
     if prof == "infer":
         stages.append(("gen+metrics+post", lambda: stage_gen(_ns(
             out=os.path.join(root, "infer"), force=args.force, mode="independent", res=128,
@@ -636,6 +723,11 @@ def main():
     r.add_argument("--md-out", default="")
     add_common(r)
     r.set_defaults(fn=stage_report)
+
+    # selftest（2026-11-04）：路径解析自检，不跑模型
+    st = sub.add_parser("selftest", help="自检：组件/外部工具路径能否解析（不加载模型）")
+    add_common(st)
+    st.set_defaults(fn=stage_selftest)
 
     a = ap.parse_args()
     # gen 的默认 out 目录
