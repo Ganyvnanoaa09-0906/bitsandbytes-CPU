@@ -1210,7 +1210,8 @@ class SmallARImageModelV2(nn.Module):
     # ---------------- 推理（KV Cache）----------------
     @torch.no_grad()
     def generate(self, text_cond=None, steps=None, top_k=100, temperature=1.0,
-                 guidance_scale=1.0, cluster_map=None, seed=None, batch=None):
+                 guidance_scale=1.0, cluster_map=None, seed=None, batch=None,
+                 seed_probs=None):
         cfg = self.cfg
         was_training = self.training
         self.eval()
@@ -1305,22 +1306,32 @@ class SmallARImageModelV2(nn.Module):
                     torch.zeros_like(text_cond) if text_cond is not None else None, bos, bos_key)
                 logits = ul + guidance_scale * (logits - ul)
         else:
-            start = torch.zeros(B, 1, dtype=torch.long, device=dev)
+            # ★ 修：pos 0 的 token 不再硬编码 code 0，默认按数据边际(unigram)抽；
+            #   传 seed_probs 可指定分布（例如从 tokens 文件统计的 unigram）。
+            if seed_probs is not None:
+                p = seed_probs.to(dev).float()
+                p = p / p.sum()
+                start = torch.multinomial(p.expand(B, -1), 1)
+            else:
+                start = torch.randint(0, cfg.vocab_size, (B, 1), device=dev)
             logits, caches = run(text_cond, start)
             uncond_caches = None
             if use_cfg:
                 ul, uncond_caches = run(torch.zeros_like(text_cond) if text_cond is not None else None, start)
                 logits = ul + guidance_scale * (logits - ul)
 
-        out = []
-        for t in range(total):
+        # ★ 修错位：非 BOS 路径下 pos 0 的 token 已经确定（start），它本身就是图的第一个
+        #   token ⇒ 只需再预测 total-1 个，输出长度仍为 total 且位置严格是 0..total-1。
+        out = [] if self.use_bos else [start]
+        n_gen = total if self.use_bos else total - 1
+        for t in range(n_gen):
             lg = logits / max(temperature, 1e-6)
             if top_k and top_k > 0:
                 v, _ = torch.topk(lg, min(top_k, lg.shape[-1]), dim=-1)
                 lg = lg.masked_fill(lg < v[:, [-1]], -1e9)
             nxt = torch.multinomial(F.softmax(lg, dim=-1), 1)
             out.append(nxt)
-            if t == total - 1:
+            if t == n_gen - 1:
                 break
             # 本次采样出的 token 的空间序号：use_bos 时它就是 x_t（第 t 位），
             # 旧路径下它是 x_{t+1}
