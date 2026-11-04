@@ -1211,7 +1211,7 @@ class SmallARImageModelV2(nn.Module):
     @torch.no_grad()
     def generate(self, text_cond=None, steps=None, top_k=100, temperature=1.0,
                  guidance_scale=1.0, cluster_map=None, seed=None, batch=None,
-                 seed_probs=None):
+                 seed_probs=None, rep_penalty=0.0, rep_window=1):
         cfg = self.cfg
         was_training = self.training
         self.eval()
@@ -1324,13 +1324,20 @@ class SmallARImageModelV2(nn.Module):
         #   token ⇒ 只需再预测 total-1 个，输出长度仍为 total 且位置严格是 0..total-1。
         out = [] if self.use_bos else [start]
         n_gen = total if self.use_bos else total - 1
+        _recent = []
         for t in range(n_gen):
             lg = logits / max(temperature, 1e-6)
+            if rep_penalty and rep_penalty > 0 and _recent:
+                # 重复惩罚：把最近出现过的 token 的 logit 压低（只影响采样，不改训练语义）
+                for _tok in _recent[-max(1, int(rep_window)):]:
+                    lg = lg.scatter_add(-1, _tok.view(-1, 1),
+                                        torch.full_like(_tok.view(-1, 1).float(), -float(rep_penalty)))
             if top_k and top_k > 0:
                 v, _ = torch.topk(lg, min(top_k, lg.shape[-1]), dim=-1)
                 lg = lg.masked_fill(lg < v[:, [-1]], -1e9)
             nxt = torch.multinomial(F.softmax(lg, dim=-1), 1)
             out.append(nxt)
+            _recent.append(nxt)
             if t == n_gen - 1:
                 break
             # 本次采样出的 token 的空间序号：use_bos 时它就是 x_t（第 t 位），

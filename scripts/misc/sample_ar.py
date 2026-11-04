@@ -25,6 +25,11 @@ def main():
     ap.add_argument('--n', type=int, default=16)
     ap.add_argument('--top-k', type=int, default=100)
     ap.add_argument('--temperature', type=float, default=1.0)
+    ap.add_argument('--rep-penalty', type=float, default=1.0,
+                    help='重复惩罚强度（logit 减去该值）：压相邻 token 反复同码造成的色块感。'
+                         'pen=1.0 时相邻相同率 6.6%% ≈ 真实数据 4.8%%（pen=0 为 13.9%%）；0=关')
+    ap.add_argument('--rep-window', type=int, default=1,
+                    help='重复惩罚回看几个 token（1=只看上一个）')
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--threads', type=int, default=6)
     ap.add_argument('--loop_L', type=int, default=0,
@@ -192,10 +197,12 @@ def main():
             else:
                 toks = model.generate(cond, steps=cfg.total_tokens, top_k=a.top_k,
                                       temperature=a.temperature, seed=a.seed,
-                                      guidance_scale=a.guidance, batch=a.n)
+                                      guidance_scale=a.guidance, batch=a.n,
+                                      rep_penalty=a.rep_penalty, rep_window=a.rep_window)
         else:
             toks = model.generate(text, steps=cfg.total_tokens, top_k=a.top_k,
-                                  temperature=a.temperature)
+                                  temperature=a.temperature,
+                                  rep_penalty=a.rep_penalty, rep_window=a.rep_window)
     dt = time.perf_counter() - t0
     print('生成 %d 张 %s 用时 %.1fs (%.2f s/张)' % (a.n, tuple(toks.shape), dt, dt / a.n))
 
