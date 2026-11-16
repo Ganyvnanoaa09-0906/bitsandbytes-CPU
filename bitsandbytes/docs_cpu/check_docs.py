@@ -44,6 +44,12 @@ def main():
     names = [n for n in ZH + EN if os.path.isfile(n)]
     print(f"docs dir: {os.path.abspath('.')}")
     print(f"files   : {len(names)}")
+    if not names:
+        # 2026-11-16 审查修正：空扫描不能算 PASS。之前从错误目录跑会打印
+        # "PASS: all structural checks clean"，门禁等于失效（Gate-2 第 6 项的假通过来源）。
+        print("FAIL: 没有找到任何文档文件（ZH+EN 均不存在）；空扫描不算 PASS")
+        print("      （请在 bitsandbytes/ 目录下运行，或显式传入文档目录）")
+        return 1
     fails = []
 
     # A heading number is a dotted section id, or a bare integer followed by a
