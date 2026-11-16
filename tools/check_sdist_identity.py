@@ -196,6 +196,25 @@ def _selftest(tmp):
         ),
         ("缺 vcomp（发布策略）", [(pkg + KERNEL_DLL, k)], ksha, vsha, True, False),
         ("缺 vcomp（构建模式允许）", [(pkg + KERNEL_DLL, k)], ksha, None, False, True),
+        # LEAD 独立复核时踩到的真实形态：DLL 放错目录（放到 setup.py 旁而不是内层包目录）时
+        # setup.py sdist 仍 rc=0，但产物 187 成员 / 0 DLL —— 静默丢 DLL，构建"成功"。
+        # 门禁必须对这种形态 fail closed。
+        (
+            "kernel 缺失（静默丢 DLL）",
+            [(pkg + VCOMP_DLL, v)],
+            ksha,
+            vsha,
+            True,
+            False,
+        ),
+        (
+            "完全无 DLL（setup.py rc=0 的静默失败）",
+            [(pkg + "some_module.py", b"x")],
+            ksha,
+            vsha,
+            True,
+            False,
+        ),
         (
             "vcomp 身份错误",
             [(pkg + KERNEL_DLL, k), (pkg + VCOMP_DLL, b"WRONG" + v)],
