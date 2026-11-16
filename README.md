@@ -107,6 +107,29 @@ The package README covers the full API, platform matrix, limitations and changel
 | `docs_cpu/` (inside `bitsandbytes/`) | QUICKSTART, API reference, technical guide, EPYC validation, ISA matrix, wheel platform notes — Chinese and English |
 | `D:\work\research\CPU_FORGE_TECHNICAL_REPORT.md` | the full technical report (outside this repo) |
 
+## Video on CPU: what is verified
+
+Measured on the 6-core reference laptop (R5-4500U, no dGPU):
+
+**Inference (verified)**
+- LCM-LoRA 4-step/cfg1.5 vs DPM-Solver-20/cfg7.5: **3.69×** at 512², **4.42×** on the anime
+  prompt, **3.82×** on 192²/6-frame video. Same-seed pixels differ (new scheduler) — compare
+  quality, not bit-equality.
+- ONNX Runtime fp32 UNet + async VAE: **8 chunks / 43 frames in 257.0 s vs 280.9 s** (1.09×);
+  per-frame vs torch fp32 **PSNR 73.2 dB** (18-frame control run: 71.95 dB). int8 UNet is **not
+  usable** (11.04 dB).
+- Attention slicing must stay **off** (35.36 s → 20.72 s with it off).
+- High resolution via super-resolution decoupling: 32 frames 256→1024p in **5.8 min** (LCM
+  4 steps). Wan 720p/15 s direct generation is out of reach (≥5.1 days).
+
+**Training (experimental — the loop is verified, learned motion is not)**
+- AnimateDiff 5D LoRA trains end-to-end on CPU: ~**11.2 s/step**, **5.9 GB** RSS, loss/val
+  curves + checkpoints produced; `--lora_scope` splits exactly into temporal 1,208,320 +
+  spatial 797,184 = all 2,005,504.
+- No motion-quality claim yet: all seven demo runs report `has_global_motion=False`.
+  Temporal-only LoRA measured **harmful** (−33% motion, 25.9% white pixels); the usable recipe
+  so far is **spatial rank4 / 151 steps** (MAD 17.56, −3%).
+
 ## Tests
 
 ```bash

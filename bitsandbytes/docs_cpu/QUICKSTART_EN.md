@@ -1106,7 +1106,7 @@ winfr D: E:\recovered /extensive /n *
   bad input exits 2.
 - **Video E2E**: `scripts/video/` + `VIDEO_GUIDE.md`; six dev11 perf fixes (all six cores, no grad
   checkpointing, flush denormals, training threads back to 5). 43 frames: 257.0 s vs torch 280.9 s
-  (1.09x, PSNR 71.95 dB).
+  (1.09x; per-frame PSNR **73.2 dB** on the 43-frame run, 71.95 dB on the 18-frame control run).
 - **Recovery toolkit**: `bitsandbytes/tools/` (`sector_mirror` / `mft_recover` / `sector_carve`,
   CLI + GUI + byte-for-byte selftests; decision tree in §9.2).
 - **Release tooling**: `tools/check_sdist_identity.py` (16 selftest + 20 CLI adversarial cases),

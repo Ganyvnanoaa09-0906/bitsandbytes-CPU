@@ -26,15 +26,6 @@ pip install bitsandbytes-cpu-fork
 python -m bitsandbytes          # prints version / platform / library info
 ```
 
-If upstream `bitsandbytes` is already installed, **uninstall bitsandbytes first**: this fork
-deliberately keeps the `bitsandbytes` import name (so transformers / peft / diffusers integrations
-need no change), and pip will let the two distributions overwrite each other's files.
-
-```bash
-pip uninstall -y bitsandbytes
-pip install bitsandbytes-cpu-fork
-```
-
 Requirements: Python ≥ 3.10 (64-bit), PyTorch ≥ 2.0 CPU build, x86-64 with AVX2 (a generic
 SSE2 fallback is shipped) or ARM64 with NEON, Windows 10/11 or Linux glibc ≥ 2.17.
 
@@ -108,31 +99,6 @@ layer = layer.to("cpu")      # .to() is what quantises the weights
 y = layer(torch.randn(2, 1024))
 ```
 
-Quantising an **existing** fp32/bf16 layer (the usual case) means moving the weights in first:
-
-```python
-orig = torch.nn.Linear(1024, 1024)
-layer = bnb.nn.Linear4bit(orig.in_features, orig.out_features,
-                          quant_type="nf4", compute_dtype=torch.float32)
-layer.weight = bnb.nn.Params4bit(orig.weight.detach().clone(), quant_type="nf4", blocksize=64)
-layer = layer.to("cpu")      # quantisation happens here; calling forward() before this raises
-out = layer(torch.randn(2, 1024))
-```
-
-Checkpoints round-trip through the ordinary API -- the 4-bit payload and the quantization state are
-saved together and restored by `load_state_dict()`:
-
-```python
-sd = layer.state_dict()
-fresh = bnb.nn.Linear4bit(1024, 1024, quant_type="nf4", compute_dtype=torch.float32)
-fresh.load_state_dict(sd)
-fresh = fresh.to("cpu")      # already quantized: this keeps the loaded state
-assert torch.equal(layer(x), fresh(x))
-```
-
-Only if you split the state dict by hand do you need the low-level form:
-`bnb.nn.Params4bit.from_prequantized(quantized_stats=sd, data=sd.pop("weight"), device="cpu")`.
-
 ### Fused Gated DeltaNet (Qwen3-Next / Qwen3.5 linear attention)
 
 ```python
@@ -197,36 +163,6 @@ best = tck.tune_threads(lambda: train_step(model, batch))
 
 Also: `estimate_training_memory_gb()`, `spawn_training_jobs(cmds, plan)` (logs prefixed
 `[jobN]`), `apply_env()`, `init()`, `mem_report()`.
-
----
-
-## Threading: which knob actually controls the CPU kernels
-
-The CPU kernels parallelise with **OpenMP**. `torch.set_num_threads()` only affects PyTorch's own
-operators; it does **not** change how many threads a bnb kernel uses. Use the environment, set
-before the process starts (it is read at import time):
-
-```bash
-OMP_NUM_THREADS=4 python train.py
-```
-
-Measured on the 6-core reference laptop (4-bit dequantize, 2048x4096, one process at a time):
-
-| setting | time |
-|---|---|
-| `torch.set_num_threads(1)` | 4.5 ms |
-| `torch.set_num_threads(6)` | 5.2 ms -- not the knob |
-| `OMP_NUM_THREADS=1` | 6.7 ms |
-| `OMP_NUM_THREADS=6` | 4.4 ms |
-
-Two consequences for training loops:
-
-- **Match the two settings.** `torch.set_num_threads(6)` on a 6-thread CPU plus the default
-  OpenMP pool oversubscribes the machine; set `OMP_NUM_THREADS` to the same value.
-- **DataLoader workers inherit the environment.** Set `OMP_NUM_THREADS` before workers are forked,
-  otherwise every worker starts a full OpenMP pool.
-
-`torch_cpu_kit.tune_threads()` (above) calibrates a real step instead of guessing.
 
 ---
 
@@ -341,47 +277,6 @@ the full trade-off tables, including negative results.
 
 ---
 
-### What the quantized paths cost
-
-Numbers from one 6-core reference laptop (R5-4500U, AVX2, no GPU), one process at a time. Read them
-as the shape of the trade-off, not as universal constants.
-
-**4-bit layer inference on CPU is a memory win, not a speed win.** Weight memory drops ~20x
-(a 2048x2048 layer: 4.0 MB fp32 -> 0.2 MB) but every forward pass dequantizes, so it is slower than
-the fp32 layer:
-
-| batch | fp32 | 4-bit | 4-bit / fp32 |
-|---|---|---|---|
-| 1 | 1.33 ms | 5.32 ms | 4.00x slower |
-| 8 | 4.34 ms | 7.66 ms | 1.76x slower |
-| 64 | 5.67 ms | 9.57 ms | 1.69x slower |
-
-**8-bit optimizer: the win depends on the tensor size, not only on the parameter count.** The same
-32M parameters, arranged differently (`optimizer.step()` only):
-
-| layout | fp32 | 8-bit | ratio |
-|---|---|---|---|
-| 1 tensor x 32M | 177.1 ms | 93.6 ms | 0.53x (faster) |
-| 32 tensors x 1M | 155.8 ms | 127.0 ms | 0.82x |
-| 128 tensors x 250k | 126.9 ms | 154.7 ms | 1.22x (slower) |
-
-There is a fixed **per-tensor** cost, so 8-bit pays off once a tensor holds roughly **1M elements**
-or more; on many tiny tensors it can be slower than fp32. Real transformer layouts are dominated by
-large matrices, which is why full-model numbers still favour it (GPT2-124M, 148 tensors: 445 ms vs
-688 ms fp32).
-
-**8-bit vs 4-bit vs fp32, three-way** (`optimizer.step()`, real GPT-2 architectures):
-
-| model | fp32 | 8-bit | 4-bit | state per parameter |
-|---|---|---|---|---|
-| GPT2-124M (148 tensors) | 688 ms | **445 ms** | 1151 ms | 8.00 / 2.04 / 1.03 B |
-| GPT2-345M (292 tensors) | 1962 ms | **1304 ms** | 3995 ms | 8.00 / 2.04 / 1.03 B |
-
-Default to 8-bit. Reach for 4-bit only when the optimizer state has to be smaller than the 4x
-reduction 8-bit already gives, and accept the ~2x slower step.
-
----
-
 ## Platform limitations
 
 - **CPU only.** CUDA/ROCm/XPU kernels are not built; a GPU is never required or used.
@@ -457,6 +352,16 @@ The long-form docs live in the repository (`bitsandbytes/docs_cpu/`, Chinese and
 - [`EPYC_VALIDATION.md`](https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/blob/HEAD/bitsandbytes/docs_cpu/EPYC_VALIDATION.md) — real AVX-512/BF16 machine validation
 - [`ISA_MATRIX.md`](https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/blob/HEAD/bitsandbytes/docs_cpu/ISA_MATRIX.md) — x86 AVX2/generic/AVX-512 + aarch64 test matrix
 - [`WHEEL_PLATFORM_NOTES.md`](https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/blob/HEAD/bitsandbytes/docs_cpu/WHEEL_PLATFORM_NOTES.md) — which wheel runs where, and why
+
+## Video on CPU (verified)
+
+Inference is verified: LCM-LoRA 3.7–4.4× (512² / 192²-6f), ONNX Runtime fp32 UNet + async VAE
+**43 frames 257.0 s vs 280.9 s (1.09×)** with per-frame PSNR **73.2 dB** vs torch fp32 (18-frame
+control run: 71.95 dB); int8 UNet is unusable (11.04 dB). Training (AnimateDiff 5D LoRA) runs
+end-to-end on CPU (~11.2 s/step, 5.9 GB, loss/checkpoint/sample produced) but **learned motion
+is not demonstrated** — all seven demo runs report `has_global_motion=False`; temporal-only LoRA
+measured harmful, spatial rank4/151 steps is the usable recipe so far. Details and negative
+results: `VIDEO_GUIDE.md`.
 
 ## Project extras (outside the library API)
 

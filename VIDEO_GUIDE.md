@@ -7,6 +7,14 @@
 
 ---
 
+> **Status (2026-11):** inference is verified — LCM-LoRA 3.7–4.4×, ORT fp32 + async VAE
+> 43 frames 257.0 s vs 280.9 s (1.09×), per-frame PSNR **73.2 dB** (18-frame control run
+> 71.95 dB), int8 UNet unusable (11.04 dB). Training is **loop-verified only**: AnimateDiff
+> 5D LoRA trains on CPU (~11.2 s/step, 5.9 GB) and produces checkpoints, but no run has
+> demonstrated learned motion (`has_global_motion=False` in all seven demos); temporal-only
+> LoRA measured harmful, spatial rank4/151 steps is the usable recipe so far.
+
+
 ## 0. 先记住三条，能省你几个小时
 
 **① 这台机器上不要同时跑两个大模型进程。**

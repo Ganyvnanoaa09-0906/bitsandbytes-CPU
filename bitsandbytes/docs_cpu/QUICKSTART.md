@@ -1035,7 +1035,8 @@ winfr D: E:\recovered /extensive /n *
 - **音频能力基准**：`scripts/bench/audio/` 5 个可复现脚本（ASR / Piper / Kokoro / 训练成本 / KWS 真训），
   权重不入库、坏输入统一 `exit 2`。
 - **视频 E2E**：`scripts/video/` + `VIDEO_GUIDE.md`；dev11 六项性能修复（六核默认、关 grad ckpt、
-  flush denormals、训练线程回到 5），43 帧生成 257.0 s vs torch 280.9 s（1.09×，PSNR 71.95 dB）。
+  flush denormals、训练线程回到 5），43 帧生成 257.0 s vs torch 280.9 s（1.09×；逐帧 vs torch fp32 **PSNR 73.2 dB**，
+  18 帧对照 run 为 71.95 dB）。
 - **恢复工具链**：`bitsandbytes/tools/`（`sector_mirror` / `mft_recover` / `sector_carve`，CLI + GUI +
   字节级 selftest；决策树与用法见 §9.2）。
 - **发布工具**：`tools/check_sdist_identity.py`（`--selftest` 16 例 + 20 CLI 对抗）、
