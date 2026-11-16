@@ -892,3 +892,27 @@ Performance reference: a 256MB volume with 5,084 records / 2,500 files is rebuil
   (Intel); keep cpp/h as **CRLF** (LF + GBK comments are swallowed by `cl`).
 - Self-test: `python -m bitsandbytes.gdn_cpu` (PASSED); `scripts/misc/stress_opt.py`
   (210 combos, 0 failures); `selftest_cpu.c` (4/4).
+
+---
+
+## 9. NT stores and release identity in dev11
+
+**4-bit dequant NT gate**: the pure-write kernel uses `_mm256_stream_ps` when
+`m*n*sizeof(T) > 16 MiB` and the output is 32 B aligned, with a per-row `_mm_sfence`.
+16 MiB is the thread-independent conservative knee (8/16/32/64 MB all win; 4 MiB loses).
+Measured 1.7–2.0× at 32 MB outputs. The threshold comes from the single
+`BNB_NT_THRESHOLD_MB` macro, and `BNB_NT_FORCE_OFF` applies to this kernel as the A/B control.
+
+**RMSNorm NT criterion**: a read+write kernel cannot reuse the pure-write threshold. The
+decision compares the total footprint `out_bytes * (res ? 3 : 2)` against the per-CCX L3
+(4 MiB here); out=1 MiB (3 MiB footprint) does not benefit, out=2 MiB (6 MiB) gives ~1.8×.
+CPUID `l3_sharing` is EDX[25:14] (12 bits, mask `0xfff`), overridden on Windows by
+`GetLogicalProcessorInformationEx`.
+
+**Release identity**: raw sdist bytes vary with mtimes and member order, so they cannot be an
+equality criterion. After normalization (sort by name, mtime=0, uid/gid=0, GNU tar, gzip
+mtime=0) dev10's reproducible identities are gzip `b85cf8086d36fb94…` and the
+**decompressed tar `7d5d95a1e6eb86f8…`**; the latter is zlib-independent and is the
+cross-machine identity. The gate audits the **uploaded bytes**: DLLs must live under
+`<top>/bitsandbytes/`, exactly one kernel plus the vcomp policy, and identity is sha256-only
+(multiple distinct kernels share the same 403,968 B size, so size checks would accept a stale build).

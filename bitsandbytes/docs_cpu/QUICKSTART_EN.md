@@ -1088,3 +1088,21 @@ winfr D: E:\recovered /extensive /n *
 
 > **Final note**: any data recovery carries uncertainty. If the data is valuable, **prefer a
 > professional recovery service** over repeated DIY attempts.
+
+---
+
+## 10. What changed in dev11 (2026-11)
+
+- **NT-store fast paths**: large 4-bit dequant outputs (≥16 MiB) and RMSNorm (chosen by the
+  `x + res + out` footprint vs per-CCX L3) now use non-temporal writes — measured 1.7–2.0× at
+  32/64 MB outputs on this machine.
+- **Reproducible releases**: `tools/normalize_sdist.py` plus `tools/check_sdist_identity.py --sdist`
+  audit the **uploaded bytes** (2-DLL policy; identity is sha256-only — never size or shape);
+  cross-machine equality uses the normalized *decompressed tar* sha.
+- **Stricter gates**: `check_docs.py` requires all six ZH/EN docs; the identity gate ships 16
+  selftest cases, 20 CLI adversarial cases and 8 docs adversarial cases, all failing closed.
+- **Audio capability benches**: five reproducible scripts under `scripts/bench/audio/`
+  (ASR / Piper / Kokoro / training cost / real KWS training); weights are never committed and
+  bad input exits 2.
+- **Hygiene**: scripts regrouped under `scripts/*`, UTF-8 BOM stripped from 14 files;
+  6 video perf fixes and 3 AR fixes.

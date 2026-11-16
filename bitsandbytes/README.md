@@ -5,12 +5,12 @@
 > toolkit and no driver** — just an AVX2 x86-64 CPU (or ARM64 NEON), the CPU build of PyTorch,
 > and 12–16 GB of RAM.
 
-**Version: `0.50.2.dev9`** · import name is unchanged (`import bitsandbytes as bnb`) · MIT.
+**Version: `0.50.2.dev11`** · import name is unchanged (`import bitsandbytes as bnb`) · MIT.
 
 What the CPU backend provides: 8-bit blockwise optimizers (≈2.3 bytes of state per parameter
 instead of 8; the 4-bit optimizer ≈1.03), 4/8-bit layers that run on CPU tensors, the fused
 Gated DeltaNet kernel for Qwen3-Next / Qwen3.5 linear attention, fused `gemm_8bit`, fused
-RMSNorm/SwiGLU, an SSD cold-memory balancer, and a CPU training/concurrency toolbox.
+RMSNorm/SwiGLU (with NT-store fast paths for large outputs), an SSD cold-memory balancer, and a CPU training/concurrency toolbox.
 
 ---
 
@@ -366,6 +366,8 @@ The long-form docs live in the repository (`bitsandbytes/docs_cpu/`, Chinese and
 | `0.50.2.dev7` | documentation release: README rewritten for the CPU fork (install/wheels/platform matrix, feature table, measured performance, limitations, tests, full dev1→dev7 changelog, EFST/disk-balancer/toolbox examples) |
 | `0.50.2.dev8` | **restored `AdamW4bit`** (the kernel was dropped when dev4 vendored upstream; now scalar C kernel + torch fallback, 1.031 B/param); **new `bitsandbytes.q3bit` API** — `quantize_3bit`/`dequantize_3bit`/`gemm_3bit`/`gemm_3bit_transposed`, `QuantLinear3bit` (frozen 3-bit base + LoRA), `convert_linears_3bit`, native kernels on Linux with identical pure-torch fallback; CLI reference now includes 4bitopt/q3bit and all 43 examples execute in CI-style verification |
 | `0.50.2.dev9` | **Windows native kernels**: CI now compiles the MSVC DLL from the current csrc and the export list includes the 4-bit optimizer and 2/3-bit symbols (they were silently missing before); **q3bit real-model validation** on Qwen3-1.7B (frozen 3-bit base + LoRA, eval 4.34→4.03 over 80 steps, RSS −67%, native step 7.7 s vs fp32 5.5 s); fixed the causal-LM **double-shift** label bug in the iGPU training kit (Windows package v0.1.2) |
+| `0.50.2.dev10` | **NTFS recovery toolkit** (`sector_carve`, `mft_recover`, CLI + GUI, selftests) and the **video E2E pipeline** (generation/training, LCM and motion diagnostics); AVX2 4-bit GEMV fixes (wrong FP4 codebook, lazy-init race, non-divisible blocksize); gt1030 probe scripts and docs |
+| `0.50.2.dev11` | **NT-store fast paths**: 4-bit dequant writes bypass the cache above 16 MiB (1.7–2.0× at 32–64 MB) and RMSNorm chooses NT by total footprint (x+res+out vs per-CCX L3); CPUID L3-sharing mask fix and the NT threshold wired to one macro; **byte-reproducible sdist** with an identity gate that audits the uploaded bytes (`--sdist`, 2-DLL policy, 20 adversarial cases) plus a docs gate requiring all six ZH/EN docs; repo regrouping into `scripts/*`; UTF-8 BOM strip; 5 reproducible CPU audio benches; 6 video perf fixes and 3 AR fixes |
 
 ## License and attribution
 

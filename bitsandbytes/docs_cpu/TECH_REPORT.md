@@ -827,3 +827,23 @@ naive 慢 107x，torch oneDNN/MKL 工业级墙），故底层加速到头，走�
   cpp/h 保持 **CRLF** 行尾（LF + GBK 注释会被 cl 吞行）。
 - 自检：`python -m bitsandbytes.gdn_cpu`（PASSED）；`scripts/misc/stress_opt.py`（210 组合 0 失败）；
   `selftest_cpu.c`（4/4）。
+
+---
+
+## 9. dev11 的 NT store 与发布身份
+
+**4-bit dequant 的 NT 门限**：纯写核按 `m*n*sizeof(T) > 16 MiB` 且输出 32 B 对齐启用
+`_mm256_stream_ps`，每行后 `_mm_sfence`。16 MiB 是线程无关的保守拐点（实测 8/16/32/64 MB
+均赢，4 MiB 会输）。本机 32 MB 输出 1.7–2.0×；阈值改由 `BNB_NT_THRESHOLD_MB` 单一来源控制，
+`BNB_NT_FORCE_OFF` 也作用于该核（A/B 控制臂）。
+
+**RMSNorm 的 NT 判据**：读写混合核不能用纯写阈值。判据改为总足迹
+`out_bytes * (res ? 3 : 2)` 与每 CCX L3（本机 4 MiB）比较，超过才 NT；实测 out=1 MiB
+（足迹 3 MiB）无益、out=2 MiB（足迹 6 MiB）约 1.8×。CPU 拓扑里 `l3_sharing` 取
+EDX[25:14]（12 位，掩码 `0xfff`），Windows 上由 `GetLogicalProcessorInformationEx` 覆盖。
+
+**发布身份**：sdist 的原始字节随 mtime/顺序变化，不能做等价判据。归一化（按名排序、
+mtime=0、uid/gid=0、GNU tar、gzip mtime=0）后，dev10 的可复现身份为
+gzip `b85cf8086d36fb94…`、**解压 tar `7d5d95a1e6eb86f8…`**；后者不依赖 zlib，跨机器用它。
+门禁审计的是**上传字节**：DLL 必须在 `<top>/bitsandbytes/`，kernel+vcomp 恰好各 1 个，
+身份只认 sha256（同一 403,968 B 尺寸下存在多个不同 kernel，按 size 校验会放过 stale 构建）。

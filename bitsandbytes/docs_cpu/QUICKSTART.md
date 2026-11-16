@@ -1021,3 +1021,17 @@ winfr D: E:\recovered /extensive /n *
 
 > **最后提醒**：任何数据恢复操作都存在不确定性。若数据价值较高，**请优先采用
 > 专业数据恢复服务，而非自行反复尝试**。
+
+---
+
+## 10. dev11 变更摘要（2026-11）
+
+- **NT store 快路径**：4-bit dequant 的大输出（≥16 MiB）与 RMSNorm（按 `x + res + out` 总足迹 vs
+  每 CCX L3）启用 non-temporal 写；本机 32/64 MB 输出实测 1.7–2.0×。
+- **发布可复现**：`tools/normalize_sdist.py` 归一化 + `tools/check_sdist_identity.py --sdist`
+  审计**上传字节**（2-DLL 策略；身份只认 sha256，禁止按 size/形状判定）；跨机器用归一化解压 tar 的 sha。
+- **门禁收紧**：`check_docs.py` 要求 ZH+EN 六份齐全；门禁 `--selftest` 16 例、CLI 对抗 20 例、
+  文档对抗 8 例，全部 fail closed。
+- **音频能力基准**：`scripts/bench/audio/` 5 个可复现脚本（ASR / Piper / Kokoro / 训练成本 / KWS 真训），
+  权重不入库、坏输入统一 `exit 2`。
+- **工程整理**：脚本归入 `scripts/*`、去掉 14 个文件的 UTF-8 BOM；视频 6 项性能修复、AR 3 项修复。
