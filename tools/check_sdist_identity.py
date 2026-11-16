@@ -231,6 +231,17 @@ def _selftest(tmp):
             True,
             False,
         ),
+        # LEAD 复核补充：同一尺寸下可能有两个不同 kernel（403,968 B：dev9 stale `3be2a7fe…`
+        # vs 构建产物 `1bbac05f…`；官方 dev10 才是 402,944 B `472675df…`）。
+        # 身份只能按 sha256，size/形状不参与判定 —— 本用例保证"同尺寸不同内容"必须 FAIL。
+        (
+            "kernel 同尺寸不同 sha（size 不参与身份）",
+            [(pkg + KERNEL_DLL, b"X" + k[1:]), (pkg + VCOMP_DLL, v)],
+            ksha,
+            vsha,
+            True,
+            False,
+        ),
         (
             "pyc 成员",
             [(pkg + KERNEL_DLL, k), (pkg + VCOMP_DLL, v), (pkg + "a.pyc", b"x")],
