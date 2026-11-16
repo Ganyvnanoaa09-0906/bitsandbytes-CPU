@@ -106,7 +106,10 @@ inline int enum_leaf(int leaf, size_t* l1d, size_t* l2, size_t* l3, unsigned* l3
         else if (level == 2 && type == 3 && *l2 == 0) { *l2 = size; found = 1; }
         else if (level == 3 && type == 3 && *l3 == 0) {
             *l3 = size;
-            if (l3_sharing) *l3_sharing = (unsigned)(((r[3] >> 14) & 0x3ff) + 1);
+            // EDX[25:14] 是 12 位（"共享该缓存的逻辑处理器数 - 1"）；掩码必须是 0xfff。
+            // 2026-11-16 审查修正：原实现用 0x3ff 只取到 [23:14]，在 Linux（无 OS API
+            // 覆盖路径）上会低估 sharing。Windows 侧该值随后被 os_l3_sharing() 覆盖。
+            if (l3_sharing) *l3_sharing = (unsigned)(((r[3] >> 14) & 0xfff) + 1);
             found = 1;
         }
     }
