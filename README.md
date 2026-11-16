@@ -1,6 +1,6 @@
 # bitsandbytes-CPU
 
-**CPU-forge**: train LLMs (and quantise/prepare image models) on machines with **no discrete
+**bitsandbytes-CPU**: train LLMs (and quantise/prepare image models) on machines with **no discrete
 GPU** — a CPU-backend fork of [bitsandbytes](https://github.com/bitsandbytes-foundation/bitsandbytes)
 plus a CPU training toolbox, measured benchmarks and a technical report.
 
@@ -10,7 +10,9 @@ The fast path is pure CPU (fp32 + oneDNN + fused bnb kernels); the experimental 
 pay off in narrow workloads (see the technical report for the measured pros and cons).
 
 **PyPI: [`bitsandbytes-cpu-fork`](https://pypi.org/project/bitsandbytes-cpu-fork/) · current
-release `0.50.2.dev9`.**
+release `0.50.2.dev11`.**
+
+> Release artifacts are built from tag `v0.50.2.dev11-cpu`; this default branch may lag behind the release tag.
 
 ## Install
 
@@ -133,6 +135,8 @@ bash arm64_selftest.sh
 | `0.50.2.dev7` | documentation release: READMEs rewritten for the CPU fork (install/wheels/platform matrix, features, measured performance, limitations, tests, full changelog) |
 | `0.50.2.dev8` | restored `AdamW4bit` (1.031 B of state/param, scalar kernel + torch fallback) + new `bitsandbytes.q3bit` API (blockwise 3-bit quant/dequant/fused GEMM, `QuantLinear3bit` frozen 3-bit base + LoRA, `convert_linears_3bit`) |
 | `0.50.2.dev9` | Windows native kernels (CI-built MSVC DLL now exports the 4-bit optimizer + 2/3-bit symbols), q3bit real-model validation on Qwen3-1.7B, iGPU causal-LM double-shift fix (package v0.1.2) |
+| `0.50.2.dev10` | NTFS recovery toolkit (`sector_carve` / `mft_recover`, CLI + GUI, selftests); video E2E pipeline (generation/training, LCM & motion diagnostics); AVX2 4-bit GEMV fixes (FP4 codebook, lazy-init race, non-divisible blocksize) |
+| `0.50.2.dev11` | **NT-store fast paths** (4-bit dequant above 16 MiB: 1.7–2.0× at 32–64 MB; RMSNorm by total footprint); **byte-reproducible sdist** + identity gate that audits the uploaded bytes (2-DLL policy, 20 adversarial cases) and a docs gate requiring all six ZH/EN docs; 5 reproducible CPU audio benches; 6 video perf fixes; 3 AR fixes; repo regrouping; BOM strip |
 
 ## Known limitations
 
@@ -140,7 +144,7 @@ bash arm64_selftest.sh
 - Windows DLL predates the experimental 2/3-bit kernels (those symbols are Linux-only for now).
 - On the manylinux_2_17 wheel the AVX-512 `.so` is single-threaded; use
   `BNB_CPU_DISABLE_AVX512=1` on AVX-512 machines to run the AVX2 OpenMP path.
-- 2/3-bit quantisation + fused dequant/GEMM are research prototypes (C kernels, no Python API).
+- 2/3-bit quantisation ships a Python API (`bitsandbytes.q3bit`) but remains a research prototype; the native 2/3-bit kernels are Linux-only for now.
 - The iGPU/DirectML path is experimental and workload-dependent; the pure-CPU path is the
   supported one.
 
