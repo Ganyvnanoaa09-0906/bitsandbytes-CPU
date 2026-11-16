@@ -1104,5 +1104,12 @@ winfr D: E:\recovered /extensive /n *
 - **Audio capability benches**: five reproducible scripts under `scripts/bench/audio/`
   (ASR / Piper / Kokoro / training cost / real KWS training); weights are never committed and
   bad input exits 2.
+- **Video E2E**: `scripts/video/` + `VIDEO_GUIDE.md`; six dev11 perf fixes (all six cores, no grad
+  checkpointing, flush denormals, training threads back to 5). 43 frames: 257.0 s vs torch 280.9 s
+  (1.09x, PSNR 71.95 dB).
+- **Recovery toolkit**: `bitsandbytes/tools/` (`sector_mirror` / `mft_recover` / `sector_carve`,
+  CLI + GUI + byte-for-byte selftests; decision tree in §9.2).
+- **Release tooling**: `tools/check_sdist_identity.py` (16 selftest + 20 CLI adversarial cases),
+  `tools/test_normalize_limits.py`, `tools/test_check_docs_adversarial.py`.
 - **Hygiene**: scripts regrouped under `scripts/*`, UTF-8 BOM stripped from 14 files;
   6 video perf fixes and 3 AR fixes.

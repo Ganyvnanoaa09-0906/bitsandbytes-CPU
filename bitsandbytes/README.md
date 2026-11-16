@@ -353,6 +353,28 @@ The long-form docs live in the repository (`bitsandbytes/docs_cpu/`, Chinese and
 - [`ISA_MATRIX.md`](https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/blob/HEAD/bitsandbytes/docs_cpu/ISA_MATRIX.md) — x86 AVX2/generic/AVX-512 + aarch64 test matrix
 - [`WHEEL_PLATFORM_NOTES.md`](https://github.com/Ganyvnanoaa09-0906/bitsandbytes-CPU/blob/HEAD/bitsandbytes/docs_cpu/WHEEL_PLATFORM_NOTES.md) — which wheel runs where, and why
 
+## Project extras (outside the library API)
+
+The repository also ships the tooling used to build and verify the releases; none of it is
+imported by the library:
+
+- **Audio capability benches** — `scripts/bench/audio/`: ASR `faster-whisper-small` int8
+  **5.8x realtime / WER 0**, Piper TTS **15-18x**, Kokoro-82M **1.9-2.1x**, training-cost tiers
+  (tiny CNN / 19M VITS-proxy / 185M Whisper-proxy) and a real KWS training demo. Weights are
+  never committed; bad input exits 2.
+- **Video E2E pipeline** — `scripts/video/` + `VIDEO_GUIDE.md`: stage-wise generation/training,
+  motion diagnostics, and the six dev11 perf fixes (all six cores, no grad checkpointing,
+  flush denormals, 5-thread training default).
+- **NTFS recovery toolkit** — `bitsandbytes/tools/`: `sector_mirror` (bad-sector mirror with
+  resume), `mft_recover` (deleted files straight from `$MFT`), `sector_carve` (PNG/JPEG/GIF/
+  ZIP incl. docx-xlsx-pptx/PDF/MP4); each has a CLI + GUI and a byte-for-byte selftest.
+- **Release engineering** — `tools/`: `normalize_sdist.py` + `check_sdist_identity.py` audit the
+  **uploaded bytes** (2-DLL policy, sha256-only; 16 selftest + 20 adversarial cases), plus the
+  normalize-limit and docs-gate suites. dev11's sdist was rebuilt twice from `git archive` and
+  matched on the normalized tar sha.
+- **AR experiments** — `gt1030/ar_*`, `scripts/lib/small_image_model_v2.py` (documented in the
+  devlog; not part of the library API).
+
 ## Changelog
 
 | Version | Changes |

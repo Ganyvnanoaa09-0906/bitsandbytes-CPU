@@ -97,10 +97,13 @@ The package README covers the full API, platform matrix, limitations and changel
 | `bitsandbytes/` | the CPU fork (import name `bitsandbytes`): CPU kernels, 8/4-bit optimizers, fused GDN, `gemm_8bit`, 4/8-bit layers, `torch_cpu_kit`, `disk_balancer`, `efst`, CLI, docs in `docs_cpu/` |
 | `scripts/bench/bench_cpu.py`, `scripts/bench/bench_optimizer.py`, `scripts/profile/profile_real_step.py`, `q3bit_*.py`, `moe_*.py` | reproducible benchmarks: memory/bandwidth/GEMM, 8-bit optimizer bandwidth, real-model step profiles, 2/3-bit research, MoE training/inference baselines |
 | `scripts/lib/video_e2e.py` | stage-wise video pipeline (generate -> temporal metrics -> FSRCNN post -> gif/mp4, one subprocess per stage so two big models are never in one process); `VIDEO_GUIDE.md` §7 has the commands, the PASS rules and a measured motion diagnosis |
+| `scripts/bench/audio/` | reproducible CPU audio benchmarks (5 scripts): ASR `faster-whisper-small` int8 **5.8× realtime / WER 0**, Piper TTS **15–18×**, Kokoro-82M **1.9–2.1×**, training-cost tiers (tiny CNN / 19M VITS-proxy / 185M Whisper-proxy) and a real KWS training demo; weights are never committed and bad input exits 2 (`scripts/bench/audio/README.md`) |
 | `bitsandbytes/tools/` | disaster toolkit for dying disks: `sector_mirror` (bad-sector mirror with resume), `mft_recover` (deleted files straight from `$MFT`: original name, exact size and directory tree) and `sector_carve` (signature carving: PNG/JPEG/GIF/ZIP incl. docx-xlsx-pptx/PDF/MP4) — each with a CLI and a double-click GUI; decision tree and usage in `docs_cpu/QUICKSTART.md` §9.2 |
 | `bitsandbytes/tools/*_selftest.py` | what makes those tools trustworthy: real NTFS volumes built through WSL, four corruption variants, and an end-to-end "MFT alive vs MFT destroyed" pipeline, all scored byte-for-byte instead of "some file came out" |
+| `tools/` (release engineering) | used to build and verify dev11: `normalize_sdist.py` (deterministic normalization: mtime/uid/gid/order/pax; **mode is a known limit**) + `check_sdist_identity.py` (audits the **uploaded bytes**: DLLs under `<top>/bitsandbytes/`, 2-DLL policy, sha256-only, 16 selftest + 20 CLI adversarial cases), plus `test_normalize_limits.py` and `test_check_docs_adversarial.py`; two independent clean-tree builds matched on the normalized tar sha |
 | `bench_results/` | archived numbers and conclusions (including negative results) |
 | `gt1030/` | experimental iGPU training (OpenCL/CLBlast) + Windows one-click package build |
+| `gt1030/ar_*`, `scripts/lib/small_image_model_v2.py` | AR image-model experiments (no-BOS sampling, repetition penalty, teacher forcing vs roll-out); documented in the devlog, not part of the library API |
 | `docs_cpu/` (inside `bitsandbytes/`) | QUICKSTART, API reference, technical guide, EPYC validation, ISA matrix, wheel platform notes — Chinese and English |
 | `D:\work\research\CPU_FORGE_TECHNICAL_REPORT.md` | the full technical report (outside this repo) |
 
@@ -113,6 +116,13 @@ bash build_linux.sh --selftest
 python scripts/test/test_efst_regressions.py          # EFST: nested blocks, 3-D tensor experts, routing usage
 python scripts/test/test_q3bit_kernels.py             # 2/3-bit pack/unpack, error bounds, AVX2 kernel exactness
 python scripts/test/test_concurrency_plan.py          # planner / memory estimate / tune_threads / launcher
+python scripts/bench/audio/train_bench.py --smoke        # audio training-cost contract (no weights)
+python scripts/bench/audio/asr_bench.py --smoke --model <faster-whisper-dir> --audio-dir <wav-dir>
+# release gates (identity / normalization / docs)
+python tools/check_sdist_identity.py --selftest          # 16/16
+python tools/test_sdist_identity_adversarial.py          # 20/20
+python tools/test_normalize_limits.py                    # normalization boundary
+python tools/test_check_docs_adversarial.py              # 8/8
 python scripts/test/test_disk_balancer_safety.py      # data-safety rules for the disk balancer
 # disaster tools (the NTFS ones build real volumes via WSL + ntfs-3g):
 python bitsandbytes/tools/mft_selftest.py               # 7 scenarios, sha256 per file
