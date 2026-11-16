@@ -1042,3 +1042,13 @@ winfr D: E:\recovered /extensive /n *
 - **发布工具**：`tools/check_sdist_identity.py`（`--selftest` 16 例 + 20 CLI 对抗）、
   `tools/test_normalize_limits.py`、`tools/test_check_docs_adversarial.py`。
 - **工程整理**：脚本归入 `scripts/*`、去掉 14 个文件的 UTF-8 BOM；视频 6 项性能修复、AR 3 项修复。
+
+---
+
+## 11. dev12 变更摘要（2026-11）
+
+- **文档与 PyPI 描述同步**：README / 包描述写入视频**已验证**结论（43 帧 257.0 vs 280.9 s、逐帧
+  PSNR **73.2 dB**；18 帧对照 run 为 71.95 dB）与训练**仅环路验证**的边界。
+- **4-bit CPU 路径**：9 项可用性审计修复（未量化层给出可操作的报错、prequantized/checkpoint 往返、
+  OMP_NUM_THREADS 与 torch 线程的关系）。
+- **实验归档**：`exp/ue8m0/` 记录 MX power-of-two 块缩放的负结果（CPU 上不划算）。

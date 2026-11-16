@@ -10,9 +10,9 @@ The fast path is pure CPU (fp32 + oneDNN + fused bnb kernels); the experimental 
 pay off in narrow workloads (see the technical report for the measured pros and cons).
 
 **PyPI: [`bitsandbytes-cpu-fork`](https://pypi.org/project/bitsandbytes-cpu-fork/) · current
-release `0.50.2.dev11`.**
+release `0.50.2.dev12`.**
 
-> Release artifacts are built from tag `v0.50.2.dev11-cpu`; this default branch may lag behind the release tag.
+> Release artifacts are built from tag `v0.50.2.dev12-cpu`; this default branch may lag behind the release tag.
 
 ## Highlights
 
@@ -185,6 +185,7 @@ bash arm64_selftest.sh
 | `0.50.2.dev8` | restored `AdamW4bit` (1.031 B of state/param, scalar kernel + torch fallback) + new `bitsandbytes.q3bit` API (blockwise 3-bit quant/dequant/fused GEMM, `QuantLinear3bit` frozen 3-bit base + LoRA, `convert_linears_3bit`) |
 | `0.50.2.dev9` | Windows native kernels (CI-built MSVC DLL now exports the 4-bit optimizer + 2/3-bit symbols), q3bit real-model validation on Qwen3-1.7B, iGPU causal-LM double-shift fix (package v0.1.2) |
 | `0.50.2.dev10` | NTFS recovery toolkit (`sector_carve` / `mft_recover`, CLI + GUI, selftests); video E2E pipeline (generation/training, LCM & motion diagnostics); AVX2 4-bit GEMV fixes (FP4 codebook, lazy-init race, non-divisible blocksize) |
+| `0.50.2.dev12` | **description sync + audit fixes**: PyPI/README now carry the verified video results (43 frames 257.0 vs 280.9 s, per-frame PSNR 73.2 dB; training loop-only); 4-bit CPU usability audit fixes (9 issues); `exp/ue8m0/` negative-result archive |
 | `0.50.2.dev11` | **NT-store fast paths** (4-bit dequant above 16 MiB: 1.7–2.0× at 32–64 MB; RMSNorm by total footprint); **byte-reproducible sdist** + identity gate that audits the uploaded bytes (2-DLL policy, 20 adversarial cases) and a docs gate requiring all six ZH/EN docs; 5 reproducible CPU audio benches; 6 video perf fixes; 3 AR fixes; repo regrouping; BOM strip |
 
 ## Known limitations

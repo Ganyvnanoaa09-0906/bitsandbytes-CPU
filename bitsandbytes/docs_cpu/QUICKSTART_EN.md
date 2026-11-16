@@ -1113,3 +1113,14 @@ winfr D: E:\recovered /extensive /n *
   `tools/test_normalize_limits.py`, `tools/test_check_docs_adversarial.py`.
 - **Hygiene**: scripts regrouped under `scripts/*`, UTF-8 BOM stripped from 14 files;
   6 video perf fixes and 3 AR fixes.
+
+---
+
+## 11. What changed in dev12 (2026-11)
+
+- **Description sync**: the README/package description now carry the **verified** video results
+  (43 frames 257.0 vs 280.9 s, per-frame PSNR **73.2 dB**; the 18-frame control run is 71.95 dB)
+  and the boundary that training is **loop-verified only**.
+- **4-bit CPU path**: nine usability-audit fixes (actionable errors for never-quantized layers,
+  prequantized/checkpoint round-trips, OMP_NUM_THREADS vs torch threads).
+- **Experiment archive**: `exp/ue8m0/` records the negative result for MX power-of-two block scales.
