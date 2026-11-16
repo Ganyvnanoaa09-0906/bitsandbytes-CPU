@@ -546,10 +546,18 @@ static void avx2_dequant_4bit(
     // 那时瓶颈在 LUT 位平面解码，不在存储通路；现在 kernel 已到 8.0 GB/s，是写受限。
     // 注意：_mm256_stream_ps 要求 32 字节对齐；n 为 8 的倍数（调用点保证）=> 行首对齐，
     //       只要基址对齐即可，故这里额外检查基址。仅对 4 字节输出启用（bf16/fp16 未测）。
-    const bool use_nt = (sizeof(T) == sizeof(float))
-        && ((reinterpret_cast<uintptr_t>(out) & 31) == 0)
+    // 2026-11-16 审查修正：阈值改走 bnb_nt_threshold_bytes()，与其它纯写核共用
+    // 单一来源（BNB_NT_THRESHOLD_MB 可覆盖），否则清单里的六份 -D 测试件对本核无效、
+    // dequant 的 A/B 没有控制臂。BNB_NT_FORCE_OFF 同样作用于本核。
+    const bool nt_aligned = (sizeof(T) == sizeof(float))
+        && ((reinterpret_cast<uintptr_t>(out) & 31) == 0);
+#if defined(BNB_NT_FORCE_OFF)
+    const bool use_nt = false;   // 仅供 A/B：彻底关闭本核 NT，作为控制臂
+#else
+    const bool use_nt = nt_aligned
         && (static_cast<unsigned long long>(m) * static_cast<unsigned long long>(n) * sizeof(T)
-            > (16ull << 20));
+            > (unsigned long long)bnb_nt_threshold_bytes());
+#endif
 
     BNB_OMP_PARALLEL_FOR
     for (long long row = 0; row < m; ++row) {

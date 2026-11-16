@@ -14,6 +14,7 @@ reader would trip over:
 Usage:
     python check_docs.py [docs_dir]
 """
+
 import io
 import os
 import re
@@ -41,9 +42,23 @@ def section_ids(path):
 def main():
     d = sys.argv[1] if len(sys.argv) > 1 else "."
     os.chdir(d)
-    names = [n for n in ZH + EN if os.path.isfile(n)]
+    expected = ZH + EN
+    names = [n for n in expected if os.path.isfile(n)]
+    missing = [n for n in expected if not os.path.isfile(n)]
     print(f"docs dir: {os.path.abspath('.')}")
-    print(f"files   : {len(names)}")
+    print(f"files   : {len(names)}/{len(expected)}")
+    if not names:
+        # 2026-11-16 审查修正：空扫描不能算 PASS。之前从错误目录跑会打印
+        # "PASS: all structural checks clean"，门禁等于失效（Gate-2 第 6 项的假通过来源）。
+        print("FAIL: 没有找到任何文档文件（ZH+EN 均不存在）；空扫描不算 PASS")
+        print("      （请在 bitsandbytes/ 目录下运行，或显式传入文档目录）")
+        return 1
+    if missing:
+        # 2026-11-16 对抗测试修正：文档集不完整时此前仍 PASS（删掉 EN 文档即可绕过
+        # Gate-2 第 6 项）。发布要求 ZH+EN 成对齐全，缺一即 FAIL。
+        print(f"FAIL: 文档集不完整，缺 {len(missing)} 份: {missing}")
+        print("      发布要求 ZH+EN 成对齐全（共 6 份），不接受只交中文或只交英文")
+        return 1
     fails = []
 
     # A heading number is a dotted section id, or a bare integer followed by a
@@ -95,8 +110,12 @@ def main():
         if n not in names:
             continue
         for i, L in enumerate(io.open(n, encoding="utf-8").read().split("\n"), 1):
-            if re.search(r"(?<!_EN)\b(?:TECHNICAL_GUIDE|TECH_REPORT|QUICKSTART)\.md", L) \
-                    and "_EN.md" not in L:
+            if (
+                re.search(
+                    r"(?<!_EN)\b(?:TECHNICAL_GUIDE|TECH_REPORT|QUICKSTART)\.md", L
+                )
+                and "_EN.md" not in L
+            ):
                 print(f"  BAD {n}:{i}: {L.strip()[:90]}")
                 bad += 1
                 fails.append(f"{n}:{i} points at a Chinese filename")
@@ -114,7 +133,9 @@ def main():
             if lines[i].lstrip().startswith("|"):
                 blocks += 1
                 # a well-formed block has a separator row as its second line
-                if i + 1 >= len(lines) or not re.match(r"^\s*\|[\s:|-]+\|\s*$", lines[i + 1]):
+                if i + 1 >= len(lines) or not re.match(
+                    r"^\s*\|[\s:|-]+\|\s*$", lines[i + 1]
+                ):
                     orphans += 1
                 while i < len(lines) and lines[i].lstrip().startswith("|"):
                     i += 1
@@ -133,7 +154,9 @@ def main():
             continue
         a, b = section_ids(zh), section_ids(en)
         ok = a == b
-        print(f"  {zh:22s} {len(a):2d} vs {en:26s} {len(b):2d}  {'match' if ok else 'MISMATCH'}")
+        print(
+            f"  {zh:22s} {len(a):2d} vs {en:26s} {len(b):2d}  {'match' if ok else 'MISMATCH'}"
+        )
         if not ok:
             fails.append(f"{zh} / {en}: section numbering differs")
             only_a = [x for x in a if x not in b]
