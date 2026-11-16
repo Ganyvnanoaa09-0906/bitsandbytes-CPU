@@ -14,6 +14,7 @@
 输出 JSON（schema v1）：加载耗时、每句合成耗时、音频时长、RTF、字符/秒。
 RTF = 音频时长 / 墙钟耗时（>1 表示快于实时）。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -26,23 +27,31 @@ import time
 SCHEMA = 1
 
 SHORT = "Hello there. This is a test of the Piper text to speech system."
-LONG = ("Artificial intelligence models are getting smaller and faster every year. "
-        "On a modern laptop without a graphics card, some of these models can still run "
-        "in real time. In this test we measure how much audio a small speech synthesis "
-        "model can generate in one second of wall clock time.")
+LONG = (
+    "Artificial intelligence models are getting smaller and faster every year. "
+    "On a modern laptop without a graphics card, some of these models can still run "
+    "in real time. In this test we measure how much audio a small speech synthesis "
+    "model can generate in one second of wall clock time."
+)
 
 
 def env_fingerprint(threads: int) -> dict:
-    fp = {"python": sys.version.split()[0], "platform": platform.platform(),
-          "machine": platform.machine(), "threads": threads}
+    fp = {
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "threads": threads,
+    }
     try:
         import psutil
+
         fp["cpu_count"] = psutil.cpu_count(logical=True)
         fp["rss_gb"] = round(psutil.Process().memory_info().rss / 1e9, 3)
     except Exception:
         pass
     try:
         import piper
+
         fp["piper"] = getattr(piper, "__version__", "?")
     except Exception:
         pass
@@ -84,29 +93,46 @@ def main() -> int:
                 voice.synthesize_wav(text, wf)
             synth_s = time.time() - t1
             import wave
+
             with wave.open(wav, "rb") as wf:
                 audio_s = wf.getnframes() / float(wf.getframerate())
         else:
             chunks = list(voice.synthesize(text))
             synth_s = time.time() - t1
-            audio_s = sum(len(c.audio_int16_bytes) for c in chunks) / 2.0 / float(
-                getattr(chunks[0], "sample_rate", 22050)) if chunks else 0.0
-        row = {"label": label, "chars": len(text), "audio_s": round(audio_s, 3),
-               "wall_s": round(synth_s, 3),
-               "rtf": round(audio_s / synth_s, 2) if synth_s > 0 else None,
-               "chars_per_s": round(len(text) / synth_s, 1) if synth_s > 0 else None,
-               "wav": wav}
+            audio_s = (
+                sum(len(c.audio_int16_bytes) for c in chunks)
+                / 2.0
+                / float(getattr(chunks[0], "sample_rate", 22050))
+                if chunks
+                else 0.0
+            )
+        row = {
+            "label": label,
+            "chars": len(text),
+            "audio_s": round(audio_s, 3),
+            "wall_s": round(synth_s, 3),
+            "rtf": round(audio_s / synth_s, 2) if synth_s > 0 else None,
+            "chars_per_s": round(len(text) / synth_s, 1) if synth_s > 0 else None,
+            "wav": wav,
+        }
         rows.append(row)
-        print(f"  {label}: {len(text)} 字符 -> {audio_s:.2f}s 音频 / {synth_s:.3f}s 墙钟 "
-              f"RTF={row['rtf']}", flush=True)
+        print(
+            f"  {label}: {len(text)} 字符 -> {audio_s:.2f}s 音频 / {synth_s:.3f}s 墙钟 "
+            f"RTF={row['rtf']}",
+            flush=True,
+        )
 
     rtfs = [r["rtf"] for r in rows if r["rtf"]]
-    rep = {"schema_version": SCHEMA, "kind": "tts_piper_bench",
-           "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-           "env": env_fingerprint(a.threads),
-           "args": {"voice": os.path.basename(a.voice), "smoke": a.smoke},
-           "load_s": round(load_s, 3), "results": rows,
-           "summary": {"mean_rtf": round(sum(rtfs) / len(rtfs), 2) if rtfs else None}}
+    rep = {
+        "schema_version": SCHEMA,
+        "kind": "tts_piper_bench",
+        "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "env": env_fingerprint(a.threads),
+        "args": {"voice": os.path.basename(a.voice), "smoke": a.smoke},
+        "load_s": round(load_s, 3),
+        "results": rows,
+        "summary": {"mean_rtf": round(sum(rtfs) / len(rtfs), 2) if rtfs else None},
+    }
     print("  " + json.dumps(rep["summary"], ensure_ascii=False))
     if a.out:
         os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)

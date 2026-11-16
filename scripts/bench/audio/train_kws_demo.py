@@ -14,6 +14,7 @@
 
 输出 JSON（schema v1）：参数量、每 epoch loss/acc、测试准确率、混淆矩阵。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -23,7 +24,6 @@ import platform
 import random
 import sys
 import time
-import wave
 
 SCHEMA = 1
 SR = 16000
@@ -35,16 +35,22 @@ FILLERS = ["maybe", "hello", "seven", "banana", "purple", "river"]
 
 
 def env_fingerprint(threads: int) -> dict:
-    fp = {"python": sys.version.split()[0], "platform": platform.platform(),
-          "machine": platform.machine(), "threads": threads}
+    fp = {
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "threads": threads,
+    }
     try:
         import psutil
+
         fp["cpu_count"] = psutil.cpu_count(logical=True)
         fp["rss_gb"] = round(psutil.Process().memory_info().rss / 1e9, 3)
     except Exception:
         pass
     try:
         import torch
+
         fp["torch"] = torch.__version__
     except Exception:
         pass
@@ -56,7 +62,9 @@ def main() -> int:
     ap.add_argument("--voice", required=True, help="Piper *.onnx 语音包")
     ap.add_argument("--out", default="", help="JSON 输出路径")
     ap.add_argument("--epochs", type=int, default=20)
-    ap.add_argument("--per-word", type=int, default=40, help="每类合成条数（训练+测试）")
+    ap.add_argument(
+        "--per-word", type=int, default=40, help="每类合成条数（训练+测试）"
+    )
     ap.add_argument("--threads", type=int, default=6)
     ap.add_argument("--smoke", action="store_true", help="每类 4 条 + 1 epoch")
     a = ap.parse_args()
@@ -68,7 +76,9 @@ def main() -> int:
         import torchaudio
         from piper import PiperVoice
     except Exception as e:
-        print(f"[skip] 缺少依赖（piper-tts/torch/torchaudio/numpy）: {e}", file=sys.stderr)
+        print(
+            f"[skip] 缺少依赖（piper-tts/torch/torchaudio/numpy）: {e}", file=sys.stderr
+        )
         return 2
     if not os.path.exists(a.voice):
         print(f"[skip] 语音包不存在: {a.voice}", file=sys.stderr)
@@ -82,8 +92,9 @@ def main() -> int:
     per_word = 4 if a.smoke else max(8, a.per_word)
     epochs = 1 if a.smoke else max(1, a.epochs)
     voice = PiperVoice.load(a.voice)
-    mel = torchaudio.transforms.MelSpectrogram(sample_rate=SR, n_mels=N_MELS, n_fft=400,
-                                              hop_length=max(1, SR // N_FRAMES))
+    mel = torchaudio.transforms.MelSpectrogram(
+        sample_rate=SR, n_mels=N_MELS, n_fft=400, hop_length=max(1, SR // N_FRAMES)
+    )
 
     def synth(text: str) -> np.ndarray:
         chunks = list(voice.synthesize(text))
@@ -131,10 +142,18 @@ def main() -> int:
         def __init__(self):
             super().__init__()
             self.net = nn.Sequential(
-                nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
-                nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
-                nn.Conv2d(32, 48, 3, padding=1), nn.ReLU(), nn.AdaptiveAvgPool2d(1),
-                nn.Flatten(), nn.Linear(48, len(WORDS)))
+                nn.Conv2d(1, 16, 3, padding=1),
+                nn.ReLU(),
+                nn.MaxPool2d(2),
+                nn.Conv2d(16, 32, 3, padding=1),
+                nn.ReLU(),
+                nn.MaxPool2d(2),
+                nn.Conv2d(32, 48, 3, padding=1),
+                nn.ReLU(),
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten(),
+                nn.Linear(48, len(WORDS)),
+            )
 
         def forward(self, x):
             return self.net(x)
@@ -151,23 +170,32 @@ def main() -> int:
         tot = corr = 0
         lsum = 0.0
         for s in range(0, len(perm), 16):
-            b = tr[perm[s:s + 16]]
+            b = tr[perm[s : s + 16]]
             opt.zero_grad()
             out = model(X[b])
             loss = lossf(out, Y[b])
             loss.backward()
             opt.step()
-            lsum += float(loss) * len(b)
+            lsum += float(loss.detach()) * len(b)
             corr += int((out.argmax(1) == Y[b]).sum())
             tot += len(b)
         model.eval()
         with torch.no_grad():
             pred = model(X[te]).argmax(1)
             acc = float((pred == Y[te]).float().mean())
-        hist.append({"epoch": ep + 1, "loss": round(lsum / max(1, tot), 4),
-                     "train_acc": round(corr / max(1, tot), 4), "test_acc": round(acc, 4)})
-        print(f"  epoch {ep+1:2d}: loss {lsum/max(1,tot):.3f}  "
-              f"train {corr/max(1,tot):.3f}  test {acc:.3f}", flush=True)
+        hist.append(
+            {
+                "epoch": ep + 1,
+                "loss": round(lsum / max(1, tot), 4),
+                "train_acc": round(corr / max(1, tot), 4),
+                "test_acc": round(acc, 4),
+            }
+        )
+        print(
+            f"  epoch {ep + 1:2d}: loss {lsum / max(1, tot):.3f}  "
+            f"train {corr / max(1, tot):.3f}  test {acc:.3f}",
+            flush=True,
+        )
     train_s = time.time() - t0
 
     conf = [[0] * len(WORDS) for _ in WORDS]
@@ -176,19 +204,41 @@ def main() -> int:
     for t_, p_ in zip(Y[te].tolist(), pred.tolist()):
         conf[t_][p_] += 1
 
-    rep = {"schema_version": SCHEMA, "kind": "train_kws_demo",
-           "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-           "env": env_fingerprint(a.threads),
-           "args": {"voice": os.path.basename(a.voice), "epochs": epochs,
-                    "per_word": per_word, "n_samples": int(n), "smoke": a.smoke},
-           "params": int(npar),
-           "synth_s": round(syn_s, 2), "train_s": round(train_s, 2),
-           "history": hist,
-           "test_acc": hist[-1]["test_acc"],
-           "confusion": {"labels": WORDS, "matrix": conf},
-           "notes": ["数据为 TTS 合成 + 增广，仅用于验证 CPU 训练链路，不代表真实 KWS 精度"]}
-    print(f"  参数量 {npar} | 合成 {syn_s:.1f}s | 训练 {train_s:.1f}s | "
-          f"测试 acc {hist[-1]['test_acc']:.3f}")
+    rep = {
+        "schema_version": SCHEMA,
+        "kind": "train_kws_demo",
+        "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "env": env_fingerprint(a.threads),
+        "args": {
+            "voice": os.path.basename(a.voice),
+            "epochs": epochs,
+            "per_word": per_word,
+            "n_samples": int(n),
+            "smoke": a.smoke,
+        },
+        "params": int(npar),
+        "synth_s": round(syn_s, 2),
+        "train_s": round(train_s, 2),
+        # 与 README 的 schema v1 对齐：逐 epoch 记录放 results，汇总放 summary；
+        # history 保留为向后兼容别名
+        "results": hist,
+        "summary": {
+            "test_acc": hist[-1]["test_acc"],
+            "params": int(npar),
+            "epochs": epochs,
+            "n_samples": int(n),
+        },
+        "history": hist,
+        "test_acc": hist[-1]["test_acc"],
+        "confusion": {"labels": WORDS, "matrix": conf},
+        "notes": [
+            "数据为 TTS 合成 + 增广，仅用于验证 CPU 训练链路，不代表真实 KWS 精度"
+        ],
+    }
+    print(
+        f"  参数量 {npar} | 合成 {syn_s:.1f}s | 训练 {train_s:.1f}s | "
+        f"测试 acc {hist[-1]['test_acc']:.3f}"
+    )
     if a.out:
         os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
         with open(a.out, "w", encoding="utf-8") as f:

@@ -13,6 +13,7 @@
 
 输出：JSON（schema v1）+ 每个文件的转写文本。RTF = 音频时长 / 墙钟耗时（>1 表示快于实时）。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -36,12 +37,14 @@ def env_fingerprint(threads: int) -> dict:
     }
     try:
         import psutil
+
         fp["cpu_count"] = psutil.cpu_count(logical=True)
         fp["rss_gb"] = round(psutil.Process().memory_info().rss / 1e9, 3)
     except Exception:
         pass
     try:
         import faster_whisper
+
         fp["faster_whisper"] = getattr(faster_whisper, "__version__", "?")
     except Exception:
         pass
@@ -72,8 +75,12 @@ def main() -> int:
     ap.add_argument("--model", required=True, help="faster-whisper 模型目录或名字")
     ap.add_argument("--audio-dir", required=True, help="含 *.wav 的目录")
     ap.add_argument("--out", default="", help="JSON 输出路径（空=只打印）")
-    ap.add_argument("--refs", default="", help="可选：{文件名: 参考文本} 的 JSON，用于算 WER")
-    ap.add_argument("--compute-type", default="int8", choices=["int8", "int8_float32", "float32"])
+    ap.add_argument(
+        "--refs", default="", help="可选：{文件名: 参考文本} 的 JSON，用于算 WER"
+    )
+    ap.add_argument(
+        "--compute-type", default="int8", choices=["int8", "int8_float32", "float32"]
+    )
     ap.add_argument("--threads", type=int, default=6)
     ap.add_argument("--language", default="en")
     ap.add_argument("--smoke", action="store_true", help="只跑第一个文件（禁用大文件）")
@@ -83,6 +90,13 @@ def main() -> int:
         from faster_whisper import WhisperModel
     except Exception as e:
         print(f"[skip] 缺少依赖 faster-whisper: {e}", file=sys.stderr)
+        return 2
+    if not os.path.isdir(a.model):
+        # 只接受本地 CTranslate2 目录：传模型名会让 faster-whisper 联网下载，违背"权重不入库/不下载"约定
+        print(
+            f"[skip] 模型目录不存在（本脚本只接受本地目录，避免联网下载）: {a.model}",
+            file=sys.stderr,
+        )
         return 2
     if not os.path.isdir(a.audio_dir):
         print(f"[skip] 音频目录不存在: {a.audio_dir}", file=sys.stderr)
@@ -101,8 +115,9 @@ def main() -> int:
             refs = json.load(f)
 
     t0 = time.time()
-    model = WhisperModel(a.model, device="cpu", compute_type=a.compute_type,
-                         cpu_threads=a.threads)
+    model = WhisperModel(
+        a.model, device="cpu", compute_type=a.compute_type, cpu_threads=a.threads
+    )
     load_s = time.time() - t0
 
     rows = []
@@ -113,13 +128,20 @@ def main() -> int:
         text = " ".join(s.text.strip() for s in segments).strip()
         dt = time.time() - t1
         dur = float(getattr(info, "duration", 0.0)) or 0.0
-        row = {"file": w, "audio_s": round(dur, 3), "wall_s": round(dt, 3),
-               "rtf": round(dur / dt, 3) if dt > 0 and dur > 0 else None, "text": text}
+        row = {
+            "file": w,
+            "audio_s": round(dur, 3),
+            "wall_s": round(dt, 3),
+            "rtf": round(dur / dt, 3) if dt > 0 and dur > 0 else None,
+            "text": text,
+        }
         if w in refs:
             row["wer"] = round(wer(refs[w], text), 4)
         rows.append(row)
-        print(f"  {w}: {dur:.2f}s 音频 / {dt:.2f}s 墙钟  RTF={row['rtf']}  {text[:60]!r}",
-              flush=True)
+        print(
+            f"  {w}: {dur:.2f}s 音频 / {dt:.2f}s 墙钟  RTF={row['rtf']}  {text[:60]!r}",
+            flush=True,
+        )
 
     rtf = [r["rtf"] for r in rows if r["rtf"]]
     rep = {
@@ -127,14 +149,25 @@ def main() -> int:
         "kind": "asr_bench",
         "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "env": env_fingerprint(a.threads),
-        "args": {"model": os.path.basename(a.model.rstrip("\\/")), "compute_type": a.compute_type,
-                 "language": a.language, "smoke": a.smoke, "n_files": len(rows)},
+        "args": {
+            "model": os.path.basename(a.model.rstrip("\\/")),
+            "compute_type": a.compute_type,
+            "language": a.language,
+            "smoke": a.smoke,
+            "n_files": len(rows),
+        },
         "load_s": round(load_s, 3),
         "results": rows,
-        "summary": {"mean_rtf": round(sum(rtf) / len(rtf), 3) if rtf else None,
-                    "mean_wer": round(sum(r.get("wer", 0) for r in rows if "wer" in r)
-                                      / max(1, sum(1 for r in rows if "wer" in r)), 4)
-                    if any("wer" in r for r in rows) else None},
+        "summary": {
+            "mean_rtf": round(sum(rtf) / len(rtf), 3) if rtf else None,
+            "mean_wer": round(
+                sum(r.get("wer", 0) for r in rows if "wer" in r)
+                / max(1, sum(1 for r in rows if "wer" in r)),
+                4,
+            )
+            if any("wer" in r for r in rows)
+            else None,
+        },
     }
     print("  " + json.dumps(rep["summary"], ensure_ascii=False))
     if a.out:

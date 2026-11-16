@@ -66,6 +66,10 @@ python scripts/bench/audio/train_kws_demo.py --smoke \
 字段约定：时间一律 ISO8601（带时区）；`rtf` = 音频时长 / 墙钟耗时（>1 快于实时）；
 显存/内存统一 GB；所有数值四舍五入到固定小数位，便于 diff。
 
+补充约定：`results` 记录逐样本 / 逐档规模 / 逐 epoch 的明细（`train_kws_demo` 另保留
+`history` 作为向后兼容别名）；`summary` 汇总关键指标。**缺依赖或权重一律 exit 2 + stderr 提示**；
+`asr_bench.py` 只接受本地 CTranslate2 目录，传模型名会联网下载，会被直接拒绝。
+
 ## 各脚本依赖
 
 | 脚本 | 依赖 |
@@ -88,5 +92,8 @@ python scripts/bench/audio/train_kws_demo.py --smoke \
 ## 约定
 
 - 只读脚本，不写仓库内文件（`--out` 需显式给出，默认只打印）。
-- 不下载权重；`kokoro` 用 `KModel(repo_id=None, model=..., config=...)` 完全离线加载。
+- 不下载权重；`kokoro` 用 `KModel(repo_id=None, model=..., config=...)` 完全离线加载
+  （加载时打印的 repo_id 默认警告是上游行为，`HF_HUB_OFFLINE=1` 实测可离线跑通）。
 - 所有脚本 `--smoke` 都保证 ≤1 分钟，可在 CI/人工验收里跑。
+- `--threads` 对 torch 脚本生效（`torch.set_num_threads`）；Piper 走 onnxruntime 的默认线程策略，
+  该参数只记录进环境指纹，不强制。
