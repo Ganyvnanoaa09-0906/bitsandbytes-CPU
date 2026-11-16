@@ -14,6 +14,22 @@ release `0.50.2.dev11`.**
 
 > Release artifacts are built from tag `v0.50.2.dev11-cpu`; this default branch may lag behind the release tag.
 
+## Highlights
+
+- **CPU-only training** — 8-bit/4-bit optimizers, 4-bit layers, fused GDN / `gemm_8bit` /
+  RMSNorm, EFST, disk balancer and the concurrency planner; no CUDA, no dGPU.
+- **NT-store fast paths (dev11)** — large 4-bit dequant outputs (>=16 MiB) write around the
+  cache (1.7-2.0x at 32-64 MB), and RMSNorm picks NT by total footprint.
+- **Video on CPU, inference verified** — LCM-LoRA cuts sampling 3.7-4.4x; ONNX Runtime fp32
+  UNet + async VAE generates **43 frames in 257.0 s vs 280.9 s torch (1.09x)** with per-frame
+  PSNR **73.2 dB** vs torch fp32; 32 frames 256->1024p via SR in 5.8 min.
+- **Video training, experimental** — AnimateDiff 5D LoRA trains end to end (~11.2 s/step,
+  5.9 GB, checkpoints + samples), but **learned motion is not demonstrated**
+  (`has_global_motion=False` in all seven demo runs); temporal-only LoRA measured harmful,
+  spatial rank4/151 steps is the usable recipe so far.
+- **Reproducible releases** — normalized sdist is byte-identical across two clean builds, and
+  the identity gate audits the uploaded bytes (2-DLL policy, sha256-only).
+
 ## Install
 
 `torch` is deliberately not a dependency (the PyPI `torch` name is the CUDA build). Install the
