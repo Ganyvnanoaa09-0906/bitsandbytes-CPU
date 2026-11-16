@@ -485,20 +485,39 @@ class Params4bit(torch.nn.Parameter):
 
 
 def fix_4bit_weight_quant_state_from_module(module: Union["Embedding4bit", "Linear4bit"]):
+    """Make sure a 4-bit module that is about to run has its quantization state attached.
+
+    Weights are quantized by ``.to(device)``, not by construction, so a freshly built layer that
+    never saw ``.to(...)`` still holds unquantized weights. That is by far the most common way to
+    hit this function, and it used to surface as a bare ``AssertionError`` (or, on CUDA builds, as
+    advice to move the layer to a CUDA device -- useless on this CPU-only fork). It now raises with
+    the fix in it.
+    """
     if getattr(module.weight, "quant_state", None) is not None:
         return
 
-    if getattr(module, "quant_state", None) is None:
-        logger.warning(
-            "FP4 quantization state not initialized. Please call .cuda() or .to(device) on the LinearFP4 layer first.",
+    quant_state = getattr(module, "quant_state", None)
+    if quant_state is None:
+        raise RuntimeError(
+            f"{type(module).__name__} has no quantization state: its weights are still unquantized. "
+            "Weights are quantized by calling `.to(device)` on the layer, for example "
+            "`layer = layer.to('cpu')` on this CPU-only build. If you are restoring a checkpoint, "
+            "load a state dict that contains the 4-bit entries "
+            "(weight.absmax / weight.quant_map / weight.quant_state.bitsandbytes__*) "
+            "with `load_state_dict()`."
         )
 
-    # the quant state got lost when the parameter got converted. This happens for example for fsdp
-    # since we registered the module, we can recover the state here
-    assert module.weight.shape[1] == 1
+    # The state was dropped from the parameter when it got converted (e.g. FSDP); the module still
+    # holds it, so recover it here.
+    if module.weight.shape[1] != 1:
+        raise RuntimeError(
+            f"{type(module).__name__} weight is not 4-bit packed (shape {tuple(module.weight.shape)}), "
+            "so the lost quantization state cannot be restored. Re-quantize the layer with `.to(device)`."
+        )
+    logger.debug("recovering lost 4-bit quantization state from the module")
     if not isinstance(module.weight, Params4bit):
         module.weight = Params4bit(module.weight, quant_storage=module.quant_storage, bnb_quantized=True)
-    module.weight.quant_state = module.quant_state
+    module.weight.quant_state = quant_state
 
 
 class Linear4bit(nn.Linear):
@@ -605,6 +624,62 @@ class Linear4bit(nn.Linear):
         if getattr(self.weight, "quant_state", None) is not None:
             for k, v in self.weight.quant_state.as_dict(packed=True).items():
                 destination[prefix + "weight." + k] = v if keep_vars else v.detach()
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        """Load a state dict saved by :meth:`_save_to_state_dict`, quantization state included.
+
+        The 4-bit payload lives in ``weight`` while the extra entries written by
+        ``QuantState.as_dict(packed=True)`` (``weight.absmax``, ``weight.quant_map``,
+        ``weight.quant_state.bitsandbytes__nf4`` ...) are not parameters or buffers, so PyTorch's
+        default loader reports them as unexpected and a plain ``load_state_dict()`` of a quantized
+        layer used to fail. Rebuild the ``QuantState`` here instead.
+        """
+        weight_key = prefix + "weight"
+        stats_prefix = weight_key + "."
+        quantized_stats = {}
+        for key in list(state_dict.keys()):
+            if not key.startswith(stats_prefix):
+                continue
+            suffix = key[len(stats_prefix):]
+            if suffix in QuantState.valid_qs_keys or suffix.split(".")[-1] in QuantState.valid_qs_type_keys:
+                quantized_stats[suffix] = state_dict.pop(key)
+
+        if not quantized_stats or weight_key not in state_dict:
+            # Unquantized checkpoint (or a nested state dict): keep the default behaviour.
+            super()._load_from_state_dict(
+                state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs,
+            )
+            return
+
+        data = state_dict.pop(weight_key)
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs,
+        )
+        if weight_key in missing_keys:  # `weight` was consumed above, not missing
+            missing_keys.remove(weight_key)
+        try:
+            self.weight = Params4bit.from_prequantized(
+                data=data, quantized_stats=quantized_stats, device=self.weight.device, module=self,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported through torch's error channel
+            error_msgs.append(
+                f"{type(self).__name__} could not rebuild its 4-bit quantization state from the "
+                f"checkpoint ({type(exc).__name__}: {exc}). Save the layer with `state_dict()` and "
+                "load it with `load_state_dict()`, or restore it manually with "
+                "`Params4bit.from_prequantized(...)`.",
+            )
+            return
+        self.quant_state = self.weight.quant_state
+        self.compute_type_is_set = self.compute_dtype is not None
 
     def forward(self, x: torch.Tensor):
         fix_4bit_weight_quant_state_from_module(self)
@@ -861,7 +936,10 @@ class Embedding8bit(nn.Embedding):
 
     def forward(self, input: Tensor) -> Tensor:
         if not hasattr(self.weight, "SCB"):
-            raise RuntimeError("Embedding layer is not quantized. Please call .cuda() or .to(device) first.")
+            raise RuntimeError(
+                "Embedding layer is not quantized: weights are quantized by calling `.to(device)` "
+                "on the layer, for example `.to('cpu')` on this CPU-only build.",
+            )
 
         rows = self.weight.data
         row_stats = self.weight.SCB
@@ -1144,8 +1222,9 @@ class Linear8bitLt(nn.Linear):
                 if weight_scb is None:
                     # buffers not yet initialized, can't access them directly without quantizing first
                     raise RuntimeError(
-                        "Loading a quantized checkpoint into non-quantized Linear8bitLt is "
-                        "not supported. Please call module.cuda() before module.load_state_dict()",
+                        "Loading a quantized checkpoint into non-quantized Linear8bitLt is not "
+                        "supported. Call `.to(device)` on the module before `load_state_dict()` "
+                        "(on this CPU-only build: `.to('cpu')`).",
                     )
 
                 input_param = state_dict[key]

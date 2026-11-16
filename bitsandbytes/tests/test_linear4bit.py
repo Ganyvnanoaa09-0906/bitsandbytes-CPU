@@ -612,3 +612,59 @@ def test_fsdp_state_dict_save_4bit():
             f"stdout: {result.stdout}\n"
             f"stderr: {result.stderr}"
         )
+
+@pytest.mark.parametrize("device", get_available_devices())
+@pytest.mark.parametrize("quant_type", ["nf4", "fp4"])
+@pytest.mark.parametrize("compress_statistics", TRUE_FALSE, ids=id_formatter("compress_statistics"))
+@pytest.mark.parametrize("quant_storage", ["uint8", "float16", "bfloat16", "float32"])
+def test_linear4bit_state_dict_roundtrip(device, quant_type, compress_statistics, quant_storage):
+    """`state_dict()` / `load_state_dict()` must round-trip a quantized layer.
+
+    Before the fix, loading a saved state dict into a new Linear4bit raised
+    "Unexpected key(s) in state_dict: weight.absmax, weight.quant_map, ...".
+    """
+    torch.manual_seed(0)
+    linear = torch.nn.Linear(64, 96)
+    q1 = bnb.nn.Linear4bit(
+        64, 96, quant_type=quant_type, compute_dtype=torch.float32,
+        compress_statistics=compress_statistics, quant_storage=storage[quant_storage],
+    )
+    q1.weight = bnb.nn.Params4bit(
+        linear.weight.data.clone(), quant_type=quant_type,
+        compress_statistics=compress_statistics, quant_storage=storage[quant_storage],
+    )
+    q1 = q1.to(device)
+    x = torch.randn(4, 64)
+    with torch.no_grad():
+        y1 = q1(x)
+
+    sd = {k: v.clone() for k, v in q1.state_dict().items()}
+    q2 = bnb.nn.Linear4bit(
+        64, 96, quant_type=quant_type, compute_dtype=torch.float32,
+        compress_statistics=compress_statistics, quant_storage=storage[quant_storage],
+    )
+    q2.load_state_dict(sd)
+    q2 = q2.to(device)
+    with torch.no_grad():
+        y2 = q2(x)
+
+    assert q1.weight.bnb_quantized and q2.weight.bnb_quantized
+    # Compare the packed payload as raw bytes: with float16/float32 quant_storage the payload is
+    # reinterpreted as floats and can contain NaN bit patterns, for which torch.equal is False.
+    assert torch.equal(q1.weight.data.view(torch.uint8), q2.weight.data.view(torch.uint8))
+    assert torch.equal(y1, y2)
+
+
+@pytest.mark.parametrize("device", get_available_devices())
+def test_linear4bit_forward_without_quantization_is_actionable(device):
+    """A layer that never saw `.to(device)` must raise an error that names the fix.
+
+    The old message told CPU users to call `.cuda()` (impossible on this fork) and then failed
+    with a bare AssertionError.
+    """
+    layer = bnb.nn.Linear4bit(64, 96, quant_type="nf4")
+    with pytest.raises(RuntimeError) as excinfo:
+        layer(torch.randn(2, 64))
+    message = str(excinfo.value)
+    assert ".to(" in message
+    assert ".cuda()" not in message
