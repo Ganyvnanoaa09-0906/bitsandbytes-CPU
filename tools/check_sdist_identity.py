@@ -43,6 +43,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -70,6 +71,26 @@ FORBIDDEN = (
 )
 KERNEL_DLL = "libbitsandbytes_cpu.dll"
 VCOMP_DLL = "vcomp140.dll"
+# 合法位置：<top>/bitsandbytes/<dll>（setup.py 的 package_data 布局）。只按 basename 匹配
+# 会把任意目录下的同名 DLL 当成发布物 —— 那样审计结论不可信（对抗测试实测可绕过）。
+DLL_DIR = "bitsandbytes"
+# 资源上限：畸形/恶意 sdist 不得让审计器吃光内存。官方 dev10：DLL ~400 KB、成员 189。
+# 两个上限都可被测试用环境变量调小。
+MAX_DLL_BYTES = int(os.environ.get("BNB_SDIST_MAX_DLL_MB", "64")) << 20
+MAX_MEMBERS = int(os.environ.get("BNB_SDIST_MAX_MEMBERS", "200000"))
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+
+
+def _fatal(msg):
+    """用法/环境错误：exit 2（1 保留给"审计结论为失败"）。"""
+    print(msg, file=sys.stderr)
+    raise SystemExit(2)
+
+
+def _at_package_root(member):
+    """sdist 成员是否位于 <top>/bitsandbytes/ 下（深度恰好 3）。"""
+    parts = member.name.split("/")
+    return len(parts) == 3 and parts[1] == DLL_DIR
 
 
 def sha_file(p):
@@ -88,40 +109,91 @@ def classify_sdist(path, expect_kernel, expect_vcomp, require_vcomp):
     """审计一个 sdist 的字节，返回身份/形状结果（纯函数，不做任何构建）。
 
     require_vcomp=True 表示"发布物必须带 vcomp140.dll"（--sdist 模式的策略）。
+    形状规则（对抗测试驱动，全部 fail closed）：
+      * DLL 必须位于 <top>/bitsandbytes/<name>，错误位置不接受（哪怕 basename 对、sha 对）
+      * kernel 恰好 1 个、vcomp 策略见参数；其它 DLL 一律拒绝
+      * 路径穿越 / 绝对路径成员拒绝；构建产物/字节码成员拒绝（大小写不敏感）
+      * 单个 DLL 超过 MAX_DLL_BYTES、成员总数超过 MAX_MEMBERS 拒绝
     """
     with tarfile.open(path) as t:
-        files = [m for m in t.getmembers() if m.isfile()]
+        members = t.getmembers()
+        too_many = len(members) > MAX_MEMBERS
+        files = [m for m in members if m.isfile()]
         names = [m.name for m in files]
+        all_names = [m.name for m in members]
+        unsafe = [n for n in all_names if n.startswith("/") or ".." in n.split("/")]
         dlls = [m for m in files if m.name.lower().endswith(".dll")]
-        kernels = [m for m in dlls if os.path.basename(m.name) == KERNEL_DLL]
-        vcomps = [m for m in dlls if os.path.basename(m.name).lower() == VCOMP_DLL]
-        others = [
-            m for m in dlls if os.path.basename(m.name) not in (KERNEL_DLL, VCOMP_DLL)
+        kname, vname = KERNEL_DLL.lower(), VCOMP_DLL.lower()
+        kernels = [
+            m
+            for m in dlls
+            if _at_package_root(m) and m.name.split("/")[2].lower() == kname
         ]
-        bad = [n for n in names if n.endswith(FORBIDDEN) or "__pycache__" in n]
-
-        kernel_sha = (
-            sha_bytes(t.extractfile(kernels[0]).read()) if len(kernels) == 1 else None
-        )
-        vcomp_sha = (
-            sha_bytes(t.extractfile(vcomps[0]).read()) if len(vcomps) == 1 else None
-        )
+        vcomps = [
+            m
+            for m in dlls
+            if _at_package_root(m) and m.name.split("/")[2].lower() == vname
+        ]
+        misplaced_kernels = [
+            m
+            for m in dlls
+            if m.name.split("/")[-1].lower() == kname and m not in kernels
+        ]
+        others = [m for m in dlls if m not in kernels and m not in vcomps]
+        # 大小写不敏感：Windows 上 .PYC / __PyCache__ 与 linux 上的小写是同一类污染
+        bad = [
+            n
+            for n in names
+            if n.lower().endswith(FORBIDDEN) or "__pycache__" in n.lower()
+        ]
+        oversized = [m.name for m in dlls if m.size > MAX_DLL_BYTES]
+        kernel_sha = None
+        vcomp_sha = None
+        if not too_many and not oversized:
+            if len(kernels) == 1:
+                kernel_sha = sha_bytes(t.extractfile(kernels[0]).read())
+            if len(vcomps) == 1:
+                vcomp_sha = sha_bytes(t.extractfile(vcomps[0]).read())
         member_count = len(files)
+        member_total = len(members)
 
     errors = []
+    if too_many:
+        errors.append(
+            "成员总数=%d 超过上限 %d（畸形 sdist？）" % (member_total, MAX_MEMBERS)
+        )
+    if unsafe:
+        errors.append("路径穿越/绝对路径成员: %s" % unsafe[:5])
+    if oversized:
+        errors.append(
+            "DLL 成员超过 %d MiB 上限: %s" % (MAX_DLL_BYTES >> 20, oversized[:3])
+        )
     if len(kernels) != 1:
-        errors.append("kernel DLL 数量=%d（必须恰好 1 个）" % len(kernels))
+        msg = "kernel DLL 数量=%d（必须恰好 1 个，且位于 <top>/%s/）" % (
+            len(kernels),
+            DLL_DIR,
+        )
+        if misplaced_kernels:
+            msg += "；另有同名 DLL 在错误位置: %s" % [
+                m.name for m in misplaced_kernels[:3]
+            ]
+        errors.append(msg)
     elif kernel_sha != expect_kernel:
         errors.append(
-            "kernel DLL 身份不符: %s != %s" % (kernel_sha[:16], expect_kernel[:16])
+            "kernel DLL 身份不符: %s != %s"
+            % ((kernel_sha or "?")[:16], expect_kernel[:16])
         )
 
     if expect_vcomp:
         if len(vcomps) != 1:
-            errors.append("vcomp140.dll 数量=%d（要求恰好 1 个）" % len(vcomps))
+            errors.append(
+                "vcomp140.dll 数量=%d（要求恰好 1 个，且位于 <top>/%s/）"
+                % (len(vcomps), DLL_DIR)
+            )
         elif vcomp_sha != expect_vcomp:
             errors.append(
-                "vcomp140.dll 身份不符: %s != %s" % (vcomp_sha[:16], expect_vcomp[:16])
+                "vcomp140.dll 身份不符: %s != %s"
+                % ((vcomp_sha or "?")[:16], expect_vcomp[:16])
             )
     else:
         if vcomps:
@@ -149,11 +221,14 @@ def classify_sdist(path, expect_kernel, expect_vcomp, require_vcomp):
         "sdist_bytes": os.path.getsize(path),
         "sdist_sha256": sha_file(path),
         "member_count": member_count,
+        "member_total": member_total,
         "kernel_dll_sha256": kernel_sha,
         "vcomp_dll_sha256": vcomp_sha,
         "dll_count": len(dlls),
         "dll_names": [os.path.basename(m.name) for m in dlls],
         "extra_dlls": [os.path.basename(m.name) for m in others],
+        "misplaced_kernels": [m.name for m in misplaced_kernels],
+        "unsafe_members": unsafe,
         "forbidden_members": bad,
         "identity_ok": identity_ok,
         "shape_ok": shape_ok,
@@ -161,13 +236,18 @@ def classify_sdist(path, expect_kernel, expect_vcomp, require_vcomp):
     }
 
 
-def _write_synthetic_sdist(path, files):
-    """files: list of (name, bytes)。用于自测，不依赖构建工具链。"""
+def _write_synthetic_sdist(path, files, links=()):
+    """files: list of (name, bytes)；links: list of (name, target)。用于自测，不依赖构建工具链。"""
     with tarfile.open(path, "w:gz") as t:
         for name, data in files:
             info = tarfile.TarInfo(name)
             info.size = len(data)
             t.addfile(info, io.BytesIO(data))
+        for name, target in links:
+            info = tarfile.TarInfo(name)
+            info.type = tarfile.SYMTYPE
+            info.linkname = target
+            t.addfile(info)
 
 
 def _selftest(tmp):
@@ -258,11 +338,55 @@ def _selftest(tmp):
             False,
             False,
         ),
+        # 以下为 2026-11-16 对抗测试新增：这些形状此前会被放行（审计结论不可信）。
+        (
+            "kernel 在错误目录（pkg/other/）",
+            [("pkg-1.0/other/" + KERNEL_DLL, k), (pkg + VCOMP_DLL, v)],
+            ksha,
+            vsha,
+            True,
+            False,
+        ),
+        (
+            "vcomp 在错误目录",
+            [(pkg + KERNEL_DLL, k), ("pkg-1.0/other/" + VCOMP_DLL, v)],
+            ksha,
+            vsha,
+            True,
+            False,
+        ),
+        (
+            "路径穿越成员 ../../evil",
+            [("../../evil", b"x"), (pkg + KERNEL_DLL, k), (pkg + VCOMP_DLL, v)],
+            ksha,
+            vsha,
+            True,
+            False,
+        ),
+        (
+            "大写 .PYC 成员",
+            [(pkg + KERNEL_DLL, k), (pkg + VCOMP_DLL, v), (pkg + "a.PYC", b"x")],
+            ksha,
+            vsha,
+            True,
+            False,
+        ),
+        (
+            "kernel 是符号链接",
+            [(pkg + VCOMP_DLL, v)],
+            ksha,
+            vsha,
+            True,
+            False,
+            [(pkg + KERNEL_DLL, "/etc/passwd")],
+        ),
     ]
     failed = 0
-    for i, (label, files, ek, ev, rv, want_clean) in enumerate(cases, 1):
+    for i, case in enumerate(cases, 1):
+        label, files, ek, ev, rv, want_clean = case[:6]
+        links = case[6] if len(case) > 6 else ()
         p = os.path.join(tmp, "case%d.tar.gz" % i)
-        _write_synthetic_sdist(p, files)
+        _write_synthetic_sdist(p, files, links)
         r = classify_sdist(p, ek, ev, rv)
         got_clean = r["shape_ok"]
         ok = got_clean == want_clean
@@ -293,7 +417,7 @@ def repo_root(explicit):
         ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True
     )
     if r.returncode != 0:
-        raise SystemExit("[FATAL] 不是 git 仓库且未给 --root: %s" % r.stderr.strip())
+        _fatal("[FATAL] 不是 git 仓库且未给 --root: %s" % r.stderr.strip())
     return r.stdout.strip()
 
 
@@ -301,6 +425,28 @@ def head_commit(root):
     return subprocess.run(
         ["git", "-C", root, "rev-parse", "HEAD"], capture_output=True, text=True
     ).stdout.strip()
+
+
+def _optional_tree_head(root_arg):
+    """审计模式不要求 git 仓库（发布机/CI 可能只有下载下来的 sdist）；不在仓库内返回 None。
+
+    这里不能用 repo_root()：它失败时会打印 [FATAL]（那是给"必须找到仓库"的构建模式用的），
+    而审计模式把"没有仓库"当作正常情况，所以静默探测。
+    """
+    if root_arg:
+        try:
+            return head_commit(os.path.abspath(root_arg))
+        except OSError:
+            return None
+    r = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True
+    )
+    if r.returncode != 0:
+        return None
+    try:
+        return head_commit(r.stdout.strip())
+    except OSError:
+        return None
 
 
 def export_clean(root, dest):
@@ -320,10 +466,10 @@ def dll_blob(source):
         with zipfile.ZipFile(source) as z:
             names = [n for n in z.namelist() if n.endswith(KERNEL_DLL)]
             if len(names) != 1:
-                raise SystemExit("[FATAL] wheel 里 kernel DLL 数量=%d" % len(names))
+                _fatal("[FATAL] wheel 里 kernel DLL 数量=%d" % len(names))
             return z.read(names[0]), "%s::%s" % (os.path.basename(source), names[0])
     if not os.path.isfile(source):
-        raise SystemExit("[FATAL] DLL 来源不存在: %s" % source)
+        _fatal("[FATAL] DLL 来源不存在: %s" % source)
     return io.open(source, "rb").read(), os.path.abspath(source)
 
 
@@ -389,13 +535,15 @@ def main():
             shutil.rmtree(tmp, ignore_errors=True)
 
     if a.sdist and a.dll_source:
-        raise SystemExit("[FATAL] --sdist 与 --dll-source 互斥（审计上传字节时不重建）")
+        _fatal("[FATAL] --sdist 与 --dll-source 互斥（审计上传字节时不重建）")
     if not a.sdist and not a.dll_source:
-        raise SystemExit("[FATAL] 需要 --sdist（审计）或 --dll-source（构建演练）")
+        _fatal("[FATAL] 需要 --sdist（审计）或 --dll-source（构建演练）")
     if not a.expect_dll:
-        raise SystemExit(
-            "[FATAL] 缺少 --expect-dll（本次发布的 kernel DLL sha256，无默认值）"
-        )
+        _fatal("[FATAL] 缺少 --expect-dll（本次发布的 kernel DLL sha256，无默认值）")
+    if not _HEX64.fullmatch(a.expect_dll):
+        _fatal("[FATAL] --expect-dll 必须是 64 位小写十六进制 sha256")
+    if a.expect_vcomp_dll and not _HEX64.fullmatch(a.expect_vcomp_dll):
+        _fatal("[FATAL] --expect-vcomp-dll 必须是 64 位小写十六进制 sha256")
 
     provenance_attested = (
         bool(a.dll_source_commit)
@@ -408,13 +556,22 @@ def main():
     # ---------------- 审计模式：不重建，直接审上传字节 ----------------
     if a.sdist:
         if not os.path.isfile(a.sdist):
-            raise SystemExit("[FATAL] sdist 不存在: %s" % a.sdist)
-        r = classify_sdist(
-            a.sdist,
-            a.expect_dll,
-            a.expect_vcomp_dll,
-            require_vcomp=bool(a.expect_vcomp_dll),
-        )
+            _fatal("[FATAL] sdist 不存在: %s" % a.sdist)
+        try:
+            r = classify_sdist(
+                a.sdist,
+                a.expect_dll,
+                a.expect_vcomp_dll,
+                require_vcomp=bool(a.expect_vcomp_dll),
+            )
+        except (tarfile.TarError, EOFError, OSError) as e:
+            print("审计 sdist: %s" % a.sdist)
+            print(
+                "  [FAIL] 无法解析 sdist（不是有效的 tar.gz？）: %s: %s"
+                % (type(e).__name__, e)
+            )
+            print("结果: FAIL（无法解析，未做任何身份判定）")
+            return 1
         print("审计 sdist: %s" % a.sdist)
         print(
             "  字节数 %d  成员 %d  sha256=%s"
@@ -453,7 +610,7 @@ def main():
             print("  [FAIL] %s" % e)
         rec = {
             "mode": "audit-uploaded-bytes",
-            "tree_head": head_commit(repo_root(a.root)),
+            "tree_head": _optional_tree_head(a.root),
             "audited_artifact": os.path.abspath(a.sdist),
             "audited_artifact_sha256": r["sdist_sha256"],
             "publish_sha256": r["sdist_sha256"],
@@ -483,9 +640,14 @@ def main():
             "errors": r["errors"],
         }
         if a.json:
-            io.open(a.json, "w", encoding="utf-8", newline="").write(
-                json.dumps(rec, ensure_ascii=False, indent=2)
-            )
+            try:
+                io.open(a.json, "w", encoding="utf-8", newline="").write(
+                    json.dumps(rec, ensure_ascii=False, indent=2)
+                )
+            except OSError as e:
+                print("  [FAIL] 无法写 --json 记录: %s" % e)
+                print("结果: FAIL（记录写不出来，审计不算完成）")
+                return 1
             print("记录: %s" % a.json)
         if not (r["identity_ok"] and r["shape_ok"]):
             print("结果: FAIL（身份或形状）")
@@ -505,7 +667,7 @@ def main():
         tree = export_clean(root, tmp)
         pkg = os.path.join(tree, "bitsandbytes")
         if not os.path.isdir(pkg):
-            raise SystemExit("[FATAL] git archive 里没有 bitsandbytes/")
+            _fatal("[FATAL] git archive 里没有 bitsandbytes/")
 
         target = os.path.join(pkg, "bitsandbytes", KERNEL_DLL)
         os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -515,9 +677,7 @@ def main():
         print("注入 DLL: %s" % src_desc)
         print("  来源 sha256 = %s  (%d B)" % (got[:16], len(blob)))
         if got != a.expect_dll:
-            raise SystemExit(
-                "[FATAL] 注入源本身就不是审计值: %s != %s" % (got, a.expect_dll)
-            )
+            _fatal("[FATAL] 注入源本身就不是审计值: %s != %s" % (got, a.expect_dll))
         if a.expect_vcomp_dll:
             print(
                 "  [warn] 构建模式基于 git archive，不含未跟踪的 vcomp140.dll；"
@@ -537,7 +697,7 @@ def main():
         )
         names = [f for f in os.listdir(outdir) if f.endswith(".tar.gz")]
         if len(names) != 1:
-            raise SystemExit("[FATAL] sdist 数量=%d" % len(names))
+            _fatal("[FATAL] sdist 数量=%d" % len(names))
         sdist = os.path.join(outdir, names[0])
 
         r = classify_sdist(sdist, a.expect_dll, a.expect_vcomp_dll, require_vcomp=False)
@@ -571,7 +731,7 @@ def main():
         norm_bytes = None
         if a.normalize:
             if _normalize_sdist is None:
-                raise SystemExit("[FATAL] --normalize 需要 tools/normalize_sdist.py")
+                _fatal("[FATAL] --normalize 需要 tools/normalize_sdist.py")
             norm_path = os.path.join(
                 outdir, names[0].replace(".tar.gz", ".normalized.tar.gz")
             )
@@ -586,7 +746,7 @@ def main():
                 % (norm_bytes, norm_sha[:16], "OK" if nr["identity_ok"] else "MISMATCH")
             )
             if not nr["identity_ok"]:
-                raise SystemExit("[FATAL] 归一化改变了内嵌 kernel DLL")
+                _fatal("[FATAL] 归一化改变了内嵌 kernel DLL")
 
         rec = {
             "mode": "clean-tree-rehearsal",
