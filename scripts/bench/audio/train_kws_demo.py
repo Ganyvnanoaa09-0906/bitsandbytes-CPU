@@ -18,12 +18,12 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import platform
 import random
 import sys
 import time
+from _common import check_threads, fail, write_json
 
 SCHEMA = 1
 SR = 16000
@@ -68,6 +68,7 @@ def main() -> int:
     ap.add_argument("--threads", type=int, default=6)
     ap.add_argument("--smoke", action="store_true", help="每类 4 条 + 1 epoch")
     a = ap.parse_args()
+    a.threads = check_threads(a.threads)
 
     try:
         import numpy as np
@@ -91,7 +92,10 @@ def main() -> int:
 
     per_word = 4 if a.smoke else max(8, a.per_word)
     epochs = 1 if a.smoke else max(1, a.epochs)
-    voice = PiperVoice.load(a.voice)
+    try:
+        voice = PiperVoice.load(a.voice)
+    except Exception as e:
+        fail(f"无法加载 Piper 语音包 {a.voice}: {type(e).__name__}: {e}")
     mel = torchaudio.transforms.MelSpectrogram(
         sample_rate=SR, n_mels=N_MELS, n_fft=400, hop_length=max(1, SR // N_FRAMES)
     )
@@ -137,6 +141,12 @@ def main() -> int:
     n_te = max(4, n // 5)
     idx = torch.randperm(n)
     te, tr = idx[:n_te], idx[n_te:]
+    if len(tr) == 0:
+        print(
+            f"[skip] 训练集为空（n={n}, n_te={n_te}）：增大 --per-word 或不用 --smoke",
+            file=sys.stderr,
+        )
+        return 2
 
     class KWS(nn.Module):
         def __init__(self):
@@ -240,9 +250,7 @@ def main() -> int:
         f"测试 acc {hist[-1]['test_acc']:.3f}"
     )
     if a.out:
-        os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
-        with open(a.out, "w", encoding="utf-8") as f:
-            json.dump(rep, f, ensure_ascii=False, indent=2)
+        write_json(a.out, rep)
         print(f"  -> {a.out}")
     return 0
 

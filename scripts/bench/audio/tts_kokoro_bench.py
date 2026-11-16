@@ -24,6 +24,7 @@ import os
 import platform
 import sys
 import time
+from _common import check_threads, fail, write_json
 
 SCHEMA = 1
 
@@ -68,6 +69,7 @@ def main() -> int:
     ap.add_argument("--threads", type=int, default=6)
     ap.add_argument("--smoke", action="store_true", help="只合成一句短文本")
     a = ap.parse_args()
+    a.threads = check_threads(a.threads)
 
     try:
         import numpy as np
@@ -94,10 +96,13 @@ def main() -> int:
         pth = cands[0]
     cfg = os.path.join(a.kokoro_dir, "config.json")
     t0 = time.time()
-    kmodel = KModel(
-        repo_id=None, model=pth, config=cfg if os.path.exists(cfg) else None
-    ).eval()
-    pipe = KPipeline(lang_code="a", repo_id=None, model=kmodel)
+    try:
+        kmodel = KModel(
+            repo_id=None, model=pth, config=cfg if os.path.exists(cfg) else None
+        ).eval()
+        pipe = KPipeline(lang_code="a", repo_id=None, model=kmodel)
+    except Exception as e:
+        fail(f"无法加载 Kokoro 权重 {a.kokoro_dir}: {type(e).__name__}: {e}")
     load_s = time.time() - t0
 
     if a.wav_dir:
@@ -110,7 +115,10 @@ def main() -> int:
             if os.path.exists(a.voice)
             else os.path.join(a.kokoro_dir, "voices", a.voice)
         )
-        chunks = list(pipe(text, voice=vp))
+        try:
+            chunks = list(pipe(text, voice=vp))
+        except Exception as e:
+            fail(f"Kokoro 合成失败（voice={vp}）: {type(e).__name__}: {e}")
         synth_s = time.time() - t1
         audio = (
             np.concatenate(
@@ -164,9 +172,7 @@ def main() -> int:
     }
     print("  " + json.dumps(rep["summary"], ensure_ascii=False))
     if a.out:
-        os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
-        with open(a.out, "w", encoding="utf-8") as f:
-            json.dump(rep, f, ensure_ascii=False, indent=2)
+        write_json(a.out, rep)
         print(f"  -> {a.out}")
     return 0
 

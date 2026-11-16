@@ -23,6 +23,7 @@ import os
 import platform
 import sys
 import time
+from _common import check_threads, fail, write_json
 
 SCHEMA = 1
 
@@ -66,6 +67,7 @@ def main() -> int:
     ap.add_argument("--threads", type=int, default=6)
     ap.add_argument("--smoke", action="store_true", help="只合成一句短文本")
     a = ap.parse_args()
+    a.threads = check_threads(a.threads)
 
     try:
         from piper import PiperVoice
@@ -78,7 +80,10 @@ def main() -> int:
 
     texts = [("short", SHORT)] if a.smoke else [("short", SHORT), ("long", LONG)]
     t0 = time.time()
-    voice = PiperVoice.load(a.voice)
+    try:
+        voice = PiperVoice.load(a.voice)
+    except Exception as e:
+        fail(f"无法加载 Piper 语音包 {a.voice}: {type(e).__name__}: {e}")
     load_s = time.time() - t0
 
     if a.wav_dir:
@@ -135,9 +140,7 @@ def main() -> int:
     }
     print("  " + json.dumps(rep["summary"], ensure_ascii=False))
     if a.out:
-        os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
-        with open(a.out, "w", encoding="utf-8") as f:
-            json.dump(rep, f, ensure_ascii=False, indent=2)
+        write_json(a.out, rep)
         print(f"  -> {a.out}")
     return 0
 

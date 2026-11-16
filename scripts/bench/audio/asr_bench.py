@@ -24,6 +24,7 @@ import random
 import re
 import sys
 import time
+from _common import check_threads, load_json, write_json
 
 SCHEMA = 1
 
@@ -85,6 +86,7 @@ def main() -> int:
     ap.add_argument("--language", default="en")
     ap.add_argument("--smoke", action="store_true", help="只跑第一个文件（禁用大文件）")
     a = ap.parse_args()
+    a.threads = check_threads(a.threads)
 
     try:
         from faster_whisper import WhisperModel
@@ -109,10 +111,7 @@ def main() -> int:
         return 2
     if a.smoke:
         wavs = wavs[:1]
-    refs = {}
-    if a.refs and os.path.exists(a.refs):
-        with open(a.refs, encoding="utf-8") as f:
-            refs = json.load(f)
+    refs = load_json(a.refs, "refs") if a.refs else {}
 
     t0 = time.time()
     model = WhisperModel(
@@ -124,9 +123,27 @@ def main() -> int:
     for w in wavs:
         path = os.path.join(a.audio_dir, w)
         t1 = time.time()
-        segments, info = model.transcribe(path, language=a.language, beam_size=1)
-        text = " ".join(s.text.strip() for s in segments).strip()
-        dt = time.time() - t1
+        try:
+            segments, info = model.transcribe(path, language=a.language, beam_size=1)
+            text = " ".join(s.text.strip() for s in segments).strip()
+            dt = time.time() - t1
+        except Exception as e:  # 坏 wav / 解码失败：记录该文件，不炸整轮
+            dt = time.time() - t1
+            rows.append(
+                {
+                    "file": w,
+                    "audio_s": None,
+                    "wall_s": round(dt, 3),
+                    "rtf": None,
+                    "error": f"{type(e).__name__}: {e}",
+                }
+            )
+            print(
+                f"  {w}: [skip] 无法解码/转写: {type(e).__name__}: {e}",
+                file=sys.stderr,
+                flush=True,
+            )
+            continue
         dur = float(getattr(info, "duration", 0.0)) or 0.0
         row = {
             "file": w,
@@ -143,6 +160,9 @@ def main() -> int:
             flush=True,
         )
 
+    if rows and all("error" in r for r in rows):
+        print("[skip] 所有音频都无法解码/转写", file=sys.stderr)
+        return 2
     rtf = [r["rtf"] for r in rows if r["rtf"]]
     rep = {
         "schema_version": SCHEMA,
@@ -171,9 +191,7 @@ def main() -> int:
     }
     print("  " + json.dumps(rep["summary"], ensure_ascii=False))
     if a.out:
-        os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
-        with open(a.out, "w", encoding="utf-8") as f:
-            json.dump(rep, f, ensure_ascii=False, indent=2)
+        write_json(a.out, rep)
         print(f"  -> {a.out}")
     return 0
 

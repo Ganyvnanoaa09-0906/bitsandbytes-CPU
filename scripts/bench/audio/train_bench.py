@@ -19,10 +19,10 @@
 from __future__ import annotations
 
 import argparse
-import json
 import platform
 import sys
 import time
+from _common import check_threads, write_json
 
 SCHEMA = 1
 
@@ -153,6 +153,7 @@ def main() -> int:
     )
     ap.add_argument("--smoke", action="store_true", help="每档只跑 2 步")
     a = ap.parse_args()
+    a.threads = check_threads(a.threads)
 
     try:
         import torch
@@ -215,11 +216,7 @@ def main() -> int:
         "notes": ["proxy 模型只用于量级外推，不代表实际模型结构/精度"],
     }
     if a.out:
-        import os
-
-        os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
-        with open(a.out, "w", encoding="utf-8") as f:
-            json.dump(rep, f, ensure_ascii=False, indent=2)
+        write_json(a.out, rep)
         print(f"  -> {a.out}")
     return 0
 
