@@ -14,6 +14,7 @@ reader would trip over:
 Usage:
     python check_docs.py [docs_dir]
 """
+
 import io
 import os
 import re
@@ -101,8 +102,12 @@ def main():
         if n not in names:
             continue
         for i, L in enumerate(io.open(n, encoding="utf-8").read().split("\n"), 1):
-            if re.search(r"(?<!_EN)\b(?:TECHNICAL_GUIDE|TECH_REPORT|QUICKSTART)\.md", L) \
-                    and "_EN.md" not in L:
+            if (
+                re.search(
+                    r"(?<!_EN)\b(?:TECHNICAL_GUIDE|TECH_REPORT|QUICKSTART)\.md", L
+                )
+                and "_EN.md" not in L
+            ):
                 print(f"  BAD {n}:{i}: {L.strip()[:90]}")
                 bad += 1
                 fails.append(f"{n}:{i} points at a Chinese filename")
@@ -120,7 +125,9 @@ def main():
             if lines[i].lstrip().startswith("|"):
                 blocks += 1
                 # a well-formed block has a separator row as its second line
-                if i + 1 >= len(lines) or not re.match(r"^\s*\|[\s:|-]+\|\s*$", lines[i + 1]):
+                if i + 1 >= len(lines) or not re.match(
+                    r"^\s*\|[\s:|-]+\|\s*$", lines[i + 1]
+                ):
                     orphans += 1
                 while i < len(lines) and lines[i].lstrip().startswith("|"):
                     i += 1
@@ -139,7 +146,9 @@ def main():
             continue
         a, b = section_ids(zh), section_ids(en)
         ok = a == b
-        print(f"  {zh:22s} {len(a):2d} vs {en:26s} {len(b):2d}  {'match' if ok else 'MISMATCH'}")
+        print(
+            f"  {zh:22s} {len(a):2d} vs {en:26s} {len(b):2d}  {'match' if ok else 'MISMATCH'}"
+        )
         if not ok:
             fails.append(f"{zh} / {en}: section numbering differs")
             only_a = [x for x in a if x not in b]
