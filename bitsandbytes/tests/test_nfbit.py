@@ -251,3 +251,9 @@ def test_unpack_rejects_non_nfbit_dict():
 def test_pack_codes_rejects_out_of_range():
     with pytest.raises(ValueError):
         nfbit.pack_codes(torch.tensor([[0, 1, 2, 4]], dtype=torch.uint8), bits=2)
+
+def test_forward_fp16_input():
+    ql = nfbit.QuantLinearNF.from_linear(nn.Linear(64, 48), bits=2, block=32, lora_r=2)
+    x = torch.randn(3, 64).half()
+    y = ql(x)
+    assert y.dtype == torch.float16 and y.shape == (3, 48)

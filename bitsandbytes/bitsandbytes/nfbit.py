@@ -476,7 +476,8 @@ class QuantLinearNF(nn.Module):
             raise RuntimeError("QuantLinearNF has no packed weight; use from_linear()")
         lead = x.shape[:-1]
         x2 = x.reshape(-1, self.in_features)
-        base = F.linear(x2, self.weight().to(x.dtype), self.bias)
+        bias = None if self.bias is None else self.bias.to(x.dtype)
+        base = F.linear(x2, self.weight().to(x.dtype), bias)
         lora = (
             (x2 @ self.lora_A.to(x2.dtype).t())
             @ self.lora_B.to(x2.dtype).t()
