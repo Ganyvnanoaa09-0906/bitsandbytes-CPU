@@ -121,3 +121,11 @@ def test_ref_conv2d_smoke():
     y, dx, dw, db = ref_conv2d(x, w, b, dy)
     assert y.shape == (2, 4, 6, 6)
     assert dx.shape == x.shape and dw.shape == w.shape and db.shape == b.shape
+
+
+def test_device_conv2d_check_subprocess():
+    # Conv2dCtx (im2col + Hgemm + gather col2im) self-check in a fresh process.
+    cmd = [sys.executable, os.path.join(ROOT, "gt1030", "igpu_conv.py"), "--check"]
+    result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS" in result.stdout
