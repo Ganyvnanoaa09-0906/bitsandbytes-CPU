@@ -234,8 +234,8 @@ _K = {
 class LayerCtx(object):
     """Thin wrapper over LEAD's DevCtx: per-layer context + arena + per-context kernels."""
 
-    def __init__(self, arena_mb=400, name="layer"):
-        self.dev = DevCtx(arena_mb=arena_mb, name=name)
+    def __init__(self, arena_mb=400, name="layer", profiling=False):
+        self.dev = DevCtx(arena_mb=arena_mb, name=name, profiling=profiling)
         self.ctx, self.queue = self.dev.ctx, self.dev.q
         names = (
             "zero_half",
