@@ -89,3 +89,4 @@ print(
     "other %.1f ms (%.1f%% of wall)"
     % ((med - sum(comps.values())) * 1e3, 100 * (med - sum(comps.values())) / med)
 )
+prof.report_overlap()
