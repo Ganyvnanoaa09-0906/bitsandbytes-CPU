@@ -35,6 +35,7 @@ import gt1030.ar_v2_multi as MM  # noqa: E402
 import gt1030.igpu_attn as IA  # noqa: E402
 from gt1030.igpu_ctx import DevCtx  # noqa: E402
 from gt1030.igpu_block_ops import RMSNorm  # noqa: E402
+from gt1030.igpu_block_ops import SRC as NORM_SRC  # noqa: E402
 
 A = MM.A
 
@@ -256,6 +257,9 @@ class LayerCtx(object):
         self.K = self.dev.program(KSRC, names)
         self.attn_K = self.dev.program(
             IA.AG.KERNELS, ("softmax_causal", "softmax_bwd_causal")
+        )
+        self.norm_K = self.dev.program(
+            NORM_SRC, ("rmsnorm_fwd", "rmsnorm_bwd", "rmsnorm_dw")
         )
 
     def activate(self):
@@ -483,9 +487,9 @@ class MLP(object):
         )
         return self.dx
 
-    def step(self, lr, t):
+    def step(self, lr, t, eps=1e-8):
         for m in (self.gate, self.up, self.down):
-            m.step(lr, t)
+            m.step(lr, t, eps=eps)
 
 
 class SelfAttention(object):
@@ -590,9 +594,81 @@ class SelfAttention(object):
         )
         return self.qkv.backward(self.dqkv)
 
-    def step(self, lr, t):
-        self.qkv.step(lr, t)
-        self.wo.step(lr, t)
+    def step(self, lr, t, eps=1e-8):
+        self.qkv.step(lr, t, eps=eps)
+        self.wo.step(lr, t, eps=eps)
+
+
+class NormDev(object):
+    """RMSNorm whose buffers all come from the layer arena (no direct cl.Buffer)."""
+
+    def __init__(self, rows, cols, dev, eps=1e-6):
+        self.rows, self.cols, self.eps = int(rows), int(cols), float(eps)
+        self.dev = dev
+        self.k = dev.norm_K
+        self.w = _buf(self.cols * 2)
+        self.rs = _buf(max(self.rows * 4, 4096))
+        self.xhat = _buf(self.rows * self.cols * 2)
+        self.dw = _buf(max(self.cols * 4, 4096))
+        self.y = _buf(self.rows * self.cols * 2)
+        self.dx = _buf(self.rows * self.cols * 2)
+        self.m = _buf(self.cols * 4)
+        self.v = _buf(self.cols * 4)
+        self.master = _buf(self.cols * 4)
+
+    def set_weight(self, w):
+        cl.enqueue_copy(A.queue, self.w, np.ascontiguousarray(w, dtype=np.float16))
+        cl.enqueue_copy(
+            A.queue, self.master, np.ascontiguousarray(np.asarray(w, dtype=np.float32))
+        )
+        cl.enqueue_fill_buffer(A.queue, self.m, np.float32(0), 0, self.cols * 4)
+        cl.enqueue_fill_buffer(A.queue, self.v, np.float32(0), 0, self.cols * 4)
+        A.queue.finish()
+
+    def forward(self, x_dev):
+        self.k["rmsnorm_fwd"](
+            A.queue,
+            (self.rows * 256,),
+            (256,),
+            x_dev,
+            self.w,
+            self.y,
+            self.rs,
+            self.xhat,
+            np.int32(self.rows),
+            np.int32(self.cols),
+            np.float32(self.eps),
+        )
+        return self.y
+
+    def backward(self, dy_dev):
+        self.k["rmsnorm_bwd"](
+            A.queue,
+            (self.rows * 256,),
+            (256,),
+            dy_dev,
+            self.w,
+            self.xhat,
+            self.rs,
+            self.dx,
+            np.int32(self.rows),
+            np.int32(self.cols),
+        )
+        return self.dx
+
+    def weight_grad(self, dy_dev):
+        cl.enqueue_fill_buffer(A.queue, self.dw, np.float32(0.0), 0, self.cols * 4)
+        self.k["rmsnorm_dw"](
+            A.queue,
+            (self.cols,),
+            None,
+            dy_dev,
+            self.xhat,
+            self.dw,
+            np.int32(self.rows),
+            np.int32(self.cols),
+        )
+        return self.dw
 
 
 class Block(object):
@@ -603,8 +679,12 @@ class Block(object):
         self.dev = dev
         if dev is not None:
             dev.activate()
-        self.norm1 = RMSNorm(rows, d_model, eps=eps)
-        self.norm2 = RMSNorm(rows, d_model, eps=eps)
+        if dev is not None:
+            self.norm1 = NormDev(rows, d_model, dev, eps=eps)
+            self.norm2 = NormDev(rows, d_model, dev, eps=eps)
+        else:
+            self.norm1 = RMSNorm(rows, d_model, eps=eps)
+            self.norm2 = RMSNorm(rows, d_model, eps=eps)
         self.norm1.set_weight(np.ones(d_model, dtype=np.float16))
         self.norm2.set_weight(np.ones(d_model, dtype=np.float16))
         self.norm1.m = _buf(d_model * 4)
@@ -710,7 +790,7 @@ class Block(object):
         )
         return self.dx
 
-    def _norm_step(self, norm, lr, t):
+    def _norm_step(self, norm, lr, t, eps=1e-8):
         cols = self.d_model
         bc1 = 1.0 - 0.9**t
         bc2 = 1.0 - 0.999**t
@@ -727,19 +807,19 @@ class Block(object):
             np.float32(lr),
             np.float32(0.9),
             np.float32(0.999),
-            np.float32(1e-8),
+            np.float32(eps),
             np.float32(0.0),
             np.float32(bc1),
             np.float32(bc2),
         )
 
-    def step(self, lr, t):
+    def step(self, lr, t, eps=1e-8):
         self.activate()
-        self._norm_step(self.norm1, lr, t)
-        self._norm_step(self.norm2, lr, t)
-        self.mlp.step(lr, t)
+        self._norm_step(self.norm1, lr, t, eps=eps)
+        self._norm_step(self.norm2, lr, t, eps=eps)
+        self.mlp.step(lr, t, eps=eps)
         if self.attn is not None:
-            self.attn.step(lr, t)
+            self.attn.step(lr, t, eps=eps)
 
 
 class Stack(object):
@@ -824,7 +904,7 @@ class Stack(object):
             d = _read(dx, (self.rows, self.d_model))
         return d.astype(np.float32)
 
-    def step(self, lr, t):
+    def step(self, lr, t, eps=1e-8):
         if self.norm is not None:
             cols = self.d_model
             bc1 = 1.0 - 0.9**t
@@ -849,7 +929,7 @@ class Stack(object):
             )
         for block in self.blocks:
             block.activate()
-            block.step(lr, t)
+            block.step(lr, t, eps=eps)
 
 
 def check_stack(b=2, t=8, nh=2, hd=16, hidden=64, layers=2, seed=0):

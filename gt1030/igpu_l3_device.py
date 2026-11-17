@@ -91,9 +91,12 @@ def main():
         t0 = time.perf_counter()
         yh = st.forward_np(x_np)
         loss = float(((yh - t_np) ** 2).mean())
-        dy = (2.0 * (yh - t_np) / (rows * d)).astype(np.float16)
+        # fp16 MSE per-element dy is ~1e-6 (< fp16 min normal); scale by 65536 and
+        # scale AdamW eps by the same factor.
+        G = 65536.0
+        dy = (2.0 * (yh - t_np) / (rows * d) * G).astype(np.float16)
         st.backward_np(dy)
-        st.step(cfg["lr"], step)
+        st.step(cfg["lr"], step, eps=1e-8 * 65536.0)
         step_times.append(time.perf_counter() - t0)
         losses.append(loss)
         if step in (1, cfg["steps"]):
