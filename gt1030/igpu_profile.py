@@ -230,6 +230,10 @@ class EventProf(object):
               % (wall * 1e3, busy * 1e3, 100 * busy / wall, (wall - busy) * 1e3,
                  100 * (wall - busy) / wall))
         print("  host 提交合计（各段 host 停留之和）: %.2f ms" % (total_host * 1e3))
+        # 判读：host 与 gap 谁主导（marker 时间戳在本驱动上可能不准，host 跨度是可信的）
+        verdict = ("host/Python 主导（提交或 numpy 转换）" if total_host > 0.5 * wall
+                   else "GPU 空闲主导（阻塞拷贝/同步/切 context）")
+        print("  => 判读: %s" % verdict)
         print("  段                 GPU(ms)  host(ms)")
         for s, e, name, h0, h1 in rows:
             print("  %-18s %7.2f %8.2f" % (name, (e - s) * 1e3, (h1 - h0) * 1e3))
