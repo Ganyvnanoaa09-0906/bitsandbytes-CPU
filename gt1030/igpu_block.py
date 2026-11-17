@@ -856,6 +856,11 @@ class Stack(object):
                     dev=dev,
                 )
             )
+        if self.per_layer:
+            for block in self.blocks:
+                block.activate()
+                block.bridge_x = _buf(self.rows * self.d_model * 2)
+                block.bridge_dy = _buf(self.rows * self.d_model * 2)
         self.norm = None
         if final_norm:
             self.norm = RMSNorm(rows, d_model, eps=eps)
@@ -881,11 +886,12 @@ class Stack(object):
         return dy
 
     def forward_np(self, x_np):
-        """Per-layer-context path: host bridge between layers (2 MB/layer at L3 size)."""
+        """Per-layer-context path: host bridge between layers (reuses fixed buffers)."""
         h = np.ascontiguousarray(x_np, dtype=np.float16)
         for block in self.blocks:
             block.activate()
-            xb = _upload(h)
+            xb = block.bridge_x
+            cl.enqueue_copy(A.queue, xb, np.ascontiguousarray(h))
             y = block.forward(xb)
             h = _read(y, (self.rows, self.d_model))
         return h.astype(np.float32)
@@ -894,7 +900,8 @@ class Stack(object):
         d = np.ascontiguousarray(dy_np, dtype=np.float16)
         for block in reversed(self.blocks):
             block.activate()
-            dyb = _upload(d)
+            dyb = block.bridge_dy
+            cl.enqueue_copy(A.queue, dyb, np.ascontiguousarray(d))
             dx = block.backward(dyb)
             d = _read(dx, (self.rows, self.d_model))
         return d.astype(np.float32)
