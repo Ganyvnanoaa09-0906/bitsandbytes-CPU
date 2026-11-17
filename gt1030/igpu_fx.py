@@ -104,8 +104,8 @@ class P(object):
             cl.enqueue_copy(dev.q, self.mom, np.zeros(nblocks, np.float32))
             cl.enqueue_copy(dev.q, self.vel, np.zeros(nblocks, np.float32))
             if state_bits == 8:
-                cl.enqueue_copy(dev.q, self.mom8, np.zeros(self.n, np.int8))
-                cl.enqueue_copy(dev.q, self.vel8, np.zeros(self.n, np.int8))
+                cl.enqueue_copy(dev.q, self.mom8, np.full(self.n, 128, np.uint8))
+                cl.enqueue_copy(dev.q, self.vel8, np.full(self.n, 128, np.uint8))
             else:
                 nb = (self.n + 1) // 2
                 cl.enqueue_copy(dev.q, self.mom8, np.full(nb, 0x88, np.uint8))

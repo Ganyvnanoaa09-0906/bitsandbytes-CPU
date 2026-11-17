@@ -64,7 +64,7 @@ __kernel void adamw1(__global float* w, __global float* m, __global float* v,
 
 
 // 8-bit 状态 AdamW：每 workgroup 处理一个 block(256)，m/v 为 int8 码，absmax 为 fp32
-__kernel void adamw1_q8(__global float* w, __global char* m8, __global char* v8,
+__kernel void adamw1_q8(__global float* w, __global uchar* m8, __global uchar* v8,
                         __global float* amax_m, __global float* amax_v,
                         __global const half* g, __global half* wh, int n,
                         float lr, float b1, float b2, float eps, float wd, int t) {
@@ -78,8 +78,10 @@ __kernel void adamw1_q8(__global float* w, __global char* m8, __global char* v8,
     float mm = amax_m[blk], vv = amax_v[blk];
     if (i < n) {
         gt = (float)g[i];
-        float m_old = ((float)m8[i] / 127.f) * mm;
-        float v_old = ((float)v8[i] / 127.f) * vv;
+        float m_old = (((float)m8[i]) - 128.f) / 127.f * mm;
+        float v_old = (((float)v8[i]) - 128.f) / 127.f * vv;
+        // 解码下溢保护：v 的码可能舍入到 0，若直接进 sqrt 会让分母只剩 eps，更新暴涨
+        v_old = fmax(v_old, 1e-12f);
         nm = b1 * m_old + (1.f - b1) * gt;
         nv = b2 * v_old + (1.f - b2) * gt * gt;
     }
@@ -101,8 +103,11 @@ __kernel void adamw1_q8(__global float* w, __global char* m8, __global char* v8,
         float upd = lr * (nm / bc1) / (sqrt(nv / bc2) + eps);
         w[i] = w[i] - upd - lr * wd * w[i];
         wh[i] = (half)w[i];
-        m8[i] = (char)clamp(round(nm / sm * 127.f), -127.f, 127.f);
-        v8[i] = (char)clamp(round(nv / sv * 127.f), -127.f, 127.f);
+        // uchar 编码：0..255 表示 -1..+1（128 = 0）；NaN/Inf 一律落回中性值
+        float cm = isfinite(nm) && isfinite(sm) ? round(nm / sm * 127.f) + 128.f : 128.f;
+        float cv = isfinite(nv) && isfinite(sv) ? round(nv / sv * 127.f) + 128.f : 128.f;
+        m8[i] = (uchar)clamp(cm, 0.f, 255.f);
+        v8[i] = (uchar)clamp(cv, 0.f, 255.f);
     }
 }
 
