@@ -39,18 +39,25 @@ def hgemm_batched_ex(a_dev, b_dev, c_dev, m, n, k, ta, tb, lda, ldb, ldc,
         raise RuntimeError("HgemmStridedBatched rc=%d m%d n%d k%d" % (rc, m, n, k))
 
 
-_PROG = None
+_PROG = {}
 _K = {}
 
 
+def _ctx_key():
+    c = A.ctx
+    return int(c.int_ptr) if hasattr(c, 'int_ptr') else id(c)
+
+
 def _kernels():
-    global _PROG
-    if _PROG is None:
-        _PROG = cl.Program(A.ctx, AG.KERNELS).build(
+    """★ 内核缓存必须 **按 context 分开**：多层 stack 每层一个 context 时，
+    用单一全局缓存会让后一层拿前一层的内核（跨 context 入队）→ 静默算错/部分不执行。"""
+    key = _ctx_key()
+    if key not in _PROG:
+        _PROG[key] = cl.Program(A.ctx, AG.KERNELS).build(
             options=['-cl-mad-enable', '-cl-fast-relaxed-math'])
-        for n in ('softmax_causal', 'softmax_bwd_causal'):
-            _K[n] = cl.Kernel(_PROG, n)
-    return _K
+        _K[key] = {n: cl.Kernel(_PROG[key], n)
+                   for n in ('softmax_causal', 'softmax_bwd_causal')}
+    return _K[key]
 
 
 class Attention(object):
