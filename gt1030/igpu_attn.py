@@ -99,7 +99,9 @@ class Attention(object):
     def backward(self, do_dev=None):
         BH, T, HD = self.BH, self.T, self.HD
         if do_dev is not None:
-            cl.enqueue_copy(A.queue, self.do, do_dev) if hasattr(self.do, "shape") else None
+            # ★ 修 bug：原来用 hasattr(self.do, "shape") 判断，cl.Buffer 没有 shape ⇒ 永远不拷贝
+            src = do_dev if isinstance(do_dev, cl.Buffer) else np.ascontiguousarray(do_dev, dtype=np.float16)
+            cl.enqueue_copy(A.queue, self.do, src)
             A.queue.finish()
         # dV = Pᵀ dO
         hgemm_batched_ex(self.p, self.do, self.dv, T, HD, T, A.YES, A.NO,
@@ -132,9 +134,7 @@ def _check(b=2, t=32, nh=4, hd=16):
     att.upload(q.reshape(BH, t, hd), k.reshape(BH, t, hd), v.reshape(BH, t, hd))
     att.forward()
     o_gpu = att.download(att.o, (BH, t, hd)).reshape(b, nh, t, hd)
-    cl.enqueue_copy(A.queue, att.do, np.ascontiguousarray(do.reshape(BH, t, hd), dtype=np.float16))
-    A.queue.finish()
-    att.backward()
+    att.backward(do.reshape(BH, t, hd))      # ★ 走 do_dev 参数路径（此前是静默忽略的 bug 路径）
     dq = att.download(att.dq, (BH, t, hd)).reshape(b, nh, t, hd)
     dk = att.download(att.dk, (BH, t, hd)).reshape(b, nh, t, hd)
     dv = att.download(att.dv, (BH, t, hd)).reshape(b, nh, t, hd)
