@@ -255,9 +255,6 @@ class LayerCtx(object):
             "tok_to_heads",
         )
         self.K = self.dev.program(KSRC, names)
-        self.attn_K = self.dev.program(
-            IA.AG.KERNELS, ("softmax_causal", "softmax_bwd_causal")
-        )
         self.norm_K = self.dev.program(
             NORM_SRC, ("rmsnorm_fwd", "rmsnorm_bwd", "rmsnorm_dw")
         )
@@ -267,8 +264,6 @@ class LayerCtx(object):
         self.dev.activate()
         _CURRENT_DEV = self.dev
         _K = self.K
-        IA._PROG = None
-        IA._K = self.attn_K
 
 
 _CURRENT_DEV = None
