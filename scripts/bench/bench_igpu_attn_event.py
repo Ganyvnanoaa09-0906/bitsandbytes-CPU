@@ -28,6 +28,7 @@ v = (rng.standard_normal((sa.b * nh, t, hd)) * 0.05).astype(np.float16)
 sa.att.upload(q, k, v)
 B.A.queue.finish()
 prof = EventProf(lc.queue, warmup=2)
+sa.att.prof = prof
 
 
 def fwd():
@@ -47,8 +48,7 @@ def fwd():
             np.int32(nh),
             np.int32(hd),
         )
-    with prof.sec("attn_core_fwd"):
-        sa.att.forward()
+    sa.att.forward()
     with prof.sec("merge"):
         B._K["heads_to_tok"](
             B.A.queue,
@@ -80,8 +80,7 @@ def bwd(dy):
             np.int32(nh),
             np.int32(hd),
         )
-    with prof.sec("attn_core_bwd"):
-        dq, dk, dv = sa.att.backward()
+    dq, dk, dv = sa.att.backward()
     with prof.sec("merge_qkv"):
         B._K["merge_qkv"](
             B.A.queue,
