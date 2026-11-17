@@ -198,7 +198,8 @@ def compare(ref, dev, loss_rtol, final_rtol):
 def main():
     ap = argparse.ArgumentParser()
     for k, v in DEFAULTS.items():
-        ap.add_argument("--" + k.replace("_", "-"), type=(float if k == "eps" else int), default=v)
+        ty = float if k in ("eps", "lr") else int
+        ap.add_argument("--" + k.replace("_", "-"), type=ty, default=v)
     ap.add_argument("--out")
     ap.add_argument("--compare")
     ap.add_argument("--loss-rtol", type=float, default=0.05)
