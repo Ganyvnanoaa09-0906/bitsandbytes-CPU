@@ -549,6 +549,87 @@ def check(steps=5, d=64, batch=32, lr=1e-3, scale=65536.0):
     return worst < 5e-2
 
 
+
+
+def check_stack(layers=4, steps=5, bt=16, d=32, nh=4, hd=8, lr=1e-3):
+    """P3 验收：N 层 transformer stack 走通用路径，对拍 torch，并报步时。"""
+    import time
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    class Stack(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = nn.ModuleList()
+            for _ in range(layers):
+                self.blocks.append(nn.Sequential())   # 占位，下面替换
+            self.blocks = nn.ModuleList([_make_block() for _ in range(layers)])
+
+        def forward(self, x):
+            for blk in self.blocks:
+                x = blk(x)
+            return x
+
+    def _make_block():
+        class B(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.n1 = nn.LayerNorm(d)
+                self.attn = AttnModule(nh, hd)
+                self.n2 = nn.LayerNorm(d)
+                self.f1 = nn.Linear(d, d * 4, bias=False)
+                self.f2 = nn.Linear(d * 4, d, bias=False)
+
+            def forward(self, x):
+                h = x + self.attn(self.n1(x))
+                return h + self.f2(F.gelu(self.f1(self.n2(h))))
+        return B()
+
+    torch.manual_seed(0)
+    model = Stack()
+    x = torch.randn(bt, d) * 0.3
+    tgt = torch.randn(bt, d) * 0.1
+
+    ex = Executor(model, x)
+    ex.sync_from_torch()
+    opt = torch.optim.Adam(model.parameters(), lr=lr, eps=1e-8)
+    scale = 65536.0
+    yt = ex.dev.up(tgt.numpy().astype(np.float16))
+    dy = ex.dev.buf(max(4096, bt * d * 2))
+    losses_dev, losses_torch, times = [], [], []
+    for step in range(1, steps + 1):
+        t0 = time.time()
+        ex.zero_grads()
+        y = ex.forward(x.numpy())
+        n = y.numel
+        G._kernels(ex.dev)["mse_grad_h"](ex.dev.q, (n,), None, y.buf, yt, dy,
+                                         np.int64(n), np.float32(1.0 / n), np.float32(scale))
+        ex.dev.q.finish()
+        losses_dev.append(float(((ex.dev.down(y.buf, y.shape).astype(np.float32)
+                                  - tgt.numpy().astype(np.float32)) ** 2).mean()))
+        ex.backward(dy, y.shape)
+        ex.step(lr, step, eps=1e-8 * scale)
+        times.append(time.time() - t0)
+
+        opt.zero_grad()
+        tl = F.mse_loss(model(x), tgt)
+        tl.backward()
+        losses_torch.append(float(tl.detach()))
+        opt.step()
+
+    print("  stack layers=%d  d=%d  bt=%d" % (layers, d, bt))
+    print("  step   device      torch       rel")
+    worst = 0.0
+    for i, (a, b) in enumerate(zip(losses_dev, losses_torch), 1):
+        rel = abs(a - b) / max(abs(b), 1e-12)
+        worst = max(worst, rel)
+        print("  %4d  %10.6f  %10.6f  %8.2e" % (i, a, b, rel))
+    print("  step time: mean %.1f ms" % (1000 * sum(times) / len(times)))
+    print("RESULT " + ("PASS" if worst < 5e-2 else "FAIL"))
+    return worst < 5e-2
+
+
 def check_block(steps=5, bt=16, d=32, nh=4, hd=8, lr=1e-3):
     """一个完整 transformer block（LN→Attn→res→LN→FFN→res）+ CE，对拍 torch。"""
     import torch
@@ -685,7 +766,10 @@ def main() -> int:
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--check-lm", action="store_true")
     ap.add_argument("--check-block", action="store_true")
+    ap.add_argument("--check-stack", type=int, default=0, help="N 层 stack 验收")
     a = ap.parse_args()
+    if a.check_stack:
+        return 0 if check_stack(layers=a.check_stack) else 1
     if a.check_block:
         return 0 if check_block() else 1
     if a.check_lm:
