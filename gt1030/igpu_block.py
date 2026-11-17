@@ -21,10 +21,11 @@ attention 未就绪时的 `attn=None`（零分支）自检。
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
-sys.path.insert(0, r"D:\work\bitsandbytes-CPU")
-sys.path.insert(0, r"D:\work\bnb-igpu-block")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 import numpy as np  # noqa: E402
 import pyopencl as cl  # noqa: E402
