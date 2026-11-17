@@ -166,6 +166,53 @@ def run(cfg):
     }
 
 
+def run_fp16_sim(cfg):
+    """与 device 同配方的参考：fp32 master + 每步 fp16 前向/反向 + fp32 AdamW。
+
+    设备真实数值路径：w_half = (half) master → fp16 前向（GEMM fp16、fp32 累加）
+    → fp16 反向 → 梯度累到 fp32 master → AdamW(master)。本函数逐字复刻，
+    因此它与 device 的差别只剩"GPU kernel 累加顺序"，不再含 fp16-vs-fp32 这一层。
+    """
+    import copy
+    master = build_model(cfg, cfg["seed"])
+    opt = torch.optim.AdamW(master.parameters(), lr=cfg["lr"], betas=(0.9, 0.999),
+                            eps=1e-8, weight_decay=0.0)
+    x, target = make_data(cfg, cfg["seed"])
+    xh, th = x.half(), target.half()
+    losses, gn, step_times = [], {}, []
+    for step in range(cfg["steps"]):
+        t0 = time.perf_counter()
+        opt.zero_grad(set_to_none=True)
+        shadow = copy.deepcopy(master)
+        for p in shadow.parameters():
+            p.data = p.data.half()
+            p.requires_grad_(True)
+        y = shadow(xh)
+        loss = F.mse_loss(y.float(), th.float())
+        loss.backward()
+        for pm, ps in zip(master.parameters(), shadow.parameters()):
+            # ★ 设备侧的 dW 由 hgemm 输出 **fp16**，这里同样把梯度round到 fp16
+            pm.grad = ps.grad.half().float() if ps.grad is not None else None
+        if step == 0:
+            gn = {
+                "attn_qkv": float(torch.cat([b.attn.qkv.weight.grad.norm().reshape(1)
+                                             for b in master.blocks]).norm()),
+                "attn_out": float(torch.cat([b.attn.out.weight.grad.norm().reshape(1)
+                                             for b in master.blocks]).norm()),
+                "mlp_w12": float(torch.cat([b.mlp.w12.weight.grad.norm().reshape(1)
+                                            for b in master.blocks]).norm()),
+                "mlp_w3": float(torch.cat([b.mlp.w3.weight.grad.norm().reshape(1)
+                                           for b in master.blocks]).norm()),
+            }
+        opt.step()
+        losses.append(float(loss.detach()))
+        step_times.append(time.perf_counter() - t0)
+    return {"config": dict(cfg), "dtype": "fp16-sim-cpu", "losses": losses,
+            "final_loss": losses[-1], "first_grad_norms": gn,
+            "step_seconds_median": statistics.median(step_times),
+            "params": sum(p.numel() for p in master.parameters())}
+
+
 def compare(ref, dev, loss_rtol, final_rtol):
     ok = True
     if len(dev.get("losses", [])) != len(ref["losses"]):
@@ -200,12 +247,23 @@ def main():
     for k, v in DEFAULTS.items():
         ty = float if k in ("eps", "lr") else int
         ap.add_argument("--" + k.replace("_", "-"), type=ty, default=v)
+    ap.add_argument("--fp16-sim", action="store_true",
+                    help="与 device 同配方（fp32 master + fp16 前向/反向）产参考")
     ap.add_argument("--out")
     ap.add_argument("--compare")
     ap.add_argument("--loss-rtol", type=float, default=0.05)
     ap.add_argument("--final-rtol", type=float, default=0.05)
     a = ap.parse_args()
     cfg = {k: getattr(a, k) for k in DEFAULTS}
+    if a.fp16_sim and not a.compare:
+        res = run_fp16_sim(cfg)
+        print("  [fp16-sim] params %.2fM | losses %.6g -> %.6g | step %.1f ms"
+              % (res["params"] / 1e6, res["losses"][0], res["final_loss"],
+                 res["step_seconds_median"] * 1e3))
+        if a.out:
+            json.dump(res, open(a.out, "w", encoding="utf-8"), indent=2)
+            print("  wrote", a.out)
+        return
     if a.compare:
         ref = json.load(open(a.out, encoding="utf-8")) if a.out else run(cfg)
         dev = json.load(open(a.compare, encoding="utf-8"))
