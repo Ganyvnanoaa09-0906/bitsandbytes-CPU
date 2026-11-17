@@ -833,20 +833,25 @@ class Stack(object):
         eps=1e-6,
         final_norm=True,
         per_layer=False,
+        profiling=False,
+        layers_per_ctx=1,
     ):
         self.rows, self.d_model, self.hidden = int(rows), int(d_model), int(hidden)
         self.layers = int(layers)
         self.per_layer = bool(per_layer)
+        self.layers_per_ctx = max(1, int(layers_per_ctx))
         self.blocks = []
-        for i in range(self.layers):
+        self.groups = []
+        for start in range(0, self.layers, self.layers_per_ctx):
             dev = LayerCtx(profiling=profiling) if self.per_layer else None
             if dev is not None:
                 dev.activate()
-            attn = SelfAttention(
-                rows, d_model, nh, hd, t, rng=np.random.default_rng(seed + 100 + i)
-            )
-            self.blocks.append(
-                Block(
+            group = []
+            for i in range(start, min(start + self.layers_per_ctx, self.layers)):
+                attn = SelfAttention(
+                    rows, d_model, nh, hd, t, rng=np.random.default_rng(seed + 100 + i)
+                )
+                block = Block(
                     rows,
                     d_model,
                     hidden,
@@ -855,7 +860,10 @@ class Stack(object):
                     seed=seed + 200 + i,
                     dev=dev,
                 )
-            )
+                group.append(block)
+                self.blocks.append(block)
+            if dev is not None:
+                self.groups.append((dev, group))
         if self.per_layer:
             for block in self.blocks:
                 block.activate()
@@ -886,24 +894,31 @@ class Stack(object):
         return dy
 
     def forward_np(self, x_np):
-        """Per-layer-context path: host bridge between layers (reuses fixed buffers)."""
+        """Host bridge only at context-group boundaries; device pass inside a group."""
         h = np.ascontiguousarray(x_np, dtype=np.float16)
-        for block in self.blocks:
-            block.activate()
-            xb = block.bridge_x
+        for dev, group in self.groups:
+            dev.activate()
+            xb = group[0].bridge_x
             cl.enqueue_copy(A.queue, xb, np.ascontiguousarray(h))
-            y = block.forward(xb)
-            h = _read(y, (self.rows, self.d_model))
+            x = xb
+            for block in group:
+                block.activate()
+                x = block.forward(x)
+            h = _read(x, (self.rows, self.d_model))
         return h.astype(np.float32)
 
     def backward_np(self, dy_np):
+        """Host bridge only at context-group boundaries; device pass inside a group."""
         d = np.ascontiguousarray(dy_np, dtype=np.float16)
-        for block in reversed(self.blocks):
-            block.activate()
-            dyb = block.bridge_dy
+        for dev, group in reversed(self.groups):
+            dev.activate()
+            dyb = group[-1].bridge_dy
             cl.enqueue_copy(A.queue, dyb, np.ascontiguousarray(d))
-            dx = block.backward(dyb)
-            d = _read(dx, (self.rows, self.d_model))
+            x = dyb
+            for block in reversed(group):
+                block.activate()
+                x = block.backward(x)
+            d = _read(x, (self.rows, self.d_model))
         return d.astype(np.float32)
 
     def step(self, lr, t, eps=1e-8):

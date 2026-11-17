@@ -45,6 +45,7 @@ def main():
     ap.add_argument("--steps", type=int, default=None)
     ap.add_argument("--lr", type=float, default=None)
     ap.add_argument("--n-layers", type=int, default=None)
+    ap.add_argument("--layers-per-ctx", type=int, default=1)
     args = ap.parse_args()
     ref = load_ref(args.ref)
     cfg = dict(ref.DEFAULTS)
