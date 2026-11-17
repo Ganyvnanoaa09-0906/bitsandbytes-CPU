@@ -95,3 +95,81 @@ class Prof(object):
             print("  %-14s %8.2f  %5.1f%%   (n=%d)" % (name, m * 1e3, 100 * m / s, n))
         print("  合计            %8.2f ms" % (s * 1e3))
         return {name: m for name, m, _ in rows}
+
+
+class EventProf(object):
+    """OpenCL **event** 版分段计时（队列需 PROFILING_ENABLE）。
+
+    做法：每段前后各入队一个 1 线程的哑 kernel 作为时间标记，段结束时读两个标记的
+    event 时间戳算区间。与 `sec()` 的 finish 版相比：不强制串行，能看出段的真实 GPU 占用，
+    也更接近"段内 kernel 之和"。
+
+    用法：
+        prof = EventProf(A.queue)
+        for step in range(n):
+            prof.new_step()
+            with prof.sec('attn'): ...
+            with prof.sec('mlp'): ...
+        prof.report()
+    """
+
+    SRC = "__kernel void _mark(__global int* x){ if (get_global_id(0)==0) x[0]+=1; }"
+
+    def __init__(self, queue, warmup=2):
+        import pyopencl as cl
+        import numpy as np
+        from collections import defaultdict
+        self.cl, self.np, self.defaultdict = cl, np, defaultdict
+        self.q = queue
+        self.warmup = int(warmup)
+        self.step = 0
+        self.prog = cl.Program(queue.context, self.SRC).build()
+        self.mark_k = cl.Kernel(self.prog, "_mark")
+        self.mark_buf = cl.Buffer(queue.context, cl.mem_flags.READ_WRITE, 64)
+        self.pairs = []          # (step, name, t0_event, t1_event)
+
+    def _mark(self):
+        return self.mark_k(self.q, (1,), None, self.mark_buf)
+
+    def new_step(self):
+        self.step += 1
+
+    class _Sec(object):
+        def __init__(self, prof, name):
+            self.p, self.name = prof, name
+
+        def __enter__(self):
+            self.t0 = self.p._mark()
+            return self
+
+        def __exit__(self, *exc):
+            t1 = self.p._mark()
+            self.p.pairs.append((self.p.step, self.name, self.t0, t1))
+            return False
+
+    def sec(self, name):
+        return EventProf._Sec(self, name)
+
+    def report(self):
+        self.q.finish()
+        acc = self.defaultdict(list)
+        for step, name, t0, t1 in self.pairs:
+            if step <= self.warmup:
+                continue
+            try:
+                dur = (t1.profile.end - t0.profile.end) / 1e9     # 秒
+            except Exception:
+                continue
+            acc[name].append(dur)
+        import statistics
+        rows = [(n, statistics.median(v), len(v)) for n, v in acc.items() if v]
+        if not rows:
+            print("  [event-prof] 没有数据（队列是否带 PROFILING_ENABLE？）")
+            return {}
+        s = sum(m for _, m, _ in rows)
+        rows.sort(key=lambda r: -r[1])
+        print("  段(event)        中位(ms)   占比")
+        for n, m, k in rows:
+            print("  %-14s %8.2f  %5.1f%%  (n=%d)" % (n, m * 1e3, 100 * m / s, k))
+        print("  合计(可重叠)      %8.2f ms" % (s * 1e3))
+        return {n: m for n, m, _ in rows}
