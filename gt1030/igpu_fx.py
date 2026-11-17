@@ -106,6 +106,7 @@ class Executor(object):
         self.params = {}       # key -> P
         self.recs = []         # 执行记录（fwd 时填）
         self.env = {}          # node name -> T
+        self.placeholders = [n.name for n in self.gm.graph.nodes if n.op == "placeholder"]
         self.shapes = {}
         self._collect_params()
         self._infer_shapes(sample)
@@ -120,6 +121,9 @@ class Executor(object):
                 if mod.bias is not None:
                     self.params[name + ".bias"] = P(
                         self.dev, mod.bias.detach().cpu().numpy(), name + ".bias")
+            elif isinstance(mod, nn.Embedding):
+                self.params[name + ".weight"] = P(
+                    self.dev, mod.weight.detach().cpu().numpy(), name + ".weight")
             elif isinstance(mod, nn.LayerNorm):
                 self.params[name + ".gamma"] = P(
                     self.dev, mod.weight.detach().cpu().numpy(), name + ".gamma")
@@ -140,6 +144,11 @@ class Executor(object):
                     b = mod.bias.detach().cpu().numpy().astype(np.float32)
                     cl.enqueue_copy(self.dev.q, pb.master, b)
                     cl.enqueue_copy(self.dev.q, pb.buf, b.astype(np.float16))
+            elif isinstance(mod, nn.Embedding):
+                p = self.params[name + ".weight"]
+                w = mod.weight.detach().cpu().numpy().astype(np.float32)
+                cl.enqueue_copy(self.dev.q, p.master, w.reshape(-1))
+                cl.enqueue_copy(self.dev.q, p.buf, w.astype(np.float16).reshape(-1))
             elif isinstance(mod, nn.LayerNorm):
                 for suffix, src in ((".gamma", mod.weight), (".beta", mod.bias)):
                     p = self.params[name + suffix]
@@ -173,9 +182,23 @@ class Executor(object):
         return T(self._buf(shape), shape)
 
     # ---------------- 前向 ----------------
-    def forward(self, x_np):
-        xb = T(self.dev.up(np.ascontiguousarray(x_np, dtype=np.float16)), x_np.shape)
-        self.env = {"x": xb}
+    def forward(self, inputs=None, x_np=None):
+        """inputs: {placeholder_name: np.ndarray}；也兼容单输入 forward(x_np)。"""
+        if inputs is None:
+            if x_np is None:
+                raise SystemExit("forward 需要 inputs 或 x_np")
+            inputs = {self.placeholders[0]: x_np}
+        self.env = {}
+        self.int_env = {}
+        for name, arr in inputs.items():
+            if arr.dtype in (np.int32, np.int64):
+                buf = self.dev.buf(max(4096, arr.size * 4))
+                cl.enqueue_copy(self.dev.q, buf, np.ascontiguousarray(arr, dtype=np.int32))
+                self.env[name] = T(buf, arr.shape)
+                self.int_env[name] = True
+            else:
+                self.env[name] = T(
+                    self.dev.up(np.ascontiguousarray(arr, dtype=np.float16)), arr.shape)
         self.recs = []
         for node in self.gm.graph.nodes:
             if node.op in ("placeholder", "output"):
@@ -215,6 +238,14 @@ class Executor(object):
                 _prog(self.dev, SILU_SRC, ("silu_fwd", "silu_bwd"), "silu")["silu_fwd"](
                     self.dev.q, (x.numel,), None, x.buf, out.buf, np.int64(x.numel))
                 self.recs.append(("silu", node.name, x, None, None))
+            elif isinstance(sub, nn.Embedding):
+                idx = self.env[node.args[0].name]
+                out = self._new((idx.shape[0], sub.embedding_dim))
+                p = self.params[node.target + ".weight"]
+                NN._kernels()["emb_gather"](self.dev.q, (idx.shape[0], sub.embedding_dim), None,
+                                            p.buf, idx.buf, out.buf,
+                                            np.int32(idx.shape[0]), np.int32(sub.embedding_dim))
+                self.recs.append(("emb", node.name, (idx, p), None, None))
             elif isinstance(sub, nn.LayerNorm):
                 out = self._new(x.shape)
                 rows, cols = int(np.prod(x.shape[:-1])), x.shape[-1]
@@ -291,6 +322,12 @@ class Executor(object):
                      else _prog(self.dev, SILU_SRC, ("silu_fwd", "silu_bwd"), "silu")["silu_bwd"])
                 f(self.dev.q, (x.numel,), None, x.buf, g, dx, np.int64(x.numel))
                 self._propagate(pending, x, dx)
+            elif kind == "emb":
+                idx, p = rec[2]
+                # 表梯度：先清零（zero_grads 已做），再把 dy 按行散加进去
+                NN._kernels()["emb_scatter"](self.dev.q, (p.shape[1],), None, g, idx.buf,
+                                             p.grad, np.int32(idx.shape[0]),
+                                             np.int32(p.shape[1]))
             elif kind == "add":
                 a, b = rec[2]
                 for t in (a, b):
@@ -419,10 +456,71 @@ def check(steps=5, d=64, batch=32, lr=1e-3, scale=65536.0):
     return worst < 5e-2
 
 
+def check_lm(steps=5, vocab=64, d=32, batch=16, lr=1e-3, scale=65536.0):
+    """迷你 LM：Embedding → Linear → GELU → Linear → CE，与 torch 同参对拍。"""
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    class LM(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.emb = nn.Embedding(vocab, d)
+            self.f1 = nn.Linear(d, d * 2)
+            self.f2 = nn.Linear(d * 2, vocab)
+
+        def forward(self, tokens):
+            h = F.gelu(self.f1(self.emb(tokens)))
+            return self.f2(h)
+
+    torch.manual_seed(0)
+    model = LM()
+    toks = torch.randint(0, vocab, (batch,))
+    tgt = torch.randint(0, vocab, (batch,))
+
+    ex = Executor(model, toks)
+    ex.sync_from_torch()
+    opt = torch.optim.Adam(model.parameters(), lr=lr, eps=1e-8)
+
+    tgt_dev = ex.dev.buf(max(4096, batch * 4))
+    cl.enqueue_copy(ex.dev.q, tgt_dev, np.ascontiguousarray(tgt.numpy(), dtype=np.int32))
+    loss_buf = ex.dev.buf(max(4096, batch * 4))
+    grad_buf = ex.dev.buf(max(4096, batch * vocab * 2))
+    losses_dev, losses_torch = [], []
+    for step in range(1, steps + 1):
+        ex.zero_grads()
+        logits = ex.forward({"tokens": toks.numpy()})
+        OPS2.ce_forward(ex.dev, logits.buf, tgt_dev, loss_buf, grad_buf,
+                        batch, vocab, 1.0 / batch, scale)
+        ex.dev.q.finish()
+        lp = ex.dev.down(loss_buf, (batch,), np.float32)
+        losses_dev.append(float(lp.mean()))
+        ex.backward(grad_buf, logits.shape)
+        ex.step(lr, step, eps=1e-8 * scale)
+
+        opt.zero_grad()
+        tl = F.cross_entropy(model(toks), tgt)
+        tl.backward()
+        losses_torch.append(float(tl.detach()))
+        opt.step()
+
+    print("  step   device(CE)  torch(CE)     rel")
+    worst = 0.0
+    for i, (a, b) in enumerate(zip(losses_dev, losses_torch), 1):
+        rel = abs(a - b) / max(abs(b), 1e-12)
+        worst = max(worst, rel)
+        print("  %4d  %10.6f  %10.6f  %8.2e" % (i, a, b, rel))
+    print("RESULT " + ("PASS" if worst < 5e-2 else "FAIL"))
+    return worst < 5e-2
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--check-lm", action="store_true")
     a = ap.parse_args()
+    if a.check_lm:
+        return 0 if check_lm() else 1
     if not a.check:
         print(__doc__)
         return 0
