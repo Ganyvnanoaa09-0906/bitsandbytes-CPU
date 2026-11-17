@@ -839,7 +839,7 @@ class Stack(object):
         self.per_layer = bool(per_layer)
         self.blocks = []
         for i in range(self.layers):
-            dev = LayerCtx() if self.per_layer else None
+            dev = LayerCtx(profiling=profiling) if self.per_layer else None
             if dev is not None:
                 dev.activate()
             attn = SelfAttention(
