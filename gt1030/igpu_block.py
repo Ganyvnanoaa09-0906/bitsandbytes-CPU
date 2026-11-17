@@ -33,6 +33,7 @@ import pyopencl as cl  # noqa: E402
 
 import gt1030.ar_v2_multi as MM  # noqa: E402
 import gt1030.igpu_attn as IA  # noqa: E402
+from gt1030.igpu_ctx import DevCtx  # noqa: E402
 from gt1030.igpu_block_ops import RMSNorm  # noqa: E402
 
 A = MM.A
@@ -230,59 +231,55 @@ _K = {
 
 
 class LayerCtx(object):
-    """One OpenCL context per block: the gfx902 driver silently corrupts buffers when a
-    single context holds too many mixed-size allocations (LEAD's A.16.46 finding)."""
+    """Thin wrapper over LEAD's DevCtx: per-layer context + arena + per-context kernels."""
 
-    def __init__(self):
-        self.ctx = cl.create_some_context(interactive=False)
-        self.queue = cl.CommandQueue(self.ctx)
-        self.prog = cl.Program(self.ctx, KSRC).build(
-            options=["-cl-mad-enable", "-cl-fast-relaxed-math"]
+    def __init__(self, arena_mb=400, name="layer"):
+        self.dev = DevCtx(arena_mb=arena_mb, name=name)
+        self.ctx, self.queue = self.dev.ctx, self.dev.q
+        names = (
+            "zero_half",
+            "add_half",
+            "bias_add",
+            "bias_grad",
+            "silu_gate",
+            "silu_bwd",
+            "adamw_half",
+            "adamw_halfgrad",
+            "adamw_float",
+            "adamw_master",
+            "adamw_norm_master",
+            "split_qkv",
+            "merge_qkv",
+            "heads_to_tok",
+            "tok_to_heads",
         )
-        self.K = {
-            name: cl.Kernel(self.prog, name)
-            for name in (
-                "zero_half",
-                "add_half",
-                "bias_add",
-                "bias_grad",
-                "silu_gate",
-                "silu_bwd",
-                "adamw_half",
-                "adamw_halfgrad",
-                "adamw_float",
-                "adamw_master",
-                "adamw_norm_master",
-                "split_qkv",
-                "merge_qkv",
-                "heads_to_tok",
-                "tok_to_heads",
-            )
-        }
-        self.attn_prog = cl.Program(self.ctx, IA.AG.KERNELS).build(
-            options=["-cl-mad-enable", "-cl-fast-relaxed-math"]
+        self.K = self.dev.program(KSRC, names)
+        self.attn_K = self.dev.program(
+            IA.AG.KERNELS, ("softmax_causal", "softmax_bwd_causal")
         )
-        self.attn_K = {
-            n: cl.Kernel(self.attn_prog, n)
-            for n in ("softmax_causal", "softmax_bwd_causal")
-        }
 
     def activate(self):
-        global _K
-        A.ctx, A.queue, A.mf = self.ctx, self.queue, cl.mem_flags
-        A.QP = ctypes.c_void_p(int(self.queue.int_ptr))
+        global _K, _CURRENT_DEV
+        self.dev.activate()
+        _CURRENT_DEV = self.dev
         _K = self.K
-        IA._PROG = self.attn_prog
+        IA._PROG = None
         IA._K = self.attn_K
 
 
+_CURRENT_DEV = None
+
+
 def _buf(nbytes):
+    if _CURRENT_DEV is not None:
+        return _CURRENT_DEV.buf(nbytes)
     return cl.Buffer(A.ctx, cl.mem_flags.READ_WRITE, max(int(nbytes), 4))
 
 
 def _upload(arr):
-    # Do NOT use COPY_HOST_PTR: with many live buffers this driver silently uploads zeros
-    # (LEAD's A.16.46 warning). Allocate explicitly, copy, and finish.
+    # Do NOT use COPY_HOST_PTR: with many live buffers this driver silently uploads zeros.
+    if _CURRENT_DEV is not None:
+        return _CURRENT_DEV.up(np.ascontiguousarray(arr))
     a = np.ascontiguousarray(arr)
     buf = cl.Buffer(A.ctx, cl.mem_flags.READ_WRITE, max(a.nbytes, 4))
     cl.enqueue_copy(A.queue, buf, a)
@@ -291,6 +288,8 @@ def _upload(arr):
 
 
 def _read(buf, shape, dtype=np.float16):
+    if _CURRENT_DEV is not None:
+        return _CURRENT_DEV.down(buf, shape, dtype)
     out = np.empty(shape, dtype=dtype)
     cl.enqueue_copy(A.queue, out, buf)
     A.queue.finish()
