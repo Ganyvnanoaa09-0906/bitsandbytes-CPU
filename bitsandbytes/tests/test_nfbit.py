@@ -181,3 +181,73 @@ def test_state_dict_pack_roundtrip(tmp_path):
     assert torch.equal(loaded["int"], sd["int"])
     raw = sum(v.numel() * v.element_size() for v in sd.values())
     assert nfbit.packed_state_bytes(packed) < 0.45 * raw
+
+
+def test_edge_shapes_and_dtypes():
+    packed, absmax = nfbit.quantize(torch.empty(0, 64), bits=2, block=64)
+    assert packed.numel() == 0 and absmax.numel() == 0
+    assert nfbit.dequantize(packed, absmax, (0, 64), bits=2, block=64).shape == (0, 64)
+    for shape in ((1,), (1, 1), (3, 7)):
+        w = torch.randn(*shape)
+        p2, a2 = nfbit.quantize(w, bits=2, block=4)
+        assert nfbit.dequantize(p2, a2, shape, bits=2, block=4).shape == shape
+    w = torch.randn(4, 8, 16)
+    p3, a3 = nfbit.quantize(w, bits=3, block=8)
+    assert nfbit.dequantize(p3, a3, w.shape, bits=3, block=8).shape == w.shape
+    w = torch.randn(32, 64).half()
+    p4, a4 = nfbit.quantize(w, bits=2, block=32)
+    assert nfbit.dequantize(p4, a4, w.shape, bits=2, block=32).dtype == torch.float32
+    w = torch.randn(64, 64).t()
+    p5, a5 = nfbit.quantize(w, bits=2, block=64)
+    assert nfbit.dequantize(p5, a5, w.shape, bits=2, block=64).shape == w.shape
+
+
+def test_custom_codebook_roundtrip_and_checkpoint():
+    table = (-1.0, -0.5, 0.5, 1.0)
+    w = torch.randn(32, 64)
+    packed, absmax = nfbit.quantize(w, bits=2, block=32, table=table)
+    back = nfbit.dequantize(packed, absmax, w.shape, bits=2, block=32, table=table)
+    assert torch.equal(
+        back, nfbit.dequantize(packed, absmax, w.shape, bits=2, block=32, table=table)
+    )
+    ql = nfbit.QuantLinearNF(64, 32, bits=2, block=32, lora_r=2, table=table)
+    ql.load_from_linear(nn.Linear(64, 32))
+    ql2 = nfbit.QuantLinearNF(64, 32, bits=2, block=32, lora_r=2, table=table)
+    ql2.load_state_dict(ql.state_dict())
+    x = torch.randn(2, 64)
+    assert torch.equal(ql(x), ql2(x))
+    assert torch.equal(ql.packed, ql2.packed)
+    assert torch.equal(ql.codebook, ql2.codebook)
+
+
+def test_bias_false_and_non_divisible_block():
+    ql = nfbit.QuantLinearNF.from_linear(
+        nn.Linear(50, 7, bias=False), bits=2, block=64, lora_r=2
+    )
+    assert ql.bias is None
+    assert ql(torch.randn(3, 50)).shape == (3, 7)
+
+
+def test_pack_state_dict_3bit_and_custom():
+    table = (-1.0, -0.7, -0.3, -0.1, 0.1, 0.3, 0.7, 1.0)
+    sd = {"w": torch.randn(32, 64), "b": torch.randn(32)}
+    packed = nfbit.pack_state_dict(sd, bits=3, block=32, table=table)
+    assert packed["__nfbit_meta__"]["bits"] == 3
+    assert packed["__nfbit_meta__"]["table"] == "custom"
+    out = nfbit.unpack_state_dict(packed)
+    assert torch.equal(out["b"], sd["b"])
+    assert out["w"].shape == sd["w"].shape
+    with pytest.raises(ValueError):
+        nfbit.quantize(
+            torch.randn(8, 8), bits=3, table=(-1.0, -0.5, 0.0, 0.5, 1.0, 0.6, 0.8, 0.9)
+        )
+
+
+def test_unpack_rejects_non_nfbit_dict():
+    with pytest.raises(ValueError):
+        nfbit.unpack_state_dict({"w": torch.randn(2, 2)})
+
+
+def test_pack_codes_rejects_out_of_range():
+    with pytest.raises(ValueError):
+        nfbit.pack_codes(torch.tensor([[0, 1, 2, 4]], dtype=torch.uint8), bits=2)

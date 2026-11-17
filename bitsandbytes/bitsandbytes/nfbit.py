@@ -138,6 +138,11 @@ def pack_codes(codes: torch.Tensor, bits: int) -> torch.Tensor:
         raise ValueError(
             "codes must be (nblocks, block) with block aligned for %d bits" % bits
         )
+    if codes.numel() and int(codes.max()) > (1 << bits) - 1:
+        raise ValueError("code %d does not fit in %d bits" % (int(codes.max()), bits))
+    if codes.numel() == 0:
+        bpb = _bytes_per_block(bits, codes.shape[1])
+        return torch.empty((codes.shape[0], bpb), dtype=torch.uint8)
     if bits == 3:
         return pack_3bit(codes)
     c = codes.view(codes.shape[0], codes.shape[1] // 4, 4).to(torch.int32)
