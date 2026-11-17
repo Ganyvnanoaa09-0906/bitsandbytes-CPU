@@ -42,11 +42,13 @@ ALIGN = 4096
 class DevCtx(object):
     """一个 context + 一条 queue + 一个 arena；所有张量都是 arena 的 sub-buffer。"""
 
-    def __init__(self, arena_mb=900, name=""):
+    def __init__(self, arena_mb=900, name="", profiling=False):
         self.name = name
         dev = A.ctx.devices[0]
         self.ctx = cl.Context(devices=[dev])
-        self.q = cl.CommandQueue(self.ctx)
+        props = (cl.command_queue_properties.PROFILING_ENABLE if profiling else 0)
+        self.q = cl.CommandQueue(self.ctx, properties=props)
+        self.profiling = bool(profiling)
         self.mf = cl.mem_flags
         self.arena = cl.Buffer(self.ctx, self.mf.READ_WRITE, int(arena_mb) << 20)
         self._off = 0
