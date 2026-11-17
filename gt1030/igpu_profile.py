@@ -139,12 +139,16 @@ class EventProf(object):
             self.p, self.name = prof, name
 
         def __enter__(self):
+            import time
+            self.h0 = time.perf_counter()
             self.t0 = self.p._mark()
             return self
 
         def __exit__(self, *exc):
             t1 = self.p._mark()
-            self.p.pairs.append((self.p.step, self.name, self.t0, t1))
+            import time
+            self.h1 = time.perf_counter()
+            self.p.pairs.append((self.p.step, self.name, self.t0, t1, self.h0, self.h1))
             return False
 
     def sec(self, name):
@@ -153,7 +157,7 @@ class EventProf(object):
     def report(self):
         self.q.finish()
         acc = self.defaultdict(list)
-        for step, name, t0, t1 in self.pairs:
+        for step, name, t0, t1, _h0, _h1 in self.pairs:
             if step <= self.warmup:
                 continue
             try:
@@ -173,3 +177,70 @@ class EventProf(object):
             print("  %-14s %8.2f  %5.1f%%  (n=%d)" % (n, m * 1e3, 100 * m / s, k))
         print("  合计(可重叠)      %8.2f ms" % (s * 1e3))
         return {n: m for n, m, _ in rows}
+
+
+    # ---------------------------------------------------------------- 时间线/gap 归因
+    def report_overlap(self, top=8):
+        """按 event 时间戳重建时间线：GPU 忙区间、空闲 gap、每段 host 提交耗时。
+
+        这是回答"段和只有 wall 的 48%"的工具：
+          · gpu  = 各段 [start, end] 的并集（真正在算的时间）
+          · gap  = wall − gpu（host 提交/驱动/同步间隙）
+          · host = 每段在 host 侧停留的时间（≈ 提交这批 kernel 的 cost）
+        """
+        self.q.finish()
+        rows = []
+        for step, name, t0, t1, h0, h1 in self.pairs:
+            if step <= self.warmup:
+                continue
+            try:
+                s = t0.profile.end / 1e9
+                e = t1.profile.end / 1e9
+            except Exception:
+                continue
+            rows.append((s, e, name, h0, h1))
+        if not rows:
+            print("  [overlap] 没有数据")
+            return {}
+        rows.sort()
+
+        # GPU 忙区间并集
+        busy = 0.0
+        cur_s, cur_e = rows[0][0], rows[0][1]
+        gaps = []
+        for s, e, name, _, _ in rows[1:]:
+            if s > cur_e:
+                busy += cur_e - cur_s
+                gaps.append((cur_e, s))
+                cur_s, cur_e = s, e
+            else:
+                cur_e = max(cur_e, e)
+        busy += cur_e - cur_s
+        wall = rows[-1][1] - rows[0][0]
+
+        # 每段 host 提交成本
+        host = {}
+        for s, e, name, h0, h1 in rows:
+            host.setdefault(name, []).append(h1 - h0)
+        import statistics
+        host_med = {k: statistics.median(v) for k, v in host.items()}
+        total_host = sum(host_med.values())
+
+        print("  时间线: wall %.2f ms | GPU 忙 %.2f ms (%.0f%%) | gap %.2f ms (%.0f%%)"
+              % (wall * 1e3, busy * 1e3, 100 * busy / wall, (wall - busy) * 1e3,
+                 100 * (wall - busy) / wall))
+        print("  host 提交合计（各段 host 停留之和）: %.2f ms" % (total_host * 1e3))
+        print("  段                 GPU(ms)  host(ms)")
+        for s, e, name, h0, h1 in rows:
+            print("  %-18s %7.2f %8.2f" % (name, (e - s) * 1e3, (h1 - h0) * 1e3))
+        if gaps:
+            gaps.sort(key=lambda g: -(g[1] - g[0]))
+            print("  最大的 %d 个 GPU 空闲 gap（前一段结束 -> 后一段开始）:" % min(top, len(gaps)))
+            for g0, g1 in gaps[:top]:
+                # 找 gap 前后的段名
+                before = [r[2] for r in rows if r[1] <= g0 + 1e-12]
+                after = [r[2] for r in rows if r[0] >= g1 - 1e-12]
+                print("    %7.2f ms   after %-16s before %s"
+                      % ((g1 - g0) * 1e3, before[-1] if before else '?',
+                         after[0] if after else '?'))
+        return {"wall": wall, "busy": busy, "gap": wall - busy, "host": total_host}
