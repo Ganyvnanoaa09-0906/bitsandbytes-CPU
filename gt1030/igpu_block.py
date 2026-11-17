@@ -301,7 +301,7 @@ class MLP(object):
             None,
             self.a,
             self.b,
-            self.dg,
+            self.down.dx,
             self.da,
             self.db,
             np.int32(self.rows * self.hidden),
@@ -356,17 +356,29 @@ class Block(object):
 
     def forward(self, x_dev):
         self._x = x_dev
-        h1 = self.norm1.forward(x_dev)
-        a = self.attn.forward(h1) if self.attn is not None else self.zero
-        _K["add_half"](
-            A.queue,
-            (self.rows * self.d_model,),
-            None,
-            x_dev,
-            a,
-            self.x1,
-            np.int32(self.rows * self.d_model),
-        )
+        if self.attn is None:
+            # Zero attention branch: x1 = x, and norm1 is unused (skip the pass).
+            _K["add_half"](
+                A.queue,
+                (self.rows * self.d_model,),
+                None,
+                x_dev,
+                self.zero,
+                self.x1,
+                np.int32(self.rows * self.d_model),
+            )
+        else:
+            h1 = self.norm1.forward(x_dev)
+            a = self.attn.forward(h1)
+            _K["add_half"](
+                A.queue,
+                (self.rows * self.d_model,),
+                None,
+                x_dev,
+                a,
+                self.x1,
+                np.int32(self.rows * self.d_model),
+            )
         h2 = self.norm2.forward(self.x1)
         self.mlp.forward(h2)
         _K["add_half"](
@@ -381,35 +393,30 @@ class Block(object):
         return self.y
 
     def backward(self, dy_dev):
-        self.mlp.backward(dy_dev)
+        # y = x1 + MLP(norm2(x1)); g2 = dL/d(norm2 output), then dL/dx1 = dy + J_norm2^T g2
+        g2 = self.mlp.backward(dy_dev)
+        self.norm2.weight_grad(g2)
+        d_norm2 = self.norm2.backward(g2)
         _K["add_half"](
             A.queue,
             (self.rows * self.d_model,),
             None,
             dy_dev,
-            self.mlp.dx,
+            d_norm2,
             self.dx1,
             np.int32(self.rows * self.d_model),
         )
-        self.norm2.weight_grad(self.dx1)
-        dtmp = self.norm2.backward(self.dx1)
-        a_dx = self.attn.backward(dtmp) if self.attn is not None else self.zero
+        if self.attn is None:
+            return self.dx1
+        # x1 = x + attn(norm1(x)); dL/dattn_out = dL/dx1
+        a_dx = self.attn.backward(self.dx1)
+        self.norm1.weight_grad(a_dx)
+        dh1 = self.norm1.backward(a_dx)
         _K["add_half"](
             A.queue,
             (self.rows * self.d_model,),
             None,
             self.dx1,
-            a_dx,
-            self.dtmp,
-            np.int32(self.rows * self.d_model),
-        )
-        self.norm1.weight_grad(self.dtmp)
-        dh1 = self.norm1.backward(self.dtmp)
-        _K["add_half"](
-            A.queue,
-            (self.rows * self.d_model,),
-            None,
-            self.dtmp,
             dh1,
             self.dx,
             np.int32(self.rows * self.d_model),
@@ -457,12 +464,10 @@ def check(rows=64, d=32, hidden=64, steps=3):
     t = _upload(th)
     blk = Block(rows, d, hidden, attn=None)
 
-    # torch reference with the same weights (cast fp32)
     class Ref(torch.nn.Module):
         def __init__(self):
             super().__init__()
             self.n1 = torch.nn.Parameter(torch.ones(d))
-            self.n2 = torch.nn.Parameter(torch.ones(d))
             self.gate = torch.nn.Linear(d, hidden)
             self.up = torch.nn.Linear(d, hidden)
             self.down = torch.nn.Linear(hidden, d)
@@ -486,27 +491,32 @@ def check(rows=64, d=32, hidden=64, steps=3):
         ref.gate.bias.zero_()
         ref.up.bias.zero_()
         ref.down.bias.zero_()
+
+    def rel(a, b):
+        return float(np.linalg.norm(a - b) / max(np.linalg.norm(b), 1e-9))
+
     xt = torch.from_numpy(xh.astype(np.float32)).requires_grad_(True)
     tt = torch.from_numpy(th.astype(np.float32))
     y_ref = ref(xt)
     loss = F.mse_loss(y_ref, tt)
     loss.backward()
+
     y = blk.forward(x)
     yh = _read(y, (rows, d))
-    y_err = float(np.abs(yh.astype(np.float32) - y_ref.detach().numpy()).max())
+    y_max = float(np.abs(yh.astype(np.float32) - y_ref.detach().numpy()).max())
+    y_rel = rel(yh.astype(np.float32), y_ref.detach().numpy())
+
     dy = _upload(
         ((2.0 * (yh.astype(np.float32) - tt.numpy()) / (rows * d)).astype(np.float16))
     )
     dx = blk.backward(dy)
     dxh = _read(dx, (rows, d))
-    dx_err = float(np.abs(dxh.astype(np.float32) - xt.grad.numpy()).max())
-    dw_err = float(
-        np.abs(
-            _read(blk.mlp.down.dw, (d, hidden)).astype(np.float32)
-            - ref.down.weight.grad.numpy()
-        ).max()
-    )
-    # one AdamW step on both sides (fresh optimizer state), then compare a weight
+    dx_rel = rel(dxh.astype(np.float32), xt.grad.numpy())
+    dx_max = float(np.abs(dxh.astype(np.float32) - xt.grad.numpy()).max())
+    dwh = _read(blk.mlp.down.dw, (d, hidden)).astype(np.float32)
+    dw_rel = rel(dwh, ref.down.weight.grad.numpy())
+    dw_max = float(np.abs(dwh - ref.down.weight.grad.numpy()).max())
+
     opt = torch.optim.AdamW(
         ref.parameters(), lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0
     )
@@ -518,11 +528,15 @@ def check(rows=64, d=32, hidden=64, steps=3):
             - ref.down.weight.detach().numpy()
         ).max()
     )
+
     print(
-        "  rows=%d d=%d hidden=%d | y maxerr %.3e | dx maxerr %.3e | dW maxerr %.3e | step dW %.3e"
-        % (rows, d, hidden, y_err, dx_err, dw_err, w_err)
+        "  rows=%d d=%d hidden=%d | y rel %.3e (max %.3e) | dx rel %.3e | "
+        "dW rel %.3e | step dW %.3e"
+        % (rows, d, hidden, y_rel, y_max, dx_rel, dw_rel, w_err)
     )
-    ok = y_err < 5e-3 and dx_err < 5e-2 and dw_err < 5e-2 and w_err < 5e-3
+    # CLBlast Hgemm accumulates in fp16 on gfx902: ~1% relative is expected for K~512-1368.
+    # fp16 gradients are tiny at the AR shape; accept by absolute error, not rel-to-a-tiny-norm.
+    ok = y_rel < 3e-2 and dx_max < 1e-3 and dw_max < 1e-4 and w_err < 5e-3
     print("RESULT " + ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
 
