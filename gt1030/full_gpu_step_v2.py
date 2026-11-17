@@ -15,6 +15,7 @@ This version keeps the same math and checks, and replaces those three:
 from __future__ import annotations
 
 import ctypes
+import os
 import statistics
 import sys
 import time
@@ -32,7 +33,9 @@ DLL = r'D:\work\clblast_build\CLBlast-master\build\clblast.dll'
 ONE, ZERO = 0x3C00, 0x0000
 LAYOUT_COL, NO, TRANS = 0, 111, 112
 
-M, D, FF = 2048, 512, 1368
+B_ = int(os.environ.get('AR_B', '2'))
+T_ = int(os.environ.get('AR_T', '1024'))
+M, D, FF = B_ * T_, 512, 1368   # 2026-11-16：M 由 AR_B*AR_T 推出（原先硬编码 2048）
 WG = 256
 
 ctx = cl.create_some_context(interactive=False)

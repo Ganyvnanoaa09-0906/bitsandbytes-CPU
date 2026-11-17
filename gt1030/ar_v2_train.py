@@ -51,6 +51,10 @@ def main():
     ap.add_argument('--sgdr-mult', type=float, default=1.0, help='每 cycle 长度倍数')
     ap.add_argument('--warmup', type=int, default=0, help='前多少步线性升温到 --lr')
     ap.add_argument('--lr-min', type=float, default=0.0, help='余弦衰减终点')
+    ap.add_argument('--sched-base', type=int, default=-1,
+                    help='连续调度的全局起点步（默认 = 本 chunk 的起始 step；跨 chunk 续训时传同一个值）')
+    ap.add_argument('--sched-total', type=int, default=-1,
+                    help='连续调度的全局终点步（默认 = start_step+steps；跨 chunk 续训时传整轮总步数）')
     ap.add_argument('--val-frac', type=float, default=0.02,
                     help='尾部这么多比例的图不参与训练（与 CPU trainer 的 val_frac 一致）')
     args = ap.parse_args()
@@ -91,7 +95,13 @@ def main():
             cyc_edges.append(int(round(acc)))
             t *= args.sgdr_mult
 
+    sched_base = args.sched_base if args.sched_base >= 0 else start_step
+    sched_total = args.sched_total if args.sched_total >= 0 else start_step + args.steps
+    sched_span = max(1, sched_total - sched_base)
+
     def lr_at(st):
+        """st 是 chunk 内步数；全局步 = start_step + st ⇒ 跨 chunk 连续，不会每段重启。"""
+        gstep = start_step + st
         if args.warmup and st <= args.warmup:
             return args.lr * float(st) / float(args.warmup)
         if args.sgdr and cyc_edges:
@@ -107,12 +117,19 @@ def main():
             prog = (st - lo) / float(span)
             prog = min(1.0, max(0.0, prog))
             return args.lr_min + (args.lr - args.lr_min) * 0.5 * (1.0 + math.cos(math.pi * prog))
-        prog = (st - args.warmup) / float(max(1, args.steps - args.warmup))
+        prog = (gstep - sched_base) / float(sched_span)
         prog = min(1.0, max(0.0, prog))
         return args.lr_min + (args.lr - args.lr_min) * 0.5 * (1.0 + math.cos(math.pi * prog))
 
     n_skip = 0
     n_spike = 0
+    # ---- AR_DYN_SCALE 分支：动态损失缩放状态 ----
+    DYN = os.environ.get('AR_DYN_SCALE') == '1'
+    dyn_scale = float(os.environ.get('AR_DYN_INIT', '128'))
+    DYN_TARGET = float(os.environ.get('AR_DYN_TARGET', '6000'))    # 目标 scaled maxabs\n    # 2026-11-10：head（248320 行）的梯度比其它层大 10–20 倍，是全局缩放的瓶颈；\n    # 实测 head 真值可到 ~3.3 ⇒ 12000 的目标在 spike 时会撞 65504 变 inf。6000 可容忍 ~11× spike。
+    DYN_MAX = 60000.0
+    dyn_over = 0
+    dyn_rows = []
     lr_used = args.lr
     cyc_i = 0
     cyc_gn_max = 0.0
@@ -128,6 +145,8 @@ def main():
         tokens = np.ascontiguousarray(toks[idx].astype(np.int64))
 
         t0 = time.time()
+        if DYN:
+            MM.set_ce_scale(dyn_scale)
         loss = model.forward(tokens)
         if not np.isfinite(loss):
             n_skip += 1
@@ -137,8 +156,42 @@ def main():
                 logf.write(msg0 + "\n"); logf.flush()
             continue
         model.backward(tokens)
+        if DYN:
+            _mx = model.grad_maxabs()                     # 已按当前 scale 放大
+            _true = _mx / dyn_scale if (np.isfinite(_mx) and dyn_scale > 0) else float('inf')
+            if (not np.isfinite(_mx)) or _mx > DYN_MAX:
+                # 溢出：回退该步，缩小 scale
+                dyn_over += 1
+                new_scale = max(1.0, dyn_scale * 0.5)
+                msgd = ('[igpu] step %d/%d OVERFLOW maxabs=%.4g → 跳过，scale %.0f→%.0f'
+                        % (st, args.steps, _mx, dyn_scale, new_scale))
+                print(msgd, flush=True)
+                if logf:
+                    logf.write(msgd + "\n"); logf.flush()
+                dyn_scale = new_scale
+                n_spike += 1
+                continue
+            # 未溢出：把 scale 朝目标平滑调整（限幅 ±2×/步，避免震荡）
+            want = DYN_TARGET / max(_true, 1e-12)
+            want = min(max(want, dyn_scale / 2.0), dyn_scale * 2.0)
+            dyn_scale = 0.7 * dyn_scale + 0.3 * want
+            dyn_rows.append((st, float(loss), float(_true), float(dyn_scale), float(_mx)))
+            _diag = ' scale=%.0f true_maxabs=%.3f' % (dyn_scale, _true)
+        _gmax = os.environ.get('AR_GUARD_MAXABS')
+        if _gmax:
+            _mx = model.grad_maxabs()
+            if not np.isfinite(_mx) or _mx > float(_gmax):
+                n_spike += 1
+                msgx = '[igpu] step %d/%d GUARD maxabs=%.4g (>%s) → 跳过该步' % (
+                    st, args.steps, _mx, _gmax)
+                print(msgx, flush=True)
+                if logf:
+                    logf.write(msgx + "\n"); logf.flush()
+                continue
         if args.spike:
             gpre = model.grad_norm()
+            if os.environ.get('AR_CLIP_TRUE') == '1':
+                gpre = gpre * MM.CE_SCALE      # 换算回 fp16 缓冲的真实尺度
             if not np.isfinite(gpre) or gpre > args.spike:
                 n_spike += 1
                 msg1 = '[igpu] step %d/%d SPIKE gnorm=%.3g → 跳过该步' % (st, args.steps, gpre)
@@ -169,6 +222,8 @@ def main():
         step_times.append(dt)
         msg = ('[igpu] step %d/%d loss=%.4f gnorm=%.3f lr=%.2e %.3fs (%.0f tok/s)'
                % (st, args.steps, loss, gn, lr_used, dt, MM.M / dt))
+        if DYN and os.environ.get('AR_DIAG') == '1' and '_diag' in locals():
+            msg += _diag
         print(msg, flush=True)
         if logf:
             logf.write('%s\n' % msg)
@@ -189,6 +244,13 @@ def main():
     med = float(np.median(step_times))
     print('[igpu] 完成 %d 步 用时 %.1fs  median %.3fs/step  %.0f tok/s  loss %.4f -> %.4f'
           % (args.steps, tot, med, MM.M / med, losses[0], losses[-1]), flush=True)
+    if DYN and dyn_rows:
+        import statistics as _st
+        trues = [r[2] for r in dyn_rows]
+        print('[igpu] DYN scale 结束值 %.1f；真实 maxabs 中位 %.3g（P95 %.3g）；溢出 %d 次；可用步 %d/%d'
+              % (dyn_scale, _st.median(trues),
+                 sorted(trues)[min(len(trues) - 1, int(0.95 * len(trues)))],
+                 dyn_over, len(dyn_rows), args.steps), flush=True)
     if n_skip:
         print('[igpu] 跳过了 %d 个非有限 loss 的 batch' % n_skip, flush=True)
     if logf:

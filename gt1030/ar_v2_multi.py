@@ -44,10 +44,18 @@ import gt1030.full_gpu_step_v2 as V2       # noqa: E402
 
 B, T, MD, FF, WROW, BH, HD, NH, NKV = L.B, L.T, L.MD, L.FF, L.WROW, L.BH, L.HD, L.NH, L.NKV
 M = L.M
+assert M == A.M, ('形状不一致：attention M=%d 但层 M=%d（AR_B/AR_T 未被所有模块采纳）'
+                  % (A.M, M))
 scale = L.scale
 
 # CE 梯度放大倍数：避免反向中间量掉进 fp16 次正规区（见文件头注释）
 CE_SCALE = float(os.environ.get('AR_CE_SCALE', '1024'))
+# AR_DYN_SCALE_HOOK：动态损失缩放用。训练器每步在这里写入当前 scale；
+# loss() 在调用时读取它（grad 缓冲 = 真实梯度 × CE_SCALE），grad_norm() 再除以同一值。
+def set_ce_scale(v):
+    global CE_SCALE
+    CE_SCALE = float(v)
+
 NO_TICK = os.environ.get('AR_NOTICK', '0') == '1'
 NO_VERIFY = os.environ.get('AR_NOVERIFY', '0') == '1'
 
@@ -305,6 +313,18 @@ __kernel void sumsq_half(__global const half* g, __global float* out, int n) {
     float acc = 0.f;
     for (int k = i; k < n; k += lsz) { float v = (float)g[k]; acc += v * v; }
     out[i] = acc;
+}
+
+// 梯度绝对值最大值（每 work-item 归约一段，输出 256 个局部最大，host 再取最大）
+__kernel void maxabs_half(__global const half* g, __global float* out, int n) {
+    int i = get_global_id(0), lsz = get_global_size(0);
+    float mx = 0.f;
+    for (int k = i; k < n; k += lsz) {
+        float v = fabs((float)g[k]);
+        if (v != v) { out[i] = INFINITY; return; }   // NaN 直接上报
+        if (v > mx) mx = v;
+    }
+    out[i] = mx;
 }
 
 // ================= 向量化小 kernel（每线程 8 个元素）=================
@@ -842,8 +862,14 @@ def xgemm_override(kreg=None, bl=None, ctx=None):
     # ⚠️ 默认关闭：实测 KREG>1 的覆盖参数会让 Xgemm 算错（rel≈1.0），
     # 扫出来的 300~500 GFLOPS 是空转。证据见 _t_override_correct.py。
     kreg = int(os.environ.get('AR_XGEMM_KREG', '0')) if kreg is None else int(kreg)
-    if kreg <= 0:
+    _extra = os.environ.get('AR_XGEMM_PARAMS', '')
+    if kreg <= 0 and not _extra:
         return -1
+    vals_d = dict(GEMMK=0, KREG=kreg or 32, KWG=16, KWI=2, MDIMA=16, MDIMC=16, MWG=128,
+                  NDIMB=16, NDIMC=16, NWG=128, SA=1, SB=1, STRM=1, STRN=1, VWM=4, VWN=2)
+    if _extra:
+        import json as _json
+        vals_d.update({str(k): int(v) for k, v in _json.loads(_extra).items()})
     bl = bl or A.bl
     ctx = ctx or A.ctx
     bl.CLBlastOverrideParameters.restype = ctypes.c_int
@@ -863,7 +889,7 @@ KNAMES = ('rms_stats', 'rms_apply', 'rms_bwd_stats', 'rms_bwd_apply', 'split_q',
           'add_vec', 'adamw_single',
           'qk_norm_fwd', 'qk_norm_dx', 'split_silu', 'split_silu_bwd', 'scale_vec',
           'ce_softmax', 'scale_half', 'scale_float', 'rms_dw_from_ss', 'col_sum_prod',
-          'sgemm_nt64', 'sgemm_nn_bt', 'sumsq_half', 'rms_dw_part',
+          'sgemm_nt64', 'sgemm_nn_bt', 'sumsq_half', 'maxabs_half', 'rms_dw_part',
           'rms_fwd_fused', 'rms_bwd_fused', 'scale_add_v', 'scale_v', 'add_v',
           'split_silu_v', 'split_silu_bwd_v',
           'split_q_v', 'split_kv_v', 'merge_o_v', 'split_dout_v',
@@ -871,7 +897,9 @@ KNAMES = ('rms_stats', 'rms_apply', 'rms_bwd_stats', 'rms_bwd_apply', 'split_q',
           'softmax_causal_v', 'softmax_bwd_causal_v')
 
 
-ARENA_MB = int(os.environ.get('AR_ARENA_MB', '1800'))
+ARENA_MB = int(os.environ.get('AR_ARENA_MB', '3100'))
+# 2026-11-10：实测当前配置（10 层/T=1024/B=2 + 梯度 + Adam 状态）需要 2877 MB；
+# 3100 留 223 MB 余量。之前默认 1800 会直接抛 arena 不够，3600 又会多占 700 MB（内存紧时会拖慢整机）。
 ALIGN = 4096          # 驱动 mem_base_addr_align = 2048，取 4096 更稳
 
 
@@ -976,6 +1004,18 @@ class Dev(object):
             cl.enqueue_copy(self.q, out[i], self._part_pool[i], is_blocking=False)
         self.q.finish()
         return [float(o.sum()) for o in out]
+
+    def maxabs_half(self, buf, n):
+        """fp16 梯度缓冲的 |g| 最大值（256 路归约，host 取最大）。"""
+        if not hasattr(self, '_mx_pool'):
+            self._mx_pool = [self._alloc(256 * 4) for _ in range(4)]
+        while len(self._mx_pool) < 2:
+            self._mx_pool.append(self._alloc(256 * 4))
+        self.K['maxabs_half'](self.q, (256,), None, buf, self._mx_pool[0], np.int32(n))
+        o = np.empty(256, np.float32)
+        cl.enqueue_copy(self.q, o, self._mx_pool[0])
+        self.q.finish()
+        return float(np.max(o))
 
     def sumsq(self, buf, n):
         """设备端求 half 数组的平方和（回传 256 个部分和，再在 host 求和）"""
@@ -1429,6 +1469,22 @@ class Model(object):
             tot += float((gg.astype(np.float32) ** 2).sum())
         return float(np.sqrt(tot)) / CE_SCALE
 
+    def grad_maxabs(self):
+        """所有 fp16 权重梯度缓冲里的 |g| 最大值（用来在饱和前拦截）。"""
+        mx = 0.0
+        for blk in self.blocks:
+            d = blk.dev
+            d.activate()
+            for k in ('Wqkv', 'Wo', 'W12', 'W3'):
+                p = blk.W[k]
+                v = d.maxabs_half(p.grad, p.n)
+                if v > mx:
+                    mx = v
+        h = self.head
+        h.dev.activate()
+        v = h.dev.maxabs_half(h.W.grad, h.W.n)
+        return max(mx, v)
+
     def clip_grads(self, f):
         if not np.isfinite(f):
             return
@@ -1452,11 +1508,25 @@ class Model(object):
 
     def opt_step(self, lr, t, b1=0.9, b2=0.999, eps=1e-8, wd=0.01, max_norm=1.0):
         gn = self.grad_norm()
+        # 2026-11-06：grad 缓冲是【×CE_SCALE 缩放后】的 fp16（实测 B/A≈1024），
+        # 而 grad_norm() 返回的是除以 CE_SCALE 的值 ⇒ clip 的 f 必须用真尺度，否则弱 1024 倍。
+        # AR_DYN_SCALE_HOOK：动态缩放下 CE_SCALE 就是当前 scale，
+        # gn（=sumsq/CE_SCALE）乘回去即真实 gnorm；AR_CLIP_TRUE 保留作兼容开关
+        gn_clip = gn * (CE_SCALE if (os.environ.get('AR_CLIP_TRUE') == '1'
+                                     or os.environ.get('AR_DYN_SCALE') == '1') else 1.0)
         if not np.isfinite(gn):
             # inf/nan 梯度：整步跳过（grad 每步重算覆盖，跳过不会被带进下一步）
             return float(gn)
-        if max_norm and gn > max_norm:
-            self.clip_grads(np.float32(max_norm / (gn + 1e-8)))
+        _f = 1.0
+        if max_norm and gn_clip > max_norm:
+            _f *= float(max_norm / (gn_clip + 1e-8))
+        _f *= 1.0 / float(CE_SCALE) if abs(float(CE_SCALE) - 1.0) > 1e-9 else 1.0
+        if abs(_f - 1.0) > 1e-12:
+            self.clip_grads(np.float32(_f))
+        # AR_DYN_SCALE_HOOK2：把梯度缓冲从「×CE_SCALE」还原到真实尺度。
+        # 固定 scale 时 Adam 尺度无关（做了也一样，只多一次 pass）；
+        # 动态 scale 时【必须】还原，否则 m/v 会混入不同尺度的历史，更新方向被扭曲。
+        # （与上面的 clip 合并为一次 pass，已在上方完成）
         bc1 = 1.0 - b1 ** t
         bc2 = 1.0 - b2 ** t
         d = self.dev

@@ -477,6 +477,8 @@ def main():
                          '② 采样只要 n_iter 次前向（而不是 T 次），且每次能看【整张图】的双向上下文。'
                          '要求：--mask-mode full（自动切换）、不用 --use-bos、--head-mode flat。'
                          'vocab 会自动 +1（多一个 MASK id）')
+    ap.add_argument('--mask-block', type=int, default=0,
+                    help='MaskGIT 掩码按 KxK 整块进行（0=MaskGIT 原文的逐 token 独立）')
     ap.add_argument('--maskgit-iter', type=int, default=16,
                     help='解掩码的迭代步数（MaskGIT 常用 8~16）')
     ap.add_argument('--threads', type=int, default=6)
@@ -493,6 +495,8 @@ def main():
     ap.add_argument('--ckpt_every', type=int, default=2000)
     ap.add_argument('--no-ckpt', dest='no_ckpt', action='store_true',
                     help='完全不写 checkpoint')
+    ap.add_argument('--init-only', action='store_true',
+                    help='与 --resume 合用：只载权重，全局步从 0 开始（热启动新训练）')
     ap.add_argument('--resume', default='',
                     help='从 ckpt_<step>.pt 继续训练：恢复模型权重与全局步数，'
                          '并跳过各阶段中已完成的步。优化器动量会重置，'
@@ -661,6 +665,17 @@ def main():
                              text_dim=a.text_dim,
                                token_scale=int(getattr(a, 'token_scale', 1) or 1))
     model = SmallARImageModelV2(cfg)
+    # ★ 2026-11-17：直接在 2/3-bit 下训练（QAT + STE，无 pack/unpack）
+    _qat_bits = int(os.environ.get('AR_QAT_BITS', '0') or 0)
+    if _qat_bits > 0:
+        from scripts.lib.qat_ste import wrap_qat
+        _qat_mode = os.environ.get('AR_QAT_MODE', 'uniform')
+        _hi_bits = int(os.environ.get('AR_QAT_HI_BITS', '4'))
+        _hi_frac = float(os.environ.get('AR_QAT_HI_FRAC', '0.1'))
+        _nq = wrap_qat(model, bits=_qat_bits, block=int(os.environ.get('AR_QAT_BLOCK', '64')),
+                       mode=_qat_mode, hi_bits=_hi_bits, hi_frac=_hi_frac)
+        print('[v2] QAT-STE 已启用: %d-bit mode=%s hi=%d/hi_frac=%.2f，替换 %d 个 Linear（无 pack/unpack）'
+              % (_qat_bits, _qat_mode, _hi_bits, _hi_frac, _nq), flush=True)
     # ---- 循环 Transformer（可选，默认关闭）----
     if a.loop_L > 1 or a.loop_random:
         from loop_transformer import LoopConfig
@@ -741,10 +756,44 @@ def main():
                   % (miss[:6], list(r.unexpected_keys)[:6]), flush=True)
         if any('bos' in k for k in r.missing_keys):
             print('[v2] resume: 新增的 BOS 参数从初始化开始学（其余参数已载入）', flush=True)
-        start_gstep = int(rk.get('step', 0))
+        start_gstep = 0 if getattr(a, 'init_only', False) else int(rk.get('step', 0))
+        if getattr(a, 'init_only', False):
+            print('[v2] init-only：全局步归零，仅载入权重', flush=True)
         print('[v2] resume: %s -> 全局步 %d' % (os.path.basename(a.resume), start_gstep),
               flush=True)
 
+    # ==== 模块启用自检（2026-11-16） ====
+    # 目的：任何“可选模块”没用上时，启动就看得见，而不是训完两个月才发现。
+    _sd = model.state_dict()
+
+    def _nprefix(prefix):
+        return sum(v.numel() for k, v in _sd.items() if k.startswith(prefix))
+
+    _mods = [
+        ('loop(循环层)', int(int(getattr(a, 'loop_L', 1) or 1) > 1
+                            or bool(getattr(a, 'loop_random', False))), _nprefix('loop_mods.')),
+        ('l3(L3 FFN)', int(bool(getattr(a, 'use_l3', False))), _nprefix('l3')),
+        ('hier(层级)', int(bool(getattr(a, 'hier', False))), _nprefix('coarse')),
+        ('grn(迭代精化)', int(bool(getattr(a, 'grn_refine', False))), _nprefix('grn')),
+        ('cond(条件化)', int(getattr(cfg, 'cond_mode', 'none') != 'none'), 0),
+    ]
+    print('[v2] 模块启用自检（需求 vs 实际参数）', flush=True)
+    _bad = []
+    for _nm, _need, _np in _mods:
+        _ok = (_need > 0 and _np > 0) or (_need == 0 and _np == 0)
+        print('   %s %-14s 需求=%-2d 参数=%-8d' % ('✓' if _ok else '✗', _nm, _need, _np),
+              flush=True)
+        if _need > 0 and _np == 0:
+            _bad.append(_nm)
+        elif _need > 0 and _np > 0:
+            print('     ↳ 提示：若上方 resume 警告里出现 missing 的 %s 键，'
+                  '那部分参数是本次新初始化的' % _nm, flush=True)
+    if _bad:
+        raise SystemExit(
+            '[v2] 模块启用自检失败：%s 被要求启用，但 checkpoint 里没有对应参数。\n'
+            '     两个月前就是这么静默跑了 76k 步（循环层从未参与）。\n'
+            '     如确实要全新初始化，请显式确认后再跑。' % ', '.join(_bad))
+    # ==== 自检结束 ====
     # 条件
     cond_all = None
     # ---- 优先用【预计算好的条件张量】----
@@ -926,9 +975,12 @@ def main():
         model.eval()
         tot, cnt = 0.0, 0
         use_grn = getattr(a, 'grn_refine', False) or getattr(cfg, 'mask_mode', '') == 'full'
+        # ★ 验证批单独放大（2026-11-05）：验证是纯前向、无梯度，放大 batch 不改变语义，
+        #   但能把 val 耗时压到 1/4 左右。实测本 run 的 val 占墙钟 20.1%（552 s/次）。
+        VAL_B = max(B, 16)
         with torch.no_grad():
-            for s in range(0, len(va_sel), B):
-                sel = va_sel[s:s + B]
+            for s in range(0, len(va_sel), VAL_B):
+                sel = va_sel[s:s + VAL_B]
                 if len(sel) == 0:
                     continue
                 xv = tokens[sel, :T].long()
@@ -1104,7 +1156,25 @@ def main():
                 _V = cfg.vocab_size - 1
                 _mid = cfg.vocab_size - 1               # MASK id = 最后一个
                 rr = torch.rand(B, 1, device=x.device)
-                mk = torch.rand(B, T, device=x.device) < rr
+                _mb = int(getattr(a, 'mask_block', 0) or 0)
+                _G = int(round(T ** 0.5))
+                if _mb > 0 and _G * _G == T and _G % _mb == 0:
+                    # 整块掩码：以 KxK 块为单位遮掉 rr 比例的块（先学粗结构）
+                    _nb = _G // _mb
+                    _perm = torch.rand(B, _nb * _nb, device=x.device).argsort(dim=1)
+                    _k = (rr[:, 0] * (_nb * _nb)).round().long().clamp(0, _nb * _nb)
+                    _bm = torch.zeros(B, _nb * _nb, device=x.device, dtype=torch.bool)
+                    for _b in range(B):
+                        if int(_k[_b]) > 0:
+                            _bm[_b, _perm[_b, :int(_k[_b])]] = True
+                    mk = (_bm.reshape(B, _nb, _nb).unsqueeze(2).unsqueeze(4)
+                          .expand(B, _nb, _mb, _nb, _mb).reshape(B, T))
+                else:
+                    mk = torch.rand(B, T, device=x.device) < rr
+                if not bool(mk.any()):
+                    # 一个位置都没遮 → loss 无梯度（batch=1 + 极小掩码比例时会触发）
+                    mk = mk.clone()
+                    mk[0, 0] = True
                 x_in = torch.where(mk, torch.full_like(x, _mid), x)
                 gl = model.forward_masked(x_in, c)[..., :_V]
                 if bool(mk.any()):
