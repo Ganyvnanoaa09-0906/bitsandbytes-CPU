@@ -324,6 +324,83 @@ class MLP(object):
             m.step(lr, t)
 
 
+class SelfAttention(object):
+    """QKV/out projections + LEAD's causal attention kernel, assembled into the Block interface.
+
+    The attention kernel (`gt1030/igpu_attn.py`) takes host q/k/v in (B*NH, T, HD) layout;
+    this adapter does the (B,T,NH,HD) <-> (B*NH,T,HD) reshaping on host. That is a first
+    integration: QKV is 3*d_model*2 bytes per token (e.g. 6 MB at M=2048,D=512), still far
+    below the model state, but the follow-up should keep the reshape on device.
+    """
+
+    def __init__(self, rows, d_model, nh, hd, t, bias=True, rng=None):
+        from gt1030.igpu_attn import Attention
+
+        rng = rng or np.random.default_rng(2)
+        self.rows, self.d_model, self.nh, self.hd = (
+            int(rows),
+            int(d_model),
+            int(nh),
+            int(hd),
+        )
+        self.t = int(t)
+        assert self.rows % self.t == 0, "rows must be B*T"
+        self.b = self.rows // self.t
+        assert self.nh * self.hd == self.d_model, "nh*hd must equal d_model"
+        self.qkv = Linear(rows, d_model, 3 * d_model, bias=bias, rng=rng)
+        self.wo = Linear(rows, d_model, d_model, bias=bias, rng=rng)
+        self.att = Attention(self.b, self.t, self.nh, self.hd)
+        self.o_tokens = _buf(rows * d_model * 2)
+        self.dqkv = _buf(rows * 3 * d_model * 2)
+        self._last = None
+
+    def _to_bh(self, arr):
+        # (B,T,NH,HD) -> (B*NH,T,HD)
+        return np.ascontiguousarray(
+            arr.reshape(self.b, self.t, self.nh, self.hd)
+            .transpose(0, 2, 1, 3)
+            .reshape(self.b * self.nh, self.t, self.hd)
+        )
+
+    def _from_bh(self, arr):
+        # (B*NH,T,HD) -> (B,T,NH,HD)
+        return np.ascontiguousarray(
+            arr.reshape(self.b, self.nh, self.t, self.hd).transpose(0, 2, 1, 3)
+        )
+
+    def forward(self, x_dev):
+        qkv = self.qkv.forward(x_dev)
+        arr = _read(qkv, (self.rows, 3 * self.d_model))
+        q = self._to_bh(arr[:, : self.d_model])
+        k = self._to_bh(arr[:, self.d_model : 2 * self.d_model])
+        v = self._to_bh(arr[:, 2 * self.d_model :])
+        self.att.upload(q, k, v)
+        o = self.att.forward()
+        oh = self._from_bh(_read(o, (self.b * self.nh, self.t, self.hd)))
+        self._last = _upload(oh.reshape(self.rows, self.d_model))
+        return self.wo.forward(self._last)
+
+    def backward(self, dy_dev):
+        do_tokens = self.wo.backward(dy_dev)
+        arr = _read(do_tokens, (self.rows, self.d_model))
+        do_bh = self._to_bh(arr)
+        cl.enqueue_copy(
+            A.queue, self.att.do, np.ascontiguousarray(do_bh, dtype=np.float16)
+        )
+        A.queue.finish()
+        dq, dk, dv = self.att.backward()
+        dq = self._from_bh(_read(dq, (self.b * self.nh, self.t, self.hd)))
+        dk = self._from_bh(_read(dk, (self.b * self.nh, self.t, self.hd)))
+        dv = self._from_bh(_read(dv, (self.b * self.nh, self.t, self.hd)))
+        dqkv = np.stack([dq, dk, dv], axis=2).reshape(self.rows, 3 * self.d_model)
+        buf = _upload(np.ascontiguousarray(dqkv, dtype=np.float16))
+        return self.qkv.backward(buf)
+
+    def step(self, lr, t):
+        self.qkv.step(lr, t)
+        self.wo.step(lr, t)
+
+
 class Block(object):
     """Pre-norm transformer block: x + attn(norm1(x)), then + mlp(norm2(...))."""
 
@@ -541,6 +618,119 @@ def check(rows=64, d=32, hidden=64, steps=3):
     return 0 if ok else 1
 
 
+def check_attention(b=2, t=8, nh=2, hd=16, hidden=64, seed=0):
+    import torch
+    import torch.nn.functional as F
+
+    rows, d = b * t, nh * hd
+    rng = np.random.default_rng(seed)
+    xh = (rng.standard_normal((rows, d)) * 0.05).astype(np.float16)
+    x = _upload(xh)
+    sa = SelfAttention(rows, d, nh, hd, t, rng=np.random.default_rng(seed + 1))
+
+    qkv_w = _read(sa.qkv.w, (3 * d, d)).astype(np.float32)
+    wo_w = _read(sa.wo.w, (d, d)).astype(np.float32)
+    xt = torch.from_numpy(xh.astype(np.float32)).requires_grad_(True)
+    wq = torch.from_numpy(qkv_w.copy()).requires_grad_(True)
+    wo = torch.from_numpy(wo_w.copy()).requires_grad_(True)
+    qkv = xt @ wq.t()
+    q, k, v = qkv[:, :d], qkv[:, d : 2 * d], qkv[:, 2 * d :]
+    sh = lambda a: a.reshape(b, t, nh, hd).transpose(1, 2)
+    q, k, v = sh(q), sh(k), sh(v)
+    score = (q @ k.transpose(-1, -2)) / np.sqrt(hd)
+    mask = torch.triu(torch.ones(t, t, dtype=torch.bool), diagonal=1)
+    score = score.masked_fill(mask, float("-inf"))
+    prob = torch.softmax(score, dim=-1)
+    o = (prob @ v).transpose(1, 2).reshape(rows, d)
+    y_ref = o @ wo.t()
+    loss = (y_ref**2).mean()
+    loss.backward()
+
+    y = sa.forward(x)
+    yh = _read(y, (rows, d)).astype(np.float32)
+    dy = _upload((2 * yh / (rows * d)).astype(np.float16))
+    dx = sa.backward(dy)
+    dxh = _read(dx, (rows, d)).astype(np.float32)
+    dwh = _read(sa.qkv.dw, (3 * d, d)).astype(np.float32)
+    y_rel = float(
+        np.linalg.norm(yh - y_ref.detach().numpy())
+        / max(np.linalg.norm(y_ref.detach().numpy()), 1e-9)
+    )
+    dx_max = float(np.abs(dxh - xt.grad.numpy()).max())
+    dw_max = float(np.abs(dwh - wq.grad.numpy()).max())
+    print(
+        "  b=%d t=%d nh=%d hd=%d | y rel %.3e | dx max %.3e | dWqkv max %.3e"
+        % (b, t, nh, hd, y_rel, dx_max, dw_max)
+    )
+    ok = y_rel < 3e-2 and dx_max < 2e-3 and dw_max < 1e-4
+    print("RESULT " + ("PASS" if ok else "FAIL"))
+    return 0 if ok else 1
+
+
+def check_block_attn(b=2, t=8, nh=2, hd=16, hidden=64, seed=0):
+    import torch
+
+    rows, d = b * t, nh * hd
+    rng = np.random.default_rng(seed)
+    xh = (rng.standard_normal((rows, d)) * 0.05).astype(np.float16)
+    x = _upload(xh)
+    blk = Block(rows, d, hidden, attn=SelfAttention(rows, d, nh, hd, t))
+
+    qkv_w = _read(blk.attn.qkv.w, (3 * d, d)).astype(np.float32)
+    wo_w = _read(blk.attn.wo.w, (d, d)).astype(np.float32)
+    gate_w = _read(blk.mlp.gate.w, (hidden, d)).astype(np.float32)
+    up_w = _read(blk.mlp.up.w, (hidden, d)).astype(np.float32)
+    down_w = _read(blk.mlp.down.w, (d, hidden)).astype(np.float32)
+
+    xt = torch.from_numpy(xh.astype(np.float32)).requires_grad_(True)
+    wq = torch.from_numpy(qkv_w.copy()).requires_grad_(True)
+    wo = torch.from_numpy(wo_w.copy()).requires_grad_(True)
+    wg = torch.from_numpy(gate_w.copy()).requires_grad_(True)
+    wu = torch.from_numpy(up_w.copy()).requires_grad_(True)
+    wd = torch.from_numpy(down_w.copy()).requires_grad_(True)
+    n1 = torch.ones(d, requires_grad=True)
+    n2 = torch.ones(d, requires_grad=True)
+
+    def rms(x, w):
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + 1e-6) * w
+
+    def att(x):
+        qkv = x @ wq.t()
+        q, k, v = qkv[:, :d], qkv[:, d : 2 * d], qkv[:, 2 * d :]
+        sh = lambda a: a.reshape(b, t, nh, hd).transpose(1, 2)
+        q, k, v = sh(q), sh(k), sh(v)
+        score = (q @ k.transpose(-1, -2)) / np.sqrt(hd)
+        mask = torch.triu(torch.ones(t, t, dtype=torch.bool), diagonal=1)
+        prob = torch.softmax(score.masked_fill(mask, float("-inf")), dim=-1)
+        return (prob @ v).transpose(1, 2).reshape(rows, d) @ wo.t()
+
+    h1 = rms(xt, n1)
+    x1 = xt + att(h1)
+    h2 = rms(x1, n2)
+    y_ref = x1 + (torch.nn.functional.silu(h2 @ wg.t()) * (h2 @ wu.t())) @ wd.t()
+    (y_ref**2).mean().backward()
+
+    y = blk.forward(x)
+    yh = _read(y, (rows, d)).astype(np.float32)
+    dy = _upload((2 * yh / (rows * d)).astype(np.float16))
+    dx = blk.backward(dy)
+    dxh = _read(dx, (rows, d)).astype(np.float32)
+    dwq = _read(blk.attn.qkv.dw, (3 * d, d)).astype(np.float32)
+    y_rel = float(
+        np.linalg.norm(yh - y_ref.detach().numpy())
+        / max(np.linalg.norm(y_ref.detach().numpy()), 1e-9)
+    )
+    dx_max = float(np.abs(dxh - xt.grad.numpy()).max())
+    dw_max = float(np.abs(dwq - wq.grad.numpy()).max())
+    print(
+        "  block b=%d t=%d nh=%d hd=%d hidden=%d | y rel %.3e | dx max %.3e | dWqkv max %.3e"
+        % (b, t, nh, hd, hidden, y_rel, dx_max, dw_max)
+    )
+    ok = y_rel < 3e-2 and dx_max < 2e-3 and dw_max < 1e-4
+    print("RESULT " + ("PASS" if ok else "FAIL"))
+    return 0 if ok else 1
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true")
@@ -548,7 +738,17 @@ def main():
     ap.add_argument("--d", type=int, default=32)
     ap.add_argument("--hidden", type=int, default=64)
     ap.add_argument("--steps", type=int, default=3)
+    ap.add_argument("--check-attn", action="store_true")
+    ap.add_argument("--check-block-attn", action="store_true")
+    ap.add_argument("--b", type=int, default=2)
+    ap.add_argument("--t", type=int, default=8)
+    ap.add_argument("--nh", type=int, default=2)
+    ap.add_argument("--hd", type=int, default=16)
     a = ap.parse_args()
+    if a.check_block_attn:
+        return check_block_attn(a.b, a.t, a.nh, a.hd, a.hidden)
+    if a.check_attn:
+        return check_attention(a.b, a.t, a.nh, a.hd, a.hidden)
     if a.check:
         return check(a.rows, a.d, a.hidden, a.steps)
     return 0
