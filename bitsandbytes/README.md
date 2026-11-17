@@ -319,6 +319,34 @@ materialising B) / `gemm_3bit_transposed`; 2-bit variants are available as
 `quantize_2bit` / `dequantize_2bit` (dequant only). `Bits` are blockwise symmetric
 (block=64, one absmax per block) and match the C kernel layout exactly.
 
+## NF2/NF3 packed storage (`bitsandbytes.nfbit`, experimental)
+
+`q3bit`'s 2-bit path uses uniform levels; measured on the 30M AR checkpoint a **normal
+mid-quantile** codebook (NF2) is 0.0235 nats better than uniform at the same 2.52
+bit/weight. `nfbit` productises that format for both widths:
+
+```python
+import torch, torch.nn as nn
+from bitsandbytes import nfbit
+w = torch.randn(1024, 1024)
+packed, absmax = nfbit.quantize(w, bits=2, block=64)   # 2.5 bit/weight, 4 codes/byte
+back = nfbit.dequantize(packed, absmax, w.shape, bits=2)
+
+ql = nfbit.QuantLinearNF.from_linear(nn.Linear(1024, 1024), bits=2, lora_r=8)
+y = ql(torch.randn(2, 1024))      # frozen NF base + trainable LoRA
+print(ql.storage_bytes(), ql.forward_peak_bytes(batch=2))
+nfbit.convert_linears_nf(model, bits=2)   # lm_head stays fp32
+```
+
+Measured (30M AR, grid 16, 512 samples): fp32 7.2526 / 116.3 MB; **2-bit NF +0.0028 /
+9.2 MB (12.69x)**; 2-bit uniform +0.0263; 3-bit NF -0.0217 / 12.8 MB.
+
+**Boundaries**: this is a *storage* format — there is no native 2/3-bit GEMM, so forward
+dequantises into an fp32 temporary (use `forward_peak_bytes`); and packed + frozen base +
+LoRA is not a cheap training recipe at 2 bits (Qwen1.7B: +9.5 nats, +38% step time).
+For low-bit *training*, use QAT+STE.
+
+
 ## Performance notes (measured on this fork's target laptops)
 
 All numbers are from the repodata in `bench_results/` and the technical report; hardware:

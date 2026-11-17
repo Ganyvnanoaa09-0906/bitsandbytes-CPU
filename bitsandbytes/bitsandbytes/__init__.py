@@ -82,3 +82,5 @@ from . import gdn_cpu  # noqa: E402,F401
 
 # 挂载 q3bit（实验性 2/3-bit 量化 / 冻结 3-bit base + LoRA），让 bnb.q3bit 可直接访问
 from . import q3bit  # noqa: E402,F401
+# 挂载 nfbit（NF2/NF3 packed 低 bit 存储；冻结基座 + LoRA）
+from . import nfbit  # noqa: E402,F401

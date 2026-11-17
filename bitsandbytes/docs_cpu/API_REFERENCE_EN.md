@@ -572,6 +572,49 @@ assert [n for n, p in ql.named_parameters() if p.requires_grad] == ['lora_A', 'l
 
 **`experimental / portability`** -- since dev9 the Windows wheel ships a CI-built MSVC DLL; older wheels use the pure-torch fallback, while the dev9 Windows and Linux wheels use the native kernels
 
+## NF2/NF3 packed low-bit storage (`bitsandbytes.nfbit`, experimental)
+
+**`quantize(w, bits=2, block=64, table=None)`** -- blockwise NF codebook; returns
+`(packed uint8, absmax float32)`. 2-bit: 4 codes/byte, 2.5 bit/weight at block 64;
+3-bit: 8 codes/3 bytes, 3.5 bit/weight. `table="uniform"` switches to equal spacing
+(NF wins at 2 bits; the two are equivalent at 3 bits).
+
+```python
+import torch
+from bitsandbytes import nfbit
+w = torch.randn(256, 256)
+packed, absmax = nfbit.quantize(w, bits=2, block=64)
+back = nfbit.dequantize(packed, absmax, w.shape, bits=2, block=64)
+print(nfbit.storage_bytes(packed, absmax) / w.numel())   # 0.3125 B/weight = 2.5 bit
+```
+
+**`gemm(x, packed, absmax, bits=2, block=64)`** -- `x @ dequant(packed).T`. This is a
+**storage** win only: there is no native 2/3-bit GEMM on CPU, so the fp32 weight is
+materialised for the matmul (use `QuantLinearNF.forward_peak_bytes()` when budgeting).
+
+**`QuantLinearNF.from_linear(linear, bits=2, block=64, lora_r=8)`** -- frozen NF-coded
+base + trainable LoRA; `load_state_dict`/`state_dict` round-trip the packed bytes and
+scales bit-identically.
+
+```python
+import torch.nn as nn
+from bitsandbytes import nfbit
+ql = nfbit.QuantLinearNF.from_linear(nn.Linear(128, 96), bits=2, lora_r=4)
+y = ql(torch.randn(2, 128))
+print([n for n, p in ql.named_parameters() if p.requires_grad])  # ['lora_A', 'lora_B']
+print(ql.storage_bytes(), ql.forward_peak_bytes(batch=2))
+```
+
+**`convert_linears_nf(model, bits=2, block=64, lora_r=8)`** -- in-place replacement;
+returns the count; `lm_head` stays fp32.
+
+Measured (30M AR, grid 16, block 64, 512 validation samples): fp32 loss 7.2526 /
+116.3 MB; **2-bit NF +0.0028, 9.2 MB (12.69x)**; 2-bit uniform +0.0263; 3-bit NF -0.0217,
+12.8 MB. **Boundary**: packed + frozen base + LoRA is *not* a cheap training recipe at
+2 bits (Qwen1.7B: +9.5 nats, 60 steps only recover to 9.25, +38% step time) -- train a
+low-bit base with QAT+STE; do not sell this format as a training speed-up.
+
+
 ## Reference: bitsandbytes.nn
 
 **`Linear4bit(input_features, output_features, bias=True, compute_dtype=None,           compress_statistics=True, quant_type='fp4',           quant_storage=torch.uint8, device=None)`** -- 4-bit weights; quant_type='nf4' for model weights -- note that quant_type comes after compress_statistics, so pass it by name
