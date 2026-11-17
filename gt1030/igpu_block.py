@@ -688,6 +688,11 @@ def check_block_attn(b=2, t=8, nh=2, hd=16, hidden=64, seed=0):
     wg = torch.from_numpy(gate_w.copy()).requires_grad_(True)
     wu = torch.from_numpy(up_w.copy()).requires_grad_(True)
     wd = torch.from_numpy(down_w.copy()).requires_grad_(True)
+    bqkv = torch.zeros(3 * d, requires_grad=True)
+    bwo = torch.zeros(d, requires_grad=True)
+    bg = torch.zeros(hidden, requires_grad=True)
+    bu = torch.zeros(hidden, requires_grad=True)
+    bd = torch.zeros(d, requires_grad=True)
     n1 = torch.ones(d, requires_grad=True)
     n2 = torch.ones(d, requires_grad=True)
 
@@ -702,7 +707,7 @@ def check_block_attn(b=2, t=8, nh=2, hd=16, hidden=64, seed=0):
         score = (q @ k.transpose(-1, -2)) / np.sqrt(hd)
         mask = torch.triu(torch.ones(t, t, dtype=torch.bool), diagonal=1)
         prob = torch.softmax(score.masked_fill(mask, float("-inf")), dim=-1)
-        return (prob @ v).transpose(1, 2).reshape(rows, d) @ wo.t()
+        return (prob @ v).transpose(1, 2).reshape(rows, d) @ wo.t() + bwo
 
     h1 = rms(xt, n1)
     x1 = xt + att(h1)
@@ -731,20 +736,111 @@ def check_block_attn(b=2, t=8, nh=2, hd=16, hidden=64, seed=0):
     return 0 if ok else 1
 
 
+def check_block_train(b=2, t=8, nh=2, hd=16, hidden=64, steps=20, lr=1e-5, seed=0):
+    import torch
+    import torch.nn.functional as F
+
+    rows, d = b * t, nh * hd
+    rng = np.random.default_rng(seed)
+    xh = (rng.standard_normal((rows, d)) * 0.05).astype(np.float16)
+    th = (rng.standard_normal((rows, d)) * 0.05).astype(np.float16)
+    x = _upload(xh)
+    blk = Block(rows, d, hidden, attn=SelfAttention(rows, d, nh, hd, t))
+
+    qkv_w = _read(blk.attn.qkv.w, (3 * d, d)).astype(np.float32)
+    wo_w = _read(blk.attn.wo.w, (d, d)).astype(np.float32)
+    gate_w = _read(blk.mlp.gate.w, (hidden, d)).astype(np.float32)
+    up_w = _read(blk.mlp.up.w, (hidden, d)).astype(np.float32)
+    down_w = _read(blk.mlp.down.w, (d, hidden)).astype(np.float32)
+
+    xt = torch.from_numpy(xh.astype(np.float32))
+    tt = torch.from_numpy(th.astype(np.float32))
+    wq = torch.from_numpy(qkv_w.copy()).requires_grad_(True)
+    wo = torch.from_numpy(wo_w.copy()).requires_grad_(True)
+    wg = torch.from_numpy(gate_w.copy()).requires_grad_(True)
+    wu = torch.from_numpy(up_w.copy()).requires_grad_(True)
+    wd = torch.from_numpy(down_w.copy()).requires_grad_(True)
+    bqkv = torch.zeros(3 * d, requires_grad=True)
+    bwo = torch.zeros(d, requires_grad=True)
+    bg = torch.zeros(hidden, requires_grad=True)
+    bu = torch.zeros(hidden, requires_grad=True)
+    bd = torch.zeros(d, requires_grad=True)
+    n1 = torch.ones(d, requires_grad=True)
+    n2 = torch.ones(d, requires_grad=True)
+
+    def rms(x, w):
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + 1e-6) * w
+
+    def att(x):
+        qkv = x @ wq.t() + bqkv
+        q, k, v = qkv[:, :d], qkv[:, d : 2 * d], qkv[:, 2 * d :]
+        sh = lambda a: a.reshape(b, t, nh, hd).transpose(1, 2)
+        q, k, v = sh(q), sh(k), sh(v)
+        score = (q @ k.transpose(-1, -2)) / np.sqrt(hd)
+        mask = torch.triu(torch.ones(t, t, dtype=torch.bool), diagonal=1)
+        prob = torch.softmax(score.masked_fill(mask, float("-inf")), dim=-1)
+        return (prob @ v).transpose(1, 2).reshape(rows, d) @ wo.t() + bwo
+
+    def ref_forward(x):
+        x1 = x + att(rms(x, n1))
+        h2 = rms(x1, n2)
+        return x1 + (F.silu(h2 @ wg.t() + bg) * (h2 @ wu.t() + bu)) @ wd.t() + bd
+
+    opt = torch.optim.AdamW(
+        [wq, wo, wg, wu, wd, bqkv, bwo, bg, bu, bd, n1, n2],
+        lr=lr,
+        betas=(0.9, 0.999),
+        eps=1e-8,
+        weight_decay=0.0,
+    )
+    losses, refs = [], []
+    for step in range(1, steps + 1):
+        yh = _read(blk.forward(x), (rows, d)).astype(np.float32)
+        loss = float(((yh - th.astype(np.float32)) ** 2).mean())
+        losses.append(loss)
+        dy = _upload(
+            (2.0 * (yh - th.astype(np.float32)) / (rows * d)).astype(np.float16)
+        )
+        blk.backward(dy)
+        blk.step(lr, step)
+        yref = ref_forward(xt)
+        loss_ref = ((yref - tt) ** 2).mean()
+        opt.zero_grad()
+        loss_ref.backward()
+        opt.step()
+        refs.append(float(loss_ref.detach()))
+    worst = 0.0
+    for i, (a, r) in enumerate(zip(losses, refs)):
+        rel = abs(a - r) / max(abs(r), 1e-12)
+        worst = max(worst, rel)
+        if i in (0, steps - 1):
+            print(
+                "  step %2d: device %.6g | torch %.6g | rel %.3e" % (i + 1, a, r, rel)
+            )
+    print("  worst loss rel over %d steps: %.3e" % (steps, worst))
+    ok = worst < 1e-2
+    print("RESULT " + ("PASS" if ok else "FAIL"))
+    return 0 if ok else 1
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--lr", type=float, default=1e-5)
     ap.add_argument("--rows", type=int, default=64)
     ap.add_argument("--d", type=int, default=32)
     ap.add_argument("--hidden", type=int, default=64)
     ap.add_argument("--steps", type=int, default=3)
     ap.add_argument("--check-attn", action="store_true")
     ap.add_argument("--check-block-attn", action="store_true")
+    ap.add_argument("--check-train", action="store_true")
     ap.add_argument("--b", type=int, default=2)
     ap.add_argument("--t", type=int, default=8)
     ap.add_argument("--nh", type=int, default=2)
     ap.add_argument("--hd", type=int, default=16)
     a = ap.parse_args()
+    if a.check_train:
+        return check_block_train(a.b, a.t, a.nh, a.hd, a.hidden, a.steps, a.lr)
     if a.check_block_attn:
         return check_block_attn(a.b, a.t, a.nh, a.hd, a.hidden)
     if a.check_attn:
