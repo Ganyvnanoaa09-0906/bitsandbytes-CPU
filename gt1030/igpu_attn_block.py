@@ -163,6 +163,8 @@ class AttnBlock(object):
         d, kk = self.dev, K(self.dev)
         for bufsrc, bufdst in ((q_buf, self.q), (k_buf, self.k), (v_buf, self.v)):
             cl.enqueue_copy(d.q, bufdst, bufsrc)
+        # scatter 是累加写：每步必须清零输出缓冲，否则上一步的结果会混进来
+        cl.enqueue_copy(d.q, self.o, np.zeros(self.bt * self.D, np.float16))
         for h in range(self.nh):
             self._gather(self.q, self.qh, h)
             self._gather(self.k, self.kh, h)

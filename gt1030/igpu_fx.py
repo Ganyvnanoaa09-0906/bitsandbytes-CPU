@@ -96,13 +96,54 @@ class P(object):
         cl.enqueue_copy(self.dev.q, self.grad, np.zeros(self.n, np.float16))
 
 
+import torch.nn as _nn
+
+
+class AttnModule(_nn.Module):
+    """对 FX 透明的**叶子模块**：内部是 4 个 Linear + 设备注意力。
+
+    模型侧直接 `self.attn = igpu_fx.AttnModule(nh, hd)`；FX 把它当一个 op，
+    执行器负责 qkv/out 投影 + 注意力前后向（全部在 device）。
+    """
+
+    def __init__(self, nh, hd):
+        import torch.nn as nn
+        super().__init__()
+        self.nh, self.hd = int(nh), int(hd)
+        self.q_proj = nn.Linear(nh * hd, nh * hd, bias=False)
+        self.k_proj = nn.Linear(nh * hd, nh * hd, bias=False)
+        self.v_proj = nn.Linear(nh * hd, nh * hd, bias=False)
+        self.o_proj = nn.Linear(nh * hd, nh * hd, bias=False)
+
+    def forward(self, x):        # FX 不应追踪到这里；仅作占位（参考实现用不到）
+        return x
+
+
+class AttnTracer(object):
+    """让 symbolic_trace 把 AttnModule 当叶子（不展开内部 Linear）。"""
+
+    @classmethod
+    def trace(cls, model):
+        import torch.fx as fx
+
+        class T(fx.Tracer):
+            def is_leaf_module(self, m, qualname):
+                if isinstance(m, AttnModule):
+                    return True
+                return super().is_leaf_module(m, qualname)
+
+        t = T()
+        graph = t.trace(model)
+        return fx.GraphModule(model, graph)
+
+
 class Executor(object):
     def __init__(self, model, sample, arena_mb=900, name="fx"):
         import torch.fx as fx
         self.model = model
         self.sess = G.Session(arena_mb=arena_mb, name=name)
         self.dev = self.sess.dev
-        self.gm = fx.symbolic_trace(model)
+        self.gm = AttnTracer.trace(model)
         self.params = {}       # key -> P
         self.recs = []         # 执行记录（fwd 时填）
         self.env = {}          # node name -> T
@@ -172,6 +213,15 @@ class Executor(object):
         self.shapes = shapes
 
     # ---------------- 内存 ----------------
+    def _attn_block(self, name, bt, nh, hd):
+        import gt1030.igpu_attn_block as AB
+        if not hasattr(self, "_attn_cache"):
+            self._attn_cache = {}
+        key = (name, bt, nh, hd)
+        if key not in self._attn_cache:
+            self._attn_cache[key] = AB.AttnBlock(self.dev, bt, nh, hd)
+        return self._attn_cache[key]
+
     def _buf(self, shape):
         n = 1
         for d in shape:
@@ -188,6 +238,8 @@ class Executor(object):
             if x_np is None:
                 raise SystemExit("forward 需要 inputs 或 x_np")
             inputs = {self.placeholders[0]: x_np}
+        elif isinstance(inputs, np.ndarray):
+            inputs = {self.placeholders[0]: inputs}
         self.env = {}
         self.int_env = {}
         for name, arr in inputs.items():
@@ -238,6 +290,24 @@ class Executor(object):
                 _prog(self.dev, SILU_SRC, ("silu_fwd", "silu_bwd"), "silu")["silu_fwd"](
                     self.dev.q, (x.numel,), None, x.buf, out.buf, np.int64(x.numel))
                 self.recs.append(("silu", node.name, x, None, None))
+            elif isinstance(sub, AttnModule):
+                D = sub.nh * sub.hd
+                x = self._arg(node.args[0])
+                pq = self.params[node.target + ".q_proj.weight"]
+                pk = self.params[node.target + ".k_proj.weight"]
+                pv = self.params[node.target + ".v_proj.weight"]
+                po = self.params[node.target + ".o_proj.weight"]
+                q = self._new((x.shape[0], D))
+                k = self._new((x.shape[0], D))
+                v = self._new((x.shape[0], D))
+                GEMM.hgemm_nt(x.buf, pq.buf, q.buf, x.shape[0], D, D)
+                GEMM.hgemm_nt(x.buf, pk.buf, k.buf, x.shape[0], D, D)
+                GEMM.hgemm_nt(x.buf, pv.buf, v.buf, x.shape[0], D, D)
+                blk = self._attn_block(node.target, x.shape[0], sub.nh, sub.hd)
+                o = blk.forward(q.buf, k.buf, v.buf)
+                out = self._new((x.shape[0], D))
+                GEMM.hgemm_nt(o, po.buf, out.buf, x.shape[0], D, D)
+                self.recs.append(("attn", node.name, (x, q, k, v, o, blk, (pq, pk, pv, po), D)))
             elif isinstance(sub, nn.Embedding):
                 idx = self.env[node.args[0].name]
                 out = self._new((idx.shape[0], sub.embedding_dim))
@@ -321,6 +391,29 @@ class Executor(object):
                 f = (NN._kernels()["gelu_bwd"] if kind == "gelu"
                      else _prog(self.dev, SILU_SRC, ("silu_fwd", "silu_bwd"), "silu")["silu_bwd"])
                 f(self.dev.q, (x.numel,), None, x.buf, g, dx, np.int64(x.numel))
+                self._propagate(pending, x, dx)
+            elif kind == "attn":
+                x, q, k, v, o, blk, (pq, pk, pv, po), D = rec[2]
+                BT = x.shape[0]
+                do_pre = self._buf((BT, D))
+                dW_o = self._buf((D, D))
+                GEMM.hgemm_nn(g, po.buf, do_pre, BT, D, D)      # dO_pre = dy W_o
+                GEMM.hgemm_tn(g, o, dW_o, D, D, BT)             # dW_o = dyᵀ O
+                self._acc_param(po, dW_o)
+                dq, dk, dv = blk.backward(do_pre)
+                # dW_q = dqᵀ x, 并累计 dx
+                dx = self._buf((BT, D))
+                for gi, (p_in, g_in) in enumerate(((pq, dq), (pk, dk), (pv, dv))):
+                    dW = self._buf((D, D))
+                    GEMM.hgemm_tn(g_in, x.buf, dW, D, D, BT)
+                    self._acc_param(p_in, dW)
+                    tmp = self._buf((BT, D))
+                    GEMM.hgemm_nn(g_in, p_in.buf, tmp, BT, D, D)
+                    if gi == 0:
+                        cl.enqueue_copy(self.dev.q, dx, tmp)
+                    else:
+                        G._kernels(self.dev)["add_h"](self.dev.q, (BT * D,), None, dx, tmp,
+                                                      dx, np.int64(BT * D))
                 self._propagate(pending, x, dx)
             elif kind == "emb":
                 idx, p = rec[2]
@@ -456,6 +549,79 @@ def check(steps=5, d=64, batch=32, lr=1e-3, scale=65536.0):
     return worst < 5e-2
 
 
+def check_block(steps=5, bt=16, d=32, nh=4, hd=8, lr=1e-3):
+    """一个完整 transformer block（LN→Attn→res→LN→FFN→res）+ CE，对拍 torch。"""
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    class Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.n1 = nn.LayerNorm(d)
+            self.attn = AttnModule(nh, hd)
+            self.n2 = nn.LayerNorm(d)
+            self.f1 = nn.Linear(d, d * 4, bias=False)
+            self.f2 = nn.Linear(d * 4, d, bias=False)
+
+        def forward(self, x):
+            h = x + self.attn(self.n1(x))
+            return h + self.f2(F.gelu(self.f1(self.n2(h))))
+
+    torch.manual_seed(0)
+    model = Block()
+    x = torch.randn(bt, d) * 0.3
+
+    ex = Executor(model, x)
+    ex.sync_from_torch()
+
+    def torch_attn(mod, h):
+        B = 1
+        q = mod.q_proj(h).view(bt, nh, hd).transpose(0, 1)
+        k = mod.k_proj(h).view(bt, nh, hd).transpose(0, 1)
+        v = mod.v_proj(h).view(bt, nh, hd).transpose(0, 1)
+        s = (q @ k.transpose(-1, -2)) / (hd ** 0.5)
+        mask = torch.tril(torch.ones(bt, bt, dtype=torch.bool))
+        p = torch.softmax(s.masked_fill(~mask, float("-inf")), dim=-1)
+        o = (p @ v).transpose(0, 1).reshape(bt, d)
+        return mod.o_proj(o)
+
+    opt = torch.optim.Adam(model.parameters(), lr=lr, eps=1e-8)
+    scale = 65536.0
+    tgt = (torch.randn(bt, d) * 0.1)
+    tgt_dev = ex.dev.up(tgt.numpy().astype(np.float16))
+    dy = ex.dev.buf(max(4096, bt * d * 2))
+    losses_dev, losses_torch = [], []
+    for step in range(1, steps + 1):
+        ex.zero_grads()
+        y = ex.forward(x.numpy())
+        n = y.numel
+        G._kernels(ex.dev)["mse_grad_h"](ex.dev.q, (n,), None, y.buf, tgt_dev, dy,
+                                         np.int64(n), np.float32(1.0 / n), np.float32(scale))
+        ex.dev.q.finish()
+        losses_dev.append(float(((ex.dev.down(y.buf, y.shape).astype(np.float32)
+                                  - tgt.numpy().astype(np.float32)) ** 2).mean()))
+        ex.backward(dy, y.shape)
+        ex.step(lr, step, eps=1e-8 * scale)
+
+        opt.zero_grad()
+        h = x + torch_attn(model.attn, model.n1(x))
+        out = h + model.f2(F.gelu(model.f1(model.n2(h))))
+        tl = F.mse_loss(out, tgt)
+        tl.backward()
+        losses_torch.append(float(tl.detach()))
+        opt.step()
+
+    print("  step   device      torch       rel")
+    worst = 0.0
+    for i, (a, b) in enumerate(zip(losses_dev, losses_torch), 1):
+        rel = abs(a - b) / max(abs(b), 1e-12)
+        worst = max(worst, rel)
+        print("  %4d  %10.6f  %10.6f  %8.2e" % (i, a, b, rel))
+    print("RESULT " + ("PASS" if worst < 5e-2 else "FAIL"))
+    return worst < 5e-2
+
+
 def check_lm(steps=5, vocab=64, d=32, batch=16, lr=1e-3, scale=65536.0):
     """迷你 LM：Embedding → Linear → GELU → Linear → CE，与 torch 同参对拍。"""
     import torch
@@ -518,7 +684,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--check-lm", action="store_true")
+    ap.add_argument("--check-block", action="store_true")
     a = ap.parse_args()
+    if a.check_block:
+        return 0 if check_block() else 1
     if a.check_lm:
         return 0 if check_lm() else 1
     if not a.check:
