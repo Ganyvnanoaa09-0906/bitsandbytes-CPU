@@ -21,6 +21,7 @@ attention 未就绪时的 `attn=None`（零分支）自检。
 from __future__ import annotations
 
 import argparse
+import ctypes
 import os
 import sys
 
@@ -31,6 +32,7 @@ import numpy as np  # noqa: E402
 import pyopencl as cl  # noqa: E402
 
 import gt1030.ar_v2_multi as MM  # noqa: E402
+import gt1030.igpu_attn as IA  # noqa: E402
 from gt1030.igpu_block_ops import RMSNorm  # noqa: E402
 
 A = MM.A
@@ -143,6 +145,36 @@ __kernel void adamw_half(__global half* w, __global const half* g,
     float wv = (float)w[i] - lr * (mm / bc1) / (sqrt(vv / bc2) + eps) - lr * wd * (float)w[i];
     w[i] = (half)wv;
 }
+__kernel void adamw_master(__global half* w, __global float* master, __global const half* g,
+                            __global float* m, __global float* v, int n,
+                            float lr, float b1, float b2, float eps, float wd,
+                            float bc1, float bc2) {
+    int i = get_global_id(0);
+    if (i >= n) return;
+    float grad = (float)g[i];
+    float mm = b1 * m[i] + (1.f - b1) * grad;
+    float vv = b2 * v[i] + (1.f - b2) * grad * grad;
+    m[i] = mm;
+    v[i] = vv;
+    float wv = master[i] - lr * (mm / bc1) / (sqrt(vv / bc2) + eps) - lr * wd * master[i];
+    master[i] = wv;
+    w[i] = (half)wv;
+}
+__kernel void adamw_norm_master(__global half* w, __global float* master, __global const float* g,
+                                 __global float* m, __global float* v, int n,
+                                 float lr, float b1, float b2, float eps, float wd,
+                                 float bc1, float bc2) {
+    int i = get_global_id(0);
+    if (i >= n) return;
+    float grad = g[i];
+    float mm = b1 * m[i] + (1.f - b1) * grad;
+    float vv = b2 * v[i] + (1.f - b2) * grad * grad;
+    m[i] = mm;
+    v[i] = vv;
+    float wv = master[i] - lr * (mm / bc1) / (sqrt(vv / bc2) + eps) - lr * wd * master[i];
+    master[i] = wv;
+    w[i] = (half)wv;
+}
 __kernel void adamw_halfgrad(__global half* w, __global const float* g,
                             __global float* m, __global float* v,
                             int n, float lr, float b1, float b2, float eps, float wd,
@@ -187,6 +219,8 @@ _K = {
         "adamw_half",
         "adamw_halfgrad",
         "adamw_float",
+        "adamw_master",
+        "adamw_norm_master",
         "split_qkv",
         "merge_qkv",
         "heads_to_tok",
@@ -195,16 +229,65 @@ _K = {
 }
 
 
+class LayerCtx(object):
+    """One OpenCL context per block: the gfx902 driver silently corrupts buffers when a
+    single context holds too many mixed-size allocations (LEAD's A.16.46 finding)."""
+
+    def __init__(self):
+        self.ctx = cl.create_some_context(interactive=False)
+        self.queue = cl.CommandQueue(self.ctx)
+        self.prog = cl.Program(self.ctx, KSRC).build(
+            options=["-cl-mad-enable", "-cl-fast-relaxed-math"]
+        )
+        self.K = {
+            name: cl.Kernel(self.prog, name)
+            for name in (
+                "zero_half",
+                "add_half",
+                "bias_add",
+                "bias_grad",
+                "silu_gate",
+                "silu_bwd",
+                "adamw_half",
+                "adamw_halfgrad",
+                "adamw_float",
+                "adamw_master",
+                "adamw_norm_master",
+                "split_qkv",
+                "merge_qkv",
+                "heads_to_tok",
+                "tok_to_heads",
+            )
+        }
+        self.attn_prog = cl.Program(self.ctx, IA.AG.KERNELS).build(
+            options=["-cl-mad-enable", "-cl-fast-relaxed-math"]
+        )
+        self.attn_K = {
+            n: cl.Kernel(self.attn_prog, n)
+            for n in ("softmax_causal", "softmax_bwd_causal")
+        }
+
+    def activate(self):
+        global _K
+        A.ctx, A.queue, A.mf = self.ctx, self.queue, cl.mem_flags
+        A.QP = ctypes.c_void_p(int(self.queue.int_ptr))
+        _K = self.K
+        IA._PROG = self.attn_prog
+        IA._K = self.attn_K
+
+
 def _buf(nbytes):
     return cl.Buffer(A.ctx, cl.mem_flags.READ_WRITE, max(int(nbytes), 4))
 
 
 def _upload(arr):
-    return cl.Buffer(
-        A.ctx,
-        cl.mem_flags.READ_WRITE | cl.mem_flags.COPY_HOST_PTR,
-        hostbuf=np.ascontiguousarray(arr),
-    )
+    # Do NOT use COPY_HOST_PTR: with many live buffers this driver silently uploads zeros
+    # (LEAD's A.16.46 warning). Allocate explicitly, copy, and finish.
+    a = np.ascontiguousarray(arr)
+    buf = cl.Buffer(A.ctx, cl.mem_flags.READ_WRITE, max(a.nbytes, 4))
+    cl.enqueue_copy(A.queue, buf, a)
+    A.queue.finish()
+    return buf
 
 
 def _read(buf, shape, dtype=np.float16):
@@ -222,6 +305,10 @@ class Linear(object):
         rng = rng or np.random.default_rng(0)
         w = (rng.standard_normal((self.n_out, self.n_in)) * 0.02).astype(np.float16)
         self.w = _upload(w)
+        self.master = _buf(self.n_out * self.n_in * 4)
+        cl.enqueue_copy(
+            A.queue, self.master, np.ascontiguousarray(w.astype(np.float32))
+        )
         self.dw = _buf(self.n_out * self.n_in * 2)
         self.m = _buf(self.n_out * self.n_in * 4)
         self.v = _buf(self.n_out * self.n_in * 4)
@@ -239,6 +326,25 @@ class Linear(object):
         self.y = _buf(self.rows * self.n_out * 2)
         self.dx = _buf(self.rows * self.n_in * 2)
         self._x = None
+        A.queue.finish()
+
+    def set_weight(self, w_fp32):
+        w = np.ascontiguousarray(
+            np.asarray(w_fp32, dtype=np.float32).astype(np.float16)
+        )
+        assert w.shape == (self.n_out, self.n_in), (w.shape, self.n_out, self.n_in)
+        cl.enqueue_copy(A.queue, self.w, w)
+        cl.enqueue_copy(
+            A.queue,
+            self.master,
+            np.ascontiguousarray(np.asarray(w_fp32, dtype=np.float32)),
+        )
+        cl.enqueue_fill_buffer(
+            A.queue, self.m, np.float32(0), 0, self.n_out * self.n_in * 4
+        )
+        cl.enqueue_fill_buffer(
+            A.queue, self.v, np.float32(0), 0, self.n_out * self.n_in * 4
+        )
         A.queue.finish()
 
     def forward(self, x_dev):
@@ -283,11 +389,12 @@ class Linear(object):
         n = self.n_out * self.n_in
         bc1 = 1.0 - b1**t
         bc2 = 1.0 - b2**t
-        _K["adamw_half"](
+        _K["adamw_master"](
             A.queue,
             ((n + 255) // 256 * 256,),
             (256,),
             self.w,
+            self.master,
             self.dw,
             self.m,
             self.v,
@@ -326,17 +433,15 @@ class MLP(object):
     def __init__(self, rows, d_model, hidden, rng=None):
         self.rows, self.d_model, self.hidden = int(rows), int(d_model), int(hidden)
         rng = rng or np.random.default_rng(1)
-        self.gate = Linear(rows, d_model, hidden, rng=rng)
-        self.up = Linear(rows, d_model, hidden, rng=rng)
-        self.down = Linear(rows, hidden, d_model, rng=rng)
+        self.gate = Linear(rows, d_model, hidden, bias=False, rng=rng)
+        self.up = Linear(rows, d_model, hidden, bias=False, rng=rng)
+        self.down = Linear(rows, hidden, d_model, bias=False, rng=rng)
         self.a = self.gate.y
         self.b = self.up.y
         self.g = _buf(rows * hidden * 2)
-        self.dg = _buf(rows * hidden * 2)
         self.da = _buf(rows * hidden * 2)
         self.db = _buf(rows * hidden * 2)
         self.dx = _buf(rows * d_model * 2)
-        self.tmp = _buf(rows * d_model * 2)
 
     def forward(self, x_dev):
         self.gate.forward(x_dev)
@@ -393,7 +498,7 @@ class SelfAttention(object):
     below the model state, but the follow-up should keep the reshape on device.
     """
 
-    def __init__(self, rows, d_model, nh, hd, t, bias=True, rng=None):
+    def __init__(self, rows, d_model, nh, hd, t, bias=False, rng=None):
         from gt1030.igpu_attn import Attention
 
         rng = rng or np.random.default_rng(2)
@@ -494,8 +599,11 @@ class SelfAttention(object):
 class Block(object):
     """Pre-norm transformer block: x + attn(norm1(x)), then + mlp(norm2(...))."""
 
-    def __init__(self, rows, d_model, hidden, attn=None, eps=1e-6, seed=None):
+    def __init__(self, rows, d_model, hidden, attn=None, eps=1e-6, seed=None, dev=None):
         self.rows, self.d_model, self.hidden = int(rows), int(d_model), int(hidden)
+        self.dev = dev
+        if dev is not None:
+            dev.activate()
         self.norm1 = RMSNorm(rows, d_model, eps=eps)
         self.norm2 = RMSNorm(rows, d_model, eps=eps)
         self.norm1.set_weight(np.ones(d_model, dtype=np.float16))
@@ -504,8 +612,13 @@ class Block(object):
         self.norm1.v = _buf(d_model * 4)
         self.norm2.m = _buf(d_model * 4)
         self.norm2.v = _buf(d_model * 4)
+        self.norm1.master = _buf(d_model * 4)
+        self.norm2.master = _buf(d_model * 4)
         for b in (self.norm1.m, self.norm1.v, self.norm2.m, self.norm2.v):
             cl.enqueue_fill_buffer(A.queue, b, np.float32(0), 0, d_model * 4)
+        for nm in (self.norm1, self.norm2):
+            cl.enqueue_copy(A.queue, nm.master, np.ones(d_model, dtype=np.float32))
+        A.queue.finish()
         self.attn = attn
         self.mlp = MLP(
             rows,
@@ -518,15 +631,17 @@ class Block(object):
             A.queue, (rows * d_model,), None, self.zero, np.int32(rows * d_model)
         )
         self.x1 = _buf(rows * d_model * 2)
-        self.h2 = _buf(rows * d_model * 2)
         self.y = _buf(rows * d_model * 2)
         self.dx = _buf(rows * d_model * 2)
         self.dx1 = _buf(rows * d_model * 2)
-        self.dh2 = _buf(rows * d_model * 2)
-        self.dtmp = _buf(rows * d_model * 2)
         self._x = None
 
+    def activate(self):
+        if self.dev is not None:
+            self.dev.activate()
+
     def forward(self, x_dev):
+        self.activate()
         self._x = x_dev
         if self.attn is None:
             # Zero attention branch: x1 = x, and norm1 is unused (skip the pass).
@@ -565,6 +680,7 @@ class Block(object):
         return self.y
 
     def backward(self, dy_dev):
+        self.activate()
         # y = x1 + MLP(norm2(x1)); g2 = dL/d(norm2 output), then dL/dx1 = dy + J_norm2^T g2
         g2 = self.mlp.backward(dy_dev)
         self.norm2.weight_grad(g2)
@@ -599,11 +715,12 @@ class Block(object):
         cols = self.d_model
         bc1 = 1.0 - 0.9**t
         bc2 = 1.0 - 0.999**t
-        _K["adamw_halfgrad"](
+        _K["adamw_norm_master"](
             A.queue,
             ((cols + 63) // 64 * 64,),
             (64,),
             norm.w,
+            norm.master,
             norm.dw,
             norm.m,
             norm.v,
@@ -618,6 +735,7 @@ class Block(object):
         )
 
     def step(self, lr, t):
+        self.activate()
         self._norm_step(self.norm1, lr, t)
         self._norm_step(self.norm2, lr, t)
         self.mlp.step(lr, t)
@@ -628,59 +746,110 @@ class Block(object):
 class Stack(object):
     """N pre-norm blocks + final RMSNorm; all device-resident."""
 
-    def __init__(self, rows, d_model, hidden, nh, hd, t, layers, seed=0, eps=1e-6):
+    def __init__(
+        self,
+        rows,
+        d_model,
+        hidden,
+        nh,
+        hd,
+        t,
+        layers,
+        seed=0,
+        eps=1e-6,
+        final_norm=True,
+        per_layer=False,
+    ):
         self.rows, self.d_model, self.hidden = int(rows), int(d_model), int(hidden)
         self.layers = int(layers)
+        self.per_layer = bool(per_layer)
         self.blocks = []
         for i in range(self.layers):
+            dev = LayerCtx() if self.per_layer else None
+            if dev is not None:
+                dev.activate()
             attn = SelfAttention(
                 rows, d_model, nh, hd, t, rng=np.random.default_rng(seed + 100 + i)
             )
             self.blocks.append(
-                Block(rows, d_model, hidden, attn=attn, eps=eps, seed=seed + 200 + i)
+                Block(
+                    rows,
+                    d_model,
+                    hidden,
+                    attn=attn,
+                    eps=eps,
+                    seed=seed + 200 + i,
+                    dev=dev,
+                )
             )
-        self.norm = RMSNorm(rows, d_model, eps=eps)
-        self.norm.set_weight(np.ones(d_model, dtype=np.float16))
-        self.norm.m = _buf(d_model * 4)
-        self.norm.v = _buf(d_model * 4)
-        for b in (self.norm.m, self.norm.v):
-            cl.enqueue_fill_buffer(A.queue, b, np.float32(0), 0, d_model * 4)
+        self.norm = None
+        if final_norm:
+            self.norm = RMSNorm(rows, d_model, eps=eps)
+            self.norm.set_weight(np.ones(d_model, dtype=np.float16))
+            self.norm.m = _buf(d_model * 4)
+            self.norm.v = _buf(d_model * 4)
+            for b in (self.norm.m, self.norm.v):
+                cl.enqueue_fill_buffer(A.queue, b, np.float32(0), 0, d_model * 4)
 
     def forward(self, x_dev):
         x = x_dev
         for block in self.blocks:
             x = block.forward(x)
-        return self.norm.forward(x)
+        return self.norm.forward(x) if self.norm is not None else x
 
     def backward(self, dy_dev):
-        self.norm.weight_grad(dy_dev)
-        dy = self.norm.backward(dy_dev)
+        dy = dy_dev
+        if self.norm is not None:
+            self.norm.weight_grad(dy)
+            dy = self.norm.backward(dy)
         for block in reversed(self.blocks):
             dy = block.backward(dy)
         return dy
 
-    def step(self, lr, t):
-        cols = self.d_model
-        bc1 = 1.0 - 0.9**t
-        bc2 = 1.0 - 0.999**t
-        _K["adamw_halfgrad"](
-            A.queue,
-            ((cols + 63) // 64 * 64,),
-            (64,),
-            self.norm.w,
-            self.norm.dw,
-            self.norm.m,
-            self.norm.v,
-            np.int32(cols),
-            np.float32(lr),
-            np.float32(0.9),
-            np.float32(0.999),
-            np.float32(1e-8),
-            np.float32(0.0),
-            np.float32(bc1),
-            np.float32(bc2),
-        )
+    def forward_np(self, x_np):
+        """Per-layer-context path: host bridge between layers (2 MB/layer at L3 size)."""
+        h = np.ascontiguousarray(x_np, dtype=np.float16)
         for block in self.blocks:
+            block.activate()
+            xb = _upload(h)
+            y = block.forward(xb)
+            h = _read(y, (self.rows, self.d_model))
+        return h.astype(np.float32)
+
+    def backward_np(self, dy_np):
+        d = np.ascontiguousarray(dy_np, dtype=np.float16)
+        for block in reversed(self.blocks):
+            block.activate()
+            dyb = _upload(d)
+            dx = block.backward(dyb)
+            d = _read(dx, (self.rows, self.d_model))
+        return d.astype(np.float32)
+
+    def step(self, lr, t):
+        if self.norm is not None:
+            cols = self.d_model
+            bc1 = 1.0 - 0.9**t
+            bc2 = 1.0 - 0.999**t
+            _K["adamw_norm_master"](
+                A.queue,
+                ((cols + 63) // 64 * 64,),
+                (64,),
+                self.norm.w,
+                self.norm.master,
+                self.norm.dw,
+                self.norm.m,
+                self.norm.v,
+                np.int32(cols),
+                np.float32(lr),
+                np.float32(0.9),
+                np.float32(0.999),
+                np.float32(1e-8),
+                np.float32(0.0),
+                np.float32(bc1),
+                np.float32(bc2),
+            )
+        for block in self.blocks:
+            block.activate()
             block.step(lr, t)
 
 
