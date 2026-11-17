@@ -92,6 +92,107 @@ __kernel void untranspose_h(__global const half* x, __global half* y,
     y[(long)c * rows + r] = x[(long)r * cols + c];
 }
 
+
+// ---- 8-bit 动量：mom 为 int8 码，absmax 每 256 元素一个 fp32 ----
+__kernel void muon_d_q8(__global char* mom, __global float* amax, __global const half* g,
+                        __global half* d, int rows, int cols, int out_cols,
+                        float mu, int transposed) {
+    int r = get_global_id(0), c = get_local_id(0);
+    long i = (long)r * cols + c;
+    int blk = (int)(i / 256);
+    float m = ((float)mom[i] / 127.f) * amax[blk];
+    float gt = (float)g[i];
+    float nm = mu * m + gt;
+    float dv = gt + mu * nm;
+    long o = transposed ? ((long)c * out_cols + r) : ((long)r * out_cols + c);
+    d[o] = (half)dv;
+}
+
+// 重定量化（单独一趟，按 256 元素块求 absmax 后写回 int8）
+__kernel void mom_requant8(__global const float* momf, __global char* mom, __global float* amax,
+                           int n) {
+    int blk = get_group_id(0), lid = get_local_id(0), lsz = get_local_size(0);
+    int base = blk * 256;
+    __local float red[256];
+    float a = 0.f;
+    int i = base + lid;
+    if (i < n) a = fabs(momf[i]);
+    red[lid] = a; barrier(CLK_LOCAL_MEM_FENCE);
+    for (int off = lsz >> 1; off > 0; off >>= 1) { if (lid < off) red[lid] = fmax(red[lid], red[lid + off]); barrier(CLK_LOCAL_MEM_FENCE); }
+    float am = fmax(red[0], 1e-12f);
+    barrier(CLK_LOCAL_MEM_FENCE);
+    if (lid == 0) amax[blk] = am;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    am = amax[blk];
+    if (i < n) mom[i] = (char)clamp(round(momf[i] / am * 127.f), -127.f, 127.f);
+}
+
+// 动量更新到 fp32 临时区（供 requant 用）
+__kernel void mom_update_f32(__global const half* g, __global const char* mom,
+                             __global const float* amax, __global float* momf,
+                             long n, float mu) {
+    long i = get_global_id(0);
+    if (i >= n) return;
+    int blk = (int)(i / 256);
+    float m = ((float)mom[i] / 127.f) * amax[blk];
+    momf[i] = mu * m + (float)g[i];
+}
+
+
+// 4-bit 动量：两个码打一个字节（低半=偶数下标，高半=奇数下标），每 256 元素一个 absmax
+inline float nib_get(__global const uchar* mom, long i, float am) {
+    uchar b = mom[i >> 1];
+    int code = (i & 1) ? ((b >> 4) & 0xF) : (b & 0xF);
+    return ((float)code - 8.f) / 7.f * am;
+}
+inline uchar nib_pack(uchar lo, uchar hi) { return (uchar)((hi << 4) | (lo & 0xF)); }
+
+__kernel void muon_d_q4(__global const uchar* mom, __global const float* amax,
+                        __global const half* g, __global half* d,
+                        int rows, int cols, int out_cols, float mu, int transposed) {
+    int r = get_global_id(0), c = get_local_id(0);
+    long i = (long)r * cols + c;
+    int blk = (int)(i / 256);
+    float m = nib_get(mom, i, amax[blk]);
+    float gt = (float)g[i];
+    float nm = mu * m + gt;
+    float dv = gt + mu * nm;
+    long o = transposed ? ((long)c * out_cols + r) : ((long)r * out_cols + c);
+    d[o] = (half)dv;
+}
+
+__kernel void mom_update_q4(__global const half* g, __global const uchar* mom,
+                            __global const float* amax, __global float* momf,
+                            long n, float mu) {
+    long i = get_global_id(0);
+    if (i >= n) return;
+    int blk = (int)(i / 256);
+    momf[i] = mu * nib_get(mom, i, amax[blk]) + (float)g[i];
+}
+
+__kernel void mom_requant4(__global const float* momf, __global uchar* mom,
+                           __global float* amax, int n) {
+    int blk = get_group_id(0), lid = get_local_id(0), lsz = get_local_size(0);
+    int base = blk * 256;
+    __local float red[256];
+    int i = base + lid;
+    float a = 0.f;
+    if (i < n) a = fabs(momf[i]);
+    red[lid] = a; barrier(CLK_LOCAL_MEM_FENCE);
+    for (int off = lsz >> 1; off > 0; off >>= 1) { if (lid < off) red[lid] = fmax(red[lid], red[lid + off]); barrier(CLK_LOCAL_MEM_FENCE); }
+    float am = fmax(red[0], 1e-12f);
+    barrier(CLK_LOCAL_MEM_FENCE);
+    if (lid == 0) amax[blk] = am;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    am = amax[blk];
+    if (i >= n) return;
+    int code = (int)clamp(round(momf[i] / am * 7.f) + 8.f, 0.f, 15.f);
+    uchar b = mom[i >> 1];
+    if (i & 1) b = nib_pack(b & 0xF, (uchar)code);
+    else b = nib_pack((uchar)code, (b >> 4) & 0xF);
+    mom[i >> 1] = b;
+}
+
 """
 
 _C = {}
@@ -104,7 +205,9 @@ def K(dev):
             options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
         _C[key] = {n: cl.Kernel(prog, n) for n in
                    ("row_sumsq", "scale_all", "ns_bm", "ns_ax_plus", "muon_apply",
-                    "muon_d", "untranspose_h")}
+                    "muon_d", "untranspose_h", "muon_d_q8", "mom_requant8",
+                    "mom_update_f32", "muon_d_q4", "mom_update_q4",
+                    "mom_requant4")}
     return _C[key]
 
 
@@ -230,6 +333,180 @@ def check_step(m=32, n=16, seed=0, lr=0.02):
     return rel < 5e-2
 
 
+
+
+def alloc_mom_q8(dev, n):
+    """给 P 挂上 8-bit 动量：mom8（int8 码）+ amax（每 256 一个 fp32）+ momf（fp32 临时）。"""
+    nblocks = (n + 255) // 256
+    p_mom = dev.buf(max(4096, n))
+    amax = dev.buf(max(4096, nblocks * 4))
+    momf = dev.buf(max(4096, n * 4))
+    cl.enqueue_copy(dev.q, p_mom, np.zeros(n, np.int8))
+    cl.enqueue_copy(dev.q, amax, np.zeros(nblocks, np.float32))
+    dev.q.finish()
+    return p_mom, amax, momf
+
+
+def muon_step_q8(dev, p, grad_buf, lr, wd=0.0, momentum=0.95, ns_steps=5):
+    """Muon 一步，但动量用 8-bit 存储（权重 master 仍 fp32）。"""
+    k = K(dev)
+    m0, n0 = p.shape
+    tr = m0 > n0
+    m, n = (n0, m0) if tr else (m0, n0)
+    x_buf = dev.buf(max(4096, m * n * 2))
+    k["muon_d_q8"](dev.q, (m0, n0), None, p.mom8, p.amax, grad_buf, x_buf,
+                   np.int32(m0), np.int32(n0), np.int32(n),
+                   np.float32(momentum), np.int32(1 if tr else 0))
+    dev.q.finish()
+    ns_device(dev, x_buf, m, n, steps=ns_steps)
+    scale = float(max(1.0, m / n)) ** 0.5
+    if tr:
+        y_buf = dev.buf(max(4096, m0 * n0 * 2))
+        k["untranspose_h"](dev.q, (m, n), None, x_buf, y_buf, np.int32(m), np.int32(n))
+        dev.q.finish()
+        src = y_buf
+    else:
+        src = x_buf
+    k["muon_apply"](dev.q, (m0 * n0,), None, p.master, src, p.buf,
+                    np.int64(m0 * n0), np.float32(lr), np.float32(wd), np.float32(scale))
+    # 动量重定量化
+    nblk = (p.n + 255) // 256
+    k["mom_update_f32"](dev.q, (p.n,), None, grad_buf, p.mom8, p.amax, p.momf,
+                        np.int64(p.n), np.float32(momentum))
+    k["mom_requant8"](dev.q, (nblk * 256,), (256,), p.momf, p.mom8, p.amax, np.int32(p.n))
+    dev.q.finish()
+
+
+def check_step_q8(m=32, n=16, seed=0, lr=0.02, steps=5):
+    """量化动量 vs fp32 动量：跑 steps 步，比较权重相对差。"""
+    import gt1030.igpu_fx as FX
+    rng = np.random.default_rng(seed)
+    w0 = (rng.standard_normal((m, n)) * 0.05).astype(np.float32)
+    grads = [(rng.standard_normal((m, n)) * 0.01) for _ in range(steps)]
+
+    dev = CTX.DevCtx(arena_mb=400, name="muon-q8")
+    dev.activate()
+
+    def make():
+        p = FX.P(dev, w0, name="w")
+        p.mom = dev.buf(max(4096, p.n * 4))
+        cl.enqueue_copy(dev.q, p.mom, np.zeros(p.n, np.float32))
+        p.mom8, p.amax, p.momf = alloc_mom_q8(dev, p.n)
+        dev.q.finish()
+        return p
+
+    p_fp, p_q8 = make(), make()
+    for g in grads:
+        gbuf = dev.up(g.astype(np.float16))
+        muon_step(dev, p_fp, gbuf, lr=lr, momentum=0.95)
+        muon_step_q8(dev, p_q8, gbuf, lr=lr, momentum=0.95)
+    a = dev.down(p_fp.master, (m, n), np.float32)
+    b = dev.down(p_q8.master, (m, n), np.float32)
+    rel = float(np.linalg.norm(a - b) / (np.linalg.norm(a) + 1e-12))
+    print("  muon q8 momentum %dx%d steps=%d | rel %.3e" % (m, n, steps, rel))
+    return rel < 5e-2
+
+
+
+
+def alloc_mom_q4(dev, n):
+    nblocks = (n + 255) // 256
+    mom4 = dev.buf(max(4096, (n + 1) // 2))
+    amax = dev.buf(max(4096, nblocks * 4))
+    momf = dev.buf(max(4096, n * 4))
+    cl.enqueue_copy(dev.q, mom4, np.full((n + 1) // 2, 0x88, np.uint8))   # 0x88 = 两个码都表示 0
+    cl.enqueue_copy(dev.q, amax, np.zeros(nblocks, np.float32))
+    dev.q.finish()
+    return mom4, amax, momf
+
+
+def muon_step_q4(dev, p, grad_buf, lr, wd=0.0, momentum=0.95, ns_steps=5):
+    k = K(dev)
+    m0, n0 = p.shape
+    tr = m0 > n0
+    m, n = (n0, m0) if tr else (m0, n0)
+    x_buf = dev.buf(max(4096, m * n * 2))
+    k["muon_d_q4"](dev.q, (m0, n0), None, p.mom4, p.amax, grad_buf, x_buf,
+                   np.int32(m0), np.int32(n0), np.int32(n),
+                   np.float32(momentum), np.int32(1 if tr else 0))
+    dev.q.finish()
+    ns_device(dev, x_buf, m, n, steps=ns_steps)
+    scale = float(max(1.0, m / n)) ** 0.5
+    if tr:
+        y_buf = dev.buf(max(4096, m0 * n0 * 2))
+        k["untranspose_h"](dev.q, (m, n), None, x_buf, y_buf, np.int32(m), np.int32(n))
+        dev.q.finish()
+        src = y_buf
+    else:
+        src = x_buf
+    k["muon_apply"](dev.q, (m0 * n0,), None, p.master, src, p.buf,
+                    np.int64(m0 * n0), np.float32(lr), np.float32(wd), np.float32(scale))
+    nblk = (p.n + 255) // 256
+    k["mom_update_q4"](dev.q, (p.n,), None, grad_buf, p.mom4, p.amax, p.momf,
+                       np.int64(p.n), np.float32(momentum))
+    k["mom_requant4"](dev.q, (nblk * 256,), (256,), p.momf, p.mom4, p.amax, np.int32(p.n))
+    dev.q.finish()
+
+
+def check_loss(seed=0, steps=10, m=16, n=16, lr=0.02, batch=16, mode="q4"):
+    """用 **loss 轨迹** 验收（比权重差更贴近"能不能用"）。"""
+    import torch
+    import gt1030.igpu_fx as FX
+    rng = np.random.default_rng(seed)
+    w0 = (rng.standard_normal((m, n)) * 0.2).astype(np.float32)
+    xb = (rng.standard_normal((batch, n)) * 0.3).astype(np.float16)
+    tb = (rng.standard_normal((batch, m)) * 0.2).astype(np.float32)
+
+    dev = CTX.DevCtx(arena_mb=400, name="muon-loss")
+    dev.activate()
+
+    def make():
+        p = FX.P(dev, w0, name="w")
+        p.mom = dev.buf(max(4096, p.n * 4))
+        cl.enqueue_copy(dev.q, p.mom, np.zeros(p.n, np.float32))
+        p.mom8, p.amax8, p.momf8 = alloc_mom_q8(dev, p.n)
+        p.mom4, p.amax4, p.momf4 = alloc_mom_q4(dev, p.n)
+        # 复用名字：P 里 amax/momf 走 q8 的；q4 单独字段
+        p.amax = p.amax8
+        p.momf = p.momf8
+        dev.q.finish()
+        return p
+
+    def run(step_fn, label):
+        p = make()
+        xd = dev.up(xb)
+        td = dev.up(tb.astype(np.float16))
+        losses = []
+        for t in range(1, steps + 1):
+            # y = x @ wᵀ  (batch, m)
+            y = T_new = _buf = None
+            ybuf = dev.buf(max(4096, batch * m * 2))
+            GEMM.hgemm_nt(xd, p.buf, ybuf, batch, m, n)
+            dev.q.finish()
+            yv = dev.down(ybuf, (batch, m)).astype(np.float32)
+            losses.append(float(((yv - tb) ** 2).mean()))
+            # dy = 2(y-t)/batch*m ; 缩放后写 fp16
+            dy = (2.0 / (batch * m)) * (yv - tb) * 65536.0
+            dyb = dev.up(dy.astype(np.float16))
+            # dW = dyᵀ x  (m, n)
+            dwb = dev.buf(max(4096, m * n * 2))
+            GEMM.hgemm_tn(dyb, xd, dwb, m, n, batch)
+            dev.q.finish()
+            step_fn(p, dwb)
+        return losses
+
+    base = run(lambda p, g: muon_step(dev, p, g, lr=lr), "fp32")
+    q8 = run(lambda p, g: muon_step_q8(dev, p, g, lr=lr), "q8")
+    q4 = run(lambda p, g: muon_step_q4(dev, p, g, lr=lr), "q4")
+    print("  mode=%s  loss(1) -> loss(%d)" % (mode, steps))
+    for name, ls in (("fp32", base), ("q8", q8), ("q4", q4)):
+        print("    %-4s %.6f -> %.6f  (Δfirst %.2e, Δlast %.2e)"
+              % (name, ls[0], ls[-1], abs(ls[0] - base[0]), abs(ls[-1] - base[-1])))
+    rel_last = max(abs(q8[-1] - base[-1]), abs(q4[-1] - base[-1])) / max(abs(base[-1]), 1e-12)
+    print("  最大末步相对差 %.2e" % rel_last)
+    return rel_last < 5e-2
+
+
 def check(m=64, n=32, seed=0):
     import torch
     rng = np.random.default_rng(seed)
@@ -261,6 +538,9 @@ def main() -> int:
         ok &= check(m, n)
     ok &= check_step(32, 16)
     ok &= check_step(16, 32)
+    ok &= check_step_q8(32, 16)
+    ok &= check_step_q8(16, 32)
+    ok &= check_loss()
     print("RESULT " + ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
 
