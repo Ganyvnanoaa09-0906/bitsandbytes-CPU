@@ -198,6 +198,7 @@ class Attention(object):
         self.B, self.T, self.NH, self.HD = int(b), int(t), int(nh), int(hd)
         self.BH = self.B * self.NH
         self.scale = float(scale) if scale is not None else 1.0 / np.sqrt(self.HD)
+        self.prof = None      # 设为 EventProf/Prof 实例即可分段计时（None 时零开销）
         mf = cl.mem_flags
         nq = self.BH * self.T * self.HD
         ns = self.BH * self.T * self.T
@@ -224,16 +225,26 @@ class Attention(object):
         cl.enqueue_copy(A.queue, out, buf, is_blocking=True)
         return out
 
+    def _sec(self, name):
+        """分段计时：self.prof 为 None 时返回 null context（零开销）。"""
+        if self.prof is None:
+            import contextlib
+            return contextlib.nullcontext()
+        return self.prof.sec("attn." + name)
+
     # ---------------- forward ----------------
     def forward(self):
         BH, T, HD = self.BH, self.T, self.HD
-        hgemm_batched_ex(self.q, self.k, self.s, T, T, HD, A.NO, A.YES,
-                         HD, HD, T, T * HD, T * HD, T * T, BH)          # S = Q Kᵀ
+        with self._sec("qk"):
+            hgemm_batched_ex(self.q, self.k, self.s, T, T, HD, A.NO, A.YES,
+                             HD, HD, T, T * HD, T * HD, T * T, BH)      # S = Q Kᵀ
         _sm = "softmax_causal_v" if T >= 512 else "softmax_causal"   # T 小时向量版线程利用率不足
-        _kernels()[_sm](A.queue, (T * 256, BH), (256, 1), self.s, self.p,
-                        np.int32(T), np.float32(self.scale))  # P = softmax(S·scale)
-        hgemm_batched_ex(self.p, self.v, self.o, T, HD, T, A.NO, A.NO,
-                         T, HD, HD, T * T, T * HD, T * HD, BH)          # O = P V
+        with self._sec("softmax"):
+            _kernels()[_sm](A.queue, (T * 256, BH), (256, 1), self.s, self.p,
+                            np.int32(T), np.float32(self.scale))  # P = softmax(S·scale)
+        with self._sec("av"):
+            hgemm_batched_ex(self.p, self.v, self.o, T, HD, T, A.NO, A.NO,
+                             T, HD, HD, T * T, T * HD, T * HD, BH)      # O = P V
         return self.o
 
     # ---------------- backward ----------------
@@ -245,20 +256,25 @@ class Attention(object):
             cl.enqueue_copy(A.queue, self.do, src)
             A.queue.finish()
         # dV = Pᵀ dO
-        hgemm_batched_ex(self.p, self.do, self.dv, T, HD, T, A.YES, A.NO,
-                         T, HD, HD, T * T, T * HD, T * HD, BH)
+        with self._sec("b.dv"):
+            hgemm_batched_ex(self.p, self.do, self.dv, T, HD, T, A.YES, A.NO,
+                             T, HD, HD, T * T, T * HD, T * HD, BH)
         # dP = dO Vᵀ
-        hgemm_batched_ex(self.do, self.v, self.dp, T, T, HD, A.NO, A.YES,
-                         HD, HD, T, T * HD, T * HD, T * T, BH)
+        with self._sec("b.dp"):
+            hgemm_batched_ex(self.do, self.v, self.dp, T, T, HD, A.NO, A.YES,
+                             HD, HD, T, T * HD, T * HD, T * T, BH)
         # dS = P ⊙ (dP − rowsum(dP⊙P)) · scale
         _smy = "softmax_bwd_causal_v" if T >= 512 else "softmax_bwd_causal"
-        _kernels()[_smy](A.queue, (T * 256, BH), (256, 1), self.p, self.dp,
-                         self.ds, np.int32(T), np.float32(self.scale))
+        with self._sec("b.softmax"):
+            _kernels()[_smy](A.queue, (T * 256, BH), (256, 1), self.p, self.dp,
+                             self.ds, np.int32(T), np.float32(self.scale))
         # dQ = dS K ; dK = dSᵀ Q
-        hgemm_batched_ex(self.ds, self.k, self.dq, T, HD, T, A.NO, A.NO,
-                         T, HD, HD, T * T, T * HD, T * HD, BH)
-        hgemm_batched_ex(self.ds, self.q, self.dk, T, HD, T, A.YES, A.NO,
-                         T, HD, HD, T * T, T * HD, T * HD, BH)
+        with self._sec("b.dq"):
+            hgemm_batched_ex(self.ds, self.k, self.dq, T, HD, T, A.NO, A.NO,
+                             T, HD, HD, T * T, T * HD, T * HD, BH)
+        with self._sec("b.dk"):
+            hgemm_batched_ex(self.ds, self.q, self.dk, T, HD, T, A.YES, A.NO,
+                             T, HD, HD, T * T, T * HD, T * HD, BH)
         A.queue.finish()
         return self.dq, self.dk, self.dv
 
