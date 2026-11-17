@@ -341,6 +341,8 @@ nfbit.convert_linears_nf(model, bits=2)   # lm_head stays fp32
 Measured (30M AR, grid 16, 512 samples): fp32 7.2526 / 116.3 MB; **2-bit NF +0.0028 /
 9.2 MB (12.69x)**; 2-bit uniform +0.0263; 3-bit NF -0.0217 / 12.8 MB.
 
+Whole checkpoints pack too: `nfbit.pack_state_dict(sd)` / `unpack_state_dict()` turn the 30M AR fp32 state dict (116.3 MB) into a 9.2 MB file (12.61x) that reloads bit-exactly (eval 7.2629 -> 7.2623).
+
 **Boundaries**: this is a *storage* format — there is no native 2/3-bit GEMM, so forward
 dequantises into an fp32 temporary (use `forward_peak_bytes`); and packed + frozen base +
 LoRA is not a cheap training recipe at 2 bits (Qwen1.7B: +9.5 nats, +38% step time).

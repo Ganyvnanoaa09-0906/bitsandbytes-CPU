@@ -87,7 +87,13 @@ def main():
     ap.add_argument("--block", type=int, default=BLOCK)
     ap.add_argument("--skip-blocks", action="store_true")
     args = ap.parse_args()
-    CKPT, TOKENS, N_VAL, BLOCK, QUICK = args.ckpt, args.tokens, args.n_val, args.block, args.skip_blocks
+    CKPT, TOKENS, N_VAL, BLOCK, QUICK = (
+        args.ckpt,
+        args.tokens,
+        args.n_val,
+        args.block,
+        args.skip_blocks,
+    )
     torch.set_num_threads(6)
     ck = torch.load(CKPT, map_location="cpu", weights_only=False)
     sd = {k: v for k, v in ck["model"].items() if torch.is_tensor(v)}
@@ -133,8 +139,11 @@ def main():
     rows = [
         ("fp32", None, None),
     ]
-    configs = ((2, "NF"), (2, "uniform"), (3, "NF")) if QUICK else (
-        (2, "NF"), (3, "NF"), (2, "uniform"), (3, "uniform"))
+    configs = (
+        ((2, "NF"), (2, "uniform"), (3, "NF"))
+        if QUICK
+        else ((2, "NF"), (3, "NF"), (2, "uniform"), (3, "uniform"))
+    )
     for bits, name in configs:
         rows.append(
             ("%d-bit %s" % (bits, name), bits, "nf" if name == "NF" else "uniform")

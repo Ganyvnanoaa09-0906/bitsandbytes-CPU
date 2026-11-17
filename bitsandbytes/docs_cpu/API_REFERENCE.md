@@ -624,6 +624,12 @@ print(ql.storage_bytes(), ql.forward_peak_bytes(batch=2))
 **`convert_linears_nf(model, bits=2, block=64, lora_r=8)`** -- in-place replacement;
 returns the count; `lm_head` stays fp32.
 
+**`pack_state_dict(sd, bits=2, block=64)` / `unpack_state_dict(packed)`** -- 把整个
+state_dict 中 2-D float 张量批量打包（1-D/非 float 原样保留），可直接 `torch.save`。
+30M AR 实测：fp32 116.3 MB → 落盘 9.2 MB（**12.61×**），127 个张量回读**逐位一致**，
+eval loss 7.2629（fp32）→ 7.2623（从磁盘回读的 NF2）。
+
+
 实测（30M AR，grid 16，block 64，512 条验证样本）：fp32 loss 7.2526 / 116.3 MB；
 **2-bit NF +0.0028、9.2 MB（12.69×）**；2-bit uniform +0.0263；3-bit NF −0.0217、12.8 MB。
 **边界**：packed+冻结基座+LoRA 在 2-bit 上又慢又学不回来（Qwen1.7B：+9.5 nats，60 步

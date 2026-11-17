@@ -154,3 +154,30 @@ def test_invalid_args():
             bits=2,
             block=64,
         )
+
+
+def test_state_dict_pack_roundtrip(tmp_path):
+    torch.manual_seed(7)
+    sd = {
+        "w": torch.randn(96, 128),
+        "b": torch.randn(96),
+        "emb": torch.randn(64, 96),
+        "int": torch.arange(8, dtype=torch.int64),
+    }
+    packed = nfbit.pack_state_dict(sd, bits=2, block=32, min_numel=1024)
+    assert packed["__nfbit_meta__"]["bits"] == 2
+    assert packed["w"]["kind"] == "nfbit" and packed["b"] is sd["b"]
+    assert packed["emb"]["kind"] == "nfbit"
+    f = tmp_path / "model.nf2"
+    torch.save(packed, f)
+    loaded = nfbit.unpack_state_dict(
+        torch.load(f, map_location="cpu", weights_only=False)
+    )
+    ref = nfbit.dequantize(
+        *nfbit.quantize(sd["w"], bits=2, block=32), sd["w"].shape, bits=2, block=32
+    )
+    assert torch.equal(loaded["w"], ref)
+    assert torch.equal(loaded["b"], sd["b"])
+    assert torch.equal(loaded["int"], sd["int"])
+    raw = sum(v.numel() * v.element_size() for v in sd.values())
+    assert nfbit.packed_state_bytes(packed) < 0.45 * raw

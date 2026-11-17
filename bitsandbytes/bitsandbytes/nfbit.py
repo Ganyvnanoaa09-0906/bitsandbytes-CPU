@@ -50,9 +50,12 @@ __all__ = [
     "dequantize",
     "gemm",
     "pack_codes",
+    "pack_state_dict",
+    "packed_state_bytes",
     "quantize",
     "storage_bytes",
     "unpack_codes",
+    "unpack_state_dict",
 ]
 
 # Normal mid-quantiles, normalised so the extreme levels are exactly +-1. Computed with
@@ -273,6 +276,84 @@ def gemm(
 def storage_bytes(packed: torch.Tensor, absmax: torch.Tensor) -> int:
     """Payload bytes (codes + fp32 scales), excluding any dequantisation temporary."""
     return int(packed.numel()) + int(absmax.numel()) * 4
+
+
+def pack_state_dict(
+    state_dict, bits: int = 2, block: int = 64, table=None, min_numel: int = 4096
+):
+    """Quantise every 2-D float tensor of a state dict into packed NF storage.
+
+    Returns a plain dict that ``torch.save`` can write: quantised entries are
+    ``{"kind": "nfbit", "packed", "absmax", "shape"}``; everything else (1-D biases,
+    norms, non-float tensors) is copied verbatim. ``__nfbit_meta__`` records the format
+    so :func:`unpack_state_dict` needs no extra arguments. This is a *storage* format:
+    keep the fp32 weights and use QAT+STE if you need to train a low-bit base.
+    """
+    bits = _check_bits(bits)
+    t = _resolve_table(bits, table)
+    meta = {
+        "version": 1,
+        "bits": bits,
+        "block": int(block),
+        "table": "custom"
+        if not isinstance(table, (str, type(None)))
+        else (table or "nf"),
+    }
+    if meta["table"] == "custom":
+        meta["table_values"] = t.tolist()
+    out = {"__nfbit_meta__": meta}
+    for k, v in state_dict.items():
+        if (
+            torch.is_tensor(v)
+            and v.dtype == torch.float32
+            and v.ndim >= 2
+            and v.numel() >= int(min_numel)
+        ):
+            packed, absmax = quantize(v, bits=bits, block=block, table=t)
+            out[k] = {
+                "kind": "nfbit",
+                "packed": packed,
+                "absmax": absmax,
+                "shape": tuple(v.shape),
+            }
+        else:
+            out[k] = v
+    return out
+
+
+def unpack_state_dict(packed_state_dict):
+    """Inverse of :func:`pack_state_dict`; returns fp32 tensors (dequantised)."""
+    sd = dict(packed_state_dict)
+    meta = sd.pop("__nfbit_meta__", None)
+    if not meta:
+        raise ValueError("not an nfbit-packed state dict (missing __nfbit_meta__)")
+    bits = _check_bits(int(meta["bits"]))
+    block = int(meta["block"])
+    kind = meta.get("table", "nf")
+    table = meta.get("table_values") if kind == "custom" else kind
+    t = _resolve_table(bits, table)
+    out = {}
+    for k, v in sd.items():
+        if isinstance(v, dict) and v.get("kind") == "nfbit":
+            out[k] = dequantize(
+                v["packed"], v["absmax"], v["shape"], bits=bits, block=block, table=t
+            )
+        else:
+            out[k] = v
+    return out
+
+
+def packed_state_bytes(packed_state_dict) -> int:
+    """Bytes held by a packed state dict (codes + scales + untouched tensors)."""
+    total = 0
+    for k, v in packed_state_dict.items():
+        if k == "__nfbit_meta__":
+            continue
+        if isinstance(v, dict) and v.get("kind") == "nfbit":
+            total += storage_bytes(v["packed"], v["absmax"])
+        elif torch.is_tensor(v):
+            total += v.numel() * v.element_size()
+    return int(total)
 
 
 class QuantLinearNF(nn.Module):

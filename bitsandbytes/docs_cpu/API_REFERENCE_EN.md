@@ -608,6 +608,12 @@ print(ql.storage_bytes(), ql.forward_peak_bytes(batch=2))
 **`convert_linears_nf(model, bits=2, block=64, lora_r=8)`** -- in-place replacement;
 returns the count; `lm_head` stays fp32.
 
+**`pack_state_dict(sd, bits=2, block=64)` / `unpack_state_dict(packed)`** -- pack every
+2-D float tensor of a state dict (1-D/non-float entries pass through) into a dict that
+`torch.save` can write. On the 30M AR model: fp32 116.3 MB -> **9.2 MB on disk (12.61x)**,
+127 tensors reload **bit-exactly**, eval loss 7.2629 (fp32) -> 7.2623 (NF2 from disk).
+
+
 Measured (30M AR, grid 16, block 64, 512 validation samples): fp32 loss 7.2526 /
 116.3 MB; **2-bit NF +0.0028, 9.2 MB (12.69x)**; 2-bit uniform +0.0263; 3-bit NF -0.0217,
 12.8 MB. **Boundary**: packed + frozen base + LoRA is *not* a cheap training recipe at
