@@ -494,7 +494,7 @@ class SelfAttention(object):
 class Block(object):
     """Pre-norm transformer block: x + attn(norm1(x)), then + mlp(norm2(...))."""
 
-    def __init__(self, rows, d_model, hidden, attn=None, eps=1e-6):
+    def __init__(self, rows, d_model, hidden, attn=None, eps=1e-6, seed=None):
         self.rows, self.d_model, self.hidden = int(rows), int(d_model), int(hidden)
         self.norm1 = RMSNorm(rows, d_model, eps=eps)
         self.norm2 = RMSNorm(rows, d_model, eps=eps)
@@ -507,7 +507,12 @@ class Block(object):
         for b in (self.norm1.m, self.norm1.v, self.norm2.m, self.norm2.v):
             cl.enqueue_fill_buffer(A.queue, b, np.float32(0), 0, d_model * 4)
         self.attn = attn
-        self.mlp = MLP(rows, d_model, hidden)
+        self.mlp = MLP(
+            rows,
+            d_model,
+            hidden,
+            rng=np.random.default_rng(seed + 1) if seed is not None else None,
+        )
         self.zero = _buf(rows * d_model * 2)
         _K["zero_half"](
             A.queue, (rows * d_model,), None, self.zero, np.int32(rows * d_model)
@@ -618,6 +623,152 @@ class Block(object):
         self.mlp.step(lr, t)
         if self.attn is not None:
             self.attn.step(lr, t)
+
+
+class Stack(object):
+    """N pre-norm blocks + final RMSNorm; all device-resident."""
+
+    def __init__(self, rows, d_model, hidden, nh, hd, t, layers, seed=0, eps=1e-6):
+        self.rows, self.d_model, self.hidden = int(rows), int(d_model), int(hidden)
+        self.layers = int(layers)
+        self.blocks = []
+        for i in range(self.layers):
+            attn = SelfAttention(
+                rows, d_model, nh, hd, t, rng=np.random.default_rng(seed + 100 + i)
+            )
+            self.blocks.append(
+                Block(rows, d_model, hidden, attn=attn, eps=eps, seed=seed + 200 + i)
+            )
+        self.norm = RMSNorm(rows, d_model, eps=eps)
+        self.norm.set_weight(np.ones(d_model, dtype=np.float16))
+        self.norm.m = _buf(d_model * 4)
+        self.norm.v = _buf(d_model * 4)
+        for b in (self.norm.m, self.norm.v):
+            cl.enqueue_fill_buffer(A.queue, b, np.float32(0), 0, d_model * 4)
+
+    def forward(self, x_dev):
+        x = x_dev
+        for block in self.blocks:
+            x = block.forward(x)
+        return self.norm.forward(x)
+
+    def backward(self, dy_dev):
+        self.norm.weight_grad(dy_dev)
+        dy = self.norm.backward(dy_dev)
+        for block in reversed(self.blocks):
+            dy = block.backward(dy)
+        return dy
+
+    def step(self, lr, t):
+        cols = self.d_model
+        bc1 = 1.0 - 0.9**t
+        bc2 = 1.0 - 0.999**t
+        _K["adamw_halfgrad"](
+            A.queue,
+            ((cols + 63) // 64 * 64,),
+            (64,),
+            self.norm.w,
+            self.norm.dw,
+            self.norm.m,
+            self.norm.v,
+            np.int32(cols),
+            np.float32(lr),
+            np.float32(0.9),
+            np.float32(0.999),
+            np.float32(1e-8),
+            np.float32(0.0),
+            np.float32(bc1),
+            np.float32(bc2),
+        )
+        for block in self.blocks:
+            block.step(lr, t)
+
+
+def check_stack(b=2, t=8, nh=2, hd=16, hidden=64, layers=2, seed=0):
+    import torch
+    import torch.nn.functional as F
+
+    rows, d = b * t, nh * hd
+    rng = np.random.default_rng(seed)
+    xh = (rng.standard_normal((rows, d)) * 0.05).astype(np.float16)
+    x = _upload(xh)
+    st = Stack(rows, d, hidden, nh, hd, t, layers, seed=seed)
+
+    params = []
+    for blk in st.blocks:
+        params.append(
+            dict(
+                wq=torch.from_numpy(
+                    _read(blk.attn.qkv.w, (3 * d, d)).astype(np.float32)
+                ).requires_grad_(True),
+                wo=torch.from_numpy(
+                    _read(blk.attn.wo.w, (d, d)).astype(np.float32)
+                ).requires_grad_(True),
+                wg=torch.from_numpy(
+                    _read(blk.mlp.gate.w, (hidden, d)).astype(np.float32)
+                ).requires_grad_(True),
+                wu=torch.from_numpy(
+                    _read(blk.mlp.up.w, (hidden, d)).astype(np.float32)
+                ).requires_grad_(True),
+                wd=torch.from_numpy(
+                    _read(blk.mlp.down.w, (d, hidden)).astype(np.float32)
+                ).requires_grad_(True),
+                bqkv=torch.zeros(3 * d, requires_grad=True),
+                bwo=torch.zeros(d, requires_grad=True),
+                bg=torch.zeros(hidden, requires_grad=True),
+                bu=torch.zeros(hidden, requires_grad=True),
+                bd=torch.zeros(d, requires_grad=True),
+                n1=torch.ones(d, requires_grad=True),
+                n2=torch.ones(d, requires_grad=True),
+            )
+        )
+    nf = torch.ones(d, requires_grad=True)
+
+    def rms(x, w):
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + 1e-6) * w
+
+    def block_fwd(x, p):
+        h1 = rms(x, p["n1"])
+        qkv = h1 @ p["wq"].t() + p["bqkv"]
+        q, k, v = qkv[:, :d], qkv[:, d : 2 * d], qkv[:, 2 * d :]
+        sh = lambda a: a.reshape(b, t, nh, hd).transpose(1, 2)
+        q, k, v = sh(q), sh(k), sh(v)
+        score = (q @ k.transpose(-1, -2)) / np.sqrt(hd)
+        mask = torch.triu(torch.ones(t, t, dtype=torch.bool), diagonal=1)
+        prob = torch.softmax(score.masked_fill(mask, float("-inf")), dim=-1)
+        a = (prob @ v).transpose(1, 2).reshape(rows, d) @ p["wo"].t() + p["bwo"]
+        x1 = x + a
+        h2 = rms(x1, p["n2"])
+        m = (F.silu(h2 @ p["wg"].t() + p["bg"]) * (h2 @ p["wu"].t() + p["bu"])) @ p[
+            "wd"
+        ].t() + p["bd"]
+        return x1 + m
+
+    xt = torch.from_numpy(xh.astype(np.float32)).requires_grad_(True)
+    xr = xt
+    for p in params:
+        xr = block_fwd(xr, p)
+    y_ref = rms(xr, nf)
+    (y_ref**2).mean().backward()
+
+    y = st.forward(x)
+    yh = _read(y, (rows, d)).astype(np.float32)
+    dy = _upload((2 * yh / (rows * d)).astype(np.float16))
+    dx = st.backward(dy)
+    dxh = _read(dx, (rows, d)).astype(np.float32)
+    y_rel = float(
+        np.linalg.norm(yh - y_ref.detach().numpy())
+        / max(np.linalg.norm(y_ref.detach().numpy()), 1e-9)
+    )
+    dx_max = float(np.abs(dxh - xt.grad.numpy()).max())
+    y_max = float(np.abs(yh - y_ref.detach().numpy()).max())
+    print(
+        "  stack layers=%d b=%d t=%d nh=%d hd=%d | y rel %.3e | y maxabs %.3e | dx max %.3e"
+        % (layers, b, t, nh, hd, y_rel, y_max, dx_max)
+    )
+    ok = y_rel < 3e-2 and dx_max < 2e-3
+    print("RESULT " + ("PASS" if ok else "FAIL"))
+    return 0 if ok else 1
 
 
 def check(rows=64, d=32, hidden=64, steps=3):
@@ -924,11 +1075,15 @@ def main():
     ap.add_argument("--check-attn", action="store_true")
     ap.add_argument("--check-block-attn", action="store_true")
     ap.add_argument("--check-train", action="store_true")
+    ap.add_argument("--check-stack", action="store_true")
+    ap.add_argument("--layers", type=int, default=2)
     ap.add_argument("--b", type=int, default=2)
     ap.add_argument("--t", type=int, default=8)
     ap.add_argument("--nh", type=int, default=2)
     ap.add_argument("--hd", type=int, default=16)
     a = ap.parse_args()
+    if a.check_stack:
+        return check_stack(a.b, a.t, a.nh, a.hd, a.hidden, a.layers)
     if a.check_train:
         return check_block_train(a.b, a.t, a.nh, a.hd, a.hidden, a.steps, a.lr)
     if a.check_block_attn:
