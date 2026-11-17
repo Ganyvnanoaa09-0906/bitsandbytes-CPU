@@ -106,6 +106,56 @@ __kernel void adamw1_q8(__global float* w, __global char* m8, __global char* v8,
     }
 }
 
+
+// 4-bit 状态 AdamW：m/v 各占半个字节（两个码一个字节），每 256 元素一个 fp32 absmax
+inline float nib4_get(__global const uchar* buf, long i, float am) {
+    uchar b = buf[i >> 1];
+    int code = (i & 1) ? ((b >> 4) & 0xF) : (b & 0xF);
+    return ((float)code - 8.f) / 7.f * am;
+}
+
+__kernel void adamw1_q4(__global float* w, __global uchar* m4, __global uchar* v4,
+                        __global float* amax_m, __global float* amax_v,
+                        __global const half* g, __global half* wh, int n,
+                        float lr, float b1, float b2, float eps, float wd, int t) {
+    int blk = get_group_id(0), lid = get_local_id(0), lsz = get_local_size(0);
+    int base = blk * 256;
+    int i = base + lid;
+    __local float redm[256];
+    __local float redv[256];
+    float nm = 0.f, nv = 0.f;
+    if (i < n) {
+        float gt = (float)g[i];
+        float m_old = nib4_get(m4, i, amax_m[blk]);
+        float v_old = nib4_get(v4, i, amax_v[blk]);
+        nm = b1 * m_old + (1.f - b1) * gt;
+        nv = b2 * v_old + (1.f - b2) * gt * gt;
+        float bc1 = 1.f - pow(b1, (float)t);
+        float bc2 = 1.f - pow(b2, (float)t);
+        float upd = lr * (nm / bc1) / (sqrt(nv / bc2) + eps);
+        w[i] = w[i] - upd - lr * wd * w[i];
+        wh[i] = (half)w[i];
+    }
+    redm[lid] = fabs(nm);
+    redv[lid] = fabs(nv);
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int off = lsz >> 1; off > 0; off >>= 1) {
+        if (lid < off) { redm[lid] = fmax(redm[lid], redm[lid + off]);
+                         redv[lid] = fmax(redv[lid], redv[lid + off]); }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    if (lid == 0) { amax_m[blk] = fmax(redm[0], 1e-12f); amax_v[blk] = fmax(redv[0], 1e-12f); }
+    barrier(CLK_LOCAL_MEM_FENCE);
+    if (i < n) {
+        float am = amax_m[blk], av = amax_v[blk];
+        int cm = (int)clamp(round(nm / am * 7.f) + 8.f, 0.f, 15.f);
+        int cv = (int)clamp(round(nv / av * 7.f) + 8.f, 0.f, 15.f);
+        uchar bm = m4[i >> 1], bv = v4[i >> 1];
+        m4[i >> 1] = (i & 1) ? (uchar)((bm & 0x0F) | (cm << 4)) : (uchar)((bm & 0xF0) | cm);
+        v4[i >> 1] = (i & 1) ? (uchar)((bv & 0x0F) | (cv << 4)) : (uchar)((bv & 0xF0) | cv);
+    }
+}
+
 // 逐元素乘（反向用）
 __kernel void mul_h(__global const half* a, __global const half* b, __global half* y, long n) {
     long i = get_global_id(0);
@@ -224,6 +274,17 @@ class Session(object):
         if not hasattr(self, "_k8"):
             self._k8 = None
         for p in self.params.values():
+            if getattr(p, "state_bits", 32) == 4:
+                if getattr(self, "_k4", None) is None:
+                    prog = cl.Program(self.dev.ctx, EXTRA).build(
+                        options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
+                    self._k4 = cl.Kernel(prog, "adamw1_q4")
+                nblocks = (p.n + 255) // 256
+                self._k4(self.dev.q, (nblocks * 256,), (256,), p.master, p.mom8, p.vel8,
+                         p.mom, p.vel, p.grad, p.buf, np.int32(p.n), np.float32(lr),
+                         np.float32(0.9), np.float32(0.999), np.float32(eps),
+                         np.float32(wd), np.int32(t))
+                continue
             if getattr(p, "state_bits", 32) == 8:
                 if self._k8 is None:
                     self._k8 = self._adam_kernel_q8()

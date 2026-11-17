@@ -82,24 +82,34 @@ class P(object):
         flat = w.reshape(-1)
         nb4 = max(4096, self.n * 4)
         self.master = dev.buf(nb4)
-        if state_bits == 8:
+        if state_bits in (8, 4):
             nblocks = (self.n + 255) // 256
             self.mom = dev.buf(max(4096, nblocks * 4))
             self.vel = dev.buf(max(4096, nblocks * 4))
-            self.mom8 = dev.buf(max(4096, self.n))
-            self.vel8 = dev.buf(max(4096, self.n))
+            if state_bits == 8:
+                self.mom8 = dev.buf(max(4096, self.n))
+                self.vel8 = dev.buf(max(4096, self.n))
+            else:
+                nb = (self.n + 1) // 2
+                self.mom8 = dev.buf(max(4096, nb))
+                self.vel8 = dev.buf(max(4096, nb))
         else:
             self.mom = dev.buf(nb4)
             self.vel = dev.buf(nb4)
         self.buf = dev.buf(max(4096, self.n * 2))
         self.grad = dev.buf(max(4096, self.n * 2))
         cl.enqueue_copy(dev.q, self.master, flat)
-        if state_bits == 8:
+        if state_bits in (8, 4):
             nblocks = (self.n + 255) // 256
             cl.enqueue_copy(dev.q, self.mom, np.zeros(nblocks, np.float32))
             cl.enqueue_copy(dev.q, self.vel, np.zeros(nblocks, np.float32))
-            cl.enqueue_copy(dev.q, self.mom8, np.zeros(self.n, np.int8))
-            cl.enqueue_copy(dev.q, self.vel8, np.zeros(self.n, np.int8))
+            if state_bits == 8:
+                cl.enqueue_copy(dev.q, self.mom8, np.zeros(self.n, np.int8))
+                cl.enqueue_copy(dev.q, self.vel8, np.zeros(self.n, np.int8))
+            else:
+                nb = (self.n + 1) // 2
+                cl.enqueue_copy(dev.q, self.mom8, np.full(nb, 0x88, np.uint8))
+                cl.enqueue_copy(dev.q, self.vel8, np.full(nb, 0x88, np.uint8))
         else:
             cl.enqueue_copy(dev.q, self.mom, np.zeros(self.n, np.float32))
             cl.enqueue_copy(dev.q, self.vel, np.zeros(self.n, np.float32))
@@ -532,6 +542,18 @@ class Executor(object):
             self._k8 = None
         for name, p in self.params.items():
             if self.use_muon and self._is_muon_param(name, p):
+                continue
+            if getattr(p, "state_bits", 32) == 4:
+                if getattr(self, "_k4", None) is None:
+                    import pyopencl as _cl
+                    prog = _cl.Program(self.dev.ctx, G.EXTRA).build(
+                        options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
+                    self._k4 = _cl.Kernel(prog, "adamw1_q4")
+                nblocks = (p.n + 255) // 256
+                self._k4(self.dev.q, (nblocks * 256,), (256,), p.master, p.mom8, p.vel8,
+                         p.mom, p.vel, p.grad, p.buf, np.int32(p.n), np.float32(lr),
+                         np.float32(0.9), np.float32(0.999), np.float32(eps),
+                         np.float32(wd), np.int32(t))
                 continue
             if getattr(p, "state_bits", 32) == 8:
                 if self._k8 is None:
