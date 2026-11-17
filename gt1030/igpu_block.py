@@ -1,0 +1,544 @@
+# -*- coding: utf-8 -*-
+"""igpu_block.py — 通用 transformer block 装配（L2 的第二块积木）。
+
+分工：LEAD 写 attention kernel（`gt1030/igpu_attn.py`），这里只做
+**RMSNorm + attention 接口 + SwiGLU MLP + 残差** 的设备常驻装配，以及
+attention 未就绪时的 `attn=None`（零分支）自检。
+
+设计
+----
+* `Linear` / `MLP` / `Block` 全部持有 device buffer；权重、梯度、AdamW 状态、
+  激活都不回 host（`--check` 只在结束时回读比对）。
+* attention 只要满足 `forward(x_dev)->dev` / `backward(dy_dev)->dev` /
+  `step(lr,t)` / `zero_grad()` 即可接入；`attn=None` 时残差分支为 0。
+* 形状全部参数化：`rows`（M）、`d_model`、`hidden`、`heads`（交给 attention）。
+
+自检：
+    python gt1030/igpu_block.py --check
+    python gt1030/igpu_block.py --check --rows 64 --d 32 --hidden 64
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+
+sys.path.insert(0, r"D:\work\bitsandbytes-CPU")
+sys.path.insert(0, r"D:\work\bnb-igpu-block")
+
+import numpy as np  # noqa: E402
+import pyopencl as cl  # noqa: E402
+
+import gt1030.ar_v2_multi as MM  # noqa: E402
+from gt1030.igpu_block_ops import RMSNorm  # noqa: E402
+
+A = MM.A
+
+KSRC = r"""
+__kernel void zero_half(__global half* x, int n) {
+    int i = get_global_id(0);
+    if (i < n) x[i] = (half)0;
+}
+__kernel void add_half(__global const half* a, __global const half* b, __global half* y, int n) {
+    int i = get_global_id(0);
+    if (i < n) y[i] = (half)((float)a[i] + (float)b[i]);
+}
+__kernel void bias_add(__global const half* x, __global const float* bias,
+                       __global half* y, int rows, int cols) {
+    int i = get_global_id(0);
+    if (i >= rows * cols) return;
+    y[i] = (half)((float)x[i] + bias[i % cols]);
+}
+__kernel void bias_grad(__global const half* dy, __global float* db, int rows, int cols) {
+    int c = get_global_id(0);
+    if (c >= cols) return;
+    float s = 0.f;
+    for (int r = 0; r < rows; ++r) s += (float)dy[(long)r * cols + c];
+    db[c] = s;
+}
+__kernel void silu_gate(__global const half* a, __global const half* b,
+                        __global half* g, int n) {
+    int i = get_global_id(0);
+    if (i >= n) return;
+    float x = (float)a[i];
+    g[i] = (half)(x / (1.f + exp(-x)) * (float)b[i]);
+}
+__kernel void silu_bwd(__global const half* a, __global const half* b, __global const half* dg,
+                       __global half* da, __global half* db, int n) {
+    int i = get_global_id(0);
+    if (i >= n) return;
+    float x = (float)a[i];
+    float s = 1.f / (1.f + exp(-x));
+    float d = (float)dg[i];
+    da[i] = (half)(d * (s + x * s * (1.f - s)) * (float)b[i]);
+    db[i] = (half)(d * x * s);
+}
+__kernel void adamw_half(__global half* w, __global const half* g,
+                         __global float* m, __global float* v,
+                         int n, float lr, float b1, float b2, float eps, float wd,
+                         float bc1, float bc2) {
+    int i = get_global_id(0);
+    if (i >= n) return;
+    float grad = (float)g[i];
+    float mm = b1 * m[i] + (1.f - b1) * grad;
+    float vv = b2 * v[i] + (1.f - b2) * grad * grad;
+    m[i] = mm;
+    v[i] = vv;
+    float wv = (float)w[i] - lr * (mm / bc1) / (sqrt(vv / bc2) + eps) - lr * wd * (float)w[i];
+    w[i] = (half)wv;
+}
+__kernel void adamw_halfgrad(__global half* w, __global const float* g,
+                            __global float* m, __global float* v,
+                            int n, float lr, float b1, float b2, float eps, float wd,
+                            float bc1, float bc2) {
+    int i = get_global_id(0);
+    if (i >= n) return;
+    float grad = g[i];
+    float mm = b1 * m[i] + (1.f - b1) * grad;
+    float vv = b2 * v[i] + (1.f - b2) * grad * grad;
+    m[i] = mm;
+    v[i] = vv;
+    float wv = (float)w[i] - lr * (mm / bc1) / (sqrt(vv / bc2) + eps) - lr * wd * (float)w[i];
+    w[i] = (half)wv;
+}
+__kernel void adamw_float(__global float* w, __global const float* g,
+                          __global float* m, __global float* v,
+                          int n, float lr, float b1, float b2, float eps, float wd,
+                          float bc1, float bc2) {
+    int i = get_global_id(0);
+    if (i >= n) return;
+    float grad = g[i];
+    float mm = b1 * m[i] + (1.f - b1) * grad;
+    float vv = b2 * v[i] + (1.f - b2) * grad * grad;
+    m[i] = mm;
+    v[i] = vv;
+    w[i] = w[i] - lr * (mm / bc1) / (sqrt(vv / bc2) + eps) - lr * wd * w[i];
+}
+"""
+
+_prog = cl.Program(A.ctx, KSRC).build(
+    options=["-cl-mad-enable", "-cl-fast-relaxed-math"]
+)
+_K = {
+    name: cl.Kernel(_prog, name)
+    for name in (
+        "zero_half",
+        "add_half",
+        "bias_add",
+        "bias_grad",
+        "silu_gate",
+        "silu_bwd",
+        "adamw_half",
+        "adamw_halfgrad",
+        "adamw_float",
+    )
+}
+
+
+def _buf(nbytes):
+    return cl.Buffer(A.ctx, cl.mem_flags.READ_WRITE, max(int(nbytes), 4))
+
+
+def _upload(arr):
+    return cl.Buffer(
+        A.ctx,
+        cl.mem_flags.READ_WRITE | cl.mem_flags.COPY_HOST_PTR,
+        hostbuf=np.ascontiguousarray(arr),
+    )
+
+
+def _read(buf, shape, dtype=np.float16):
+    out = np.empty(shape, dtype=dtype)
+    cl.enqueue_copy(A.queue, out, buf)
+    A.queue.finish()
+    return out
+
+
+class Linear(object):
+    """y = x @ W^T (+ bias), all device-resident; fp16 params/grads, fp32 AdamW state."""
+
+    def __init__(self, rows, n_in, n_out, bias=True, rng=None):
+        self.rows, self.n_in, self.n_out = int(rows), int(n_in), int(n_out)
+        rng = rng or np.random.default_rng(0)
+        w = (rng.standard_normal((self.n_out, self.n_in)) * 0.02).astype(np.float16)
+        self.w = _upload(w)
+        self.dw = _buf(self.n_out * self.n_in * 2)
+        self.m = _buf(self.n_out * self.n_in * 4)
+        self.v = _buf(self.n_out * self.n_in * 4)
+        cl.enqueue_fill_buffer(A.queue, self.m, np.float32(0), 0, self.m.size)
+        cl.enqueue_fill_buffer(A.queue, self.v, np.float32(0), 0, self.v.size)
+        self.bias = None
+        self.db = None
+        if bias:
+            self.bias = _upload(np.zeros(self.n_out, dtype=np.float32))
+            self.db = _buf(self.n_out * 4)
+            self.bm = _buf(self.n_out * 4)
+            self.bv = _buf(self.n_out * 4)
+            for b in (self.bm, self.bv, self.db):
+                cl.enqueue_fill_buffer(A.queue, b, np.float32(0), 0, self.n_out * 4)
+        self.y = _buf(self.rows * self.n_out * 2)
+        self.dx = _buf(self.rows * self.n_in * 2)
+        self._x = None
+        A.queue.finish()
+
+    def forward(self, x_dev):
+        self._x = x_dev
+        MM.L.hgemm_nt(x_dev, self.w, self.y, self.rows, self.n_out, self.n_in)
+        if self.bias is not None:
+            _K["bias_add"](
+                A.queue,
+                (self.rows * self.n_out,),
+                None,
+                self.y,
+                self.bias,
+                self.y,
+                np.int32(self.rows),
+                np.int32(self.n_out),
+            )
+        return self.y
+
+    def backward(self, dy_dev):
+        _K["zero_half"](
+            A.queue,
+            (self.n_out * self.n_in,),
+            None,
+            self.dw,
+            np.int32(self.n_out * self.n_in),
+        )
+        MM.L.hgemm_tn(dy_dev, self._x, self.dw, self.n_out, self.n_in, self.rows)
+        MM.L.hgemm_nn(dy_dev, self.w, self.dx, self.rows, self.n_in, self.n_out)
+        if self.bias is not None:
+            _K["bias_grad"](
+                A.queue,
+                (self.n_out,),
+                None,
+                dy_dev,
+                self.db,
+                np.int32(self.rows),
+                np.int32(self.n_out),
+            )
+        return self.dx
+
+    def step(self, lr, t, b1=0.9, b2=0.999, eps=1e-8, wd=0.0):
+        n = self.n_out * self.n_in
+        bc1 = 1.0 - b1**t
+        bc2 = 1.0 - b2**t
+        _K["adamw_half"](
+            A.queue,
+            ((n + 255) // 256 * 256,),
+            (256,),
+            self.w,
+            self.dw,
+            self.m,
+            self.v,
+            np.int32(n),
+            np.float32(lr),
+            np.float32(b1),
+            np.float32(b2),
+            np.float32(eps),
+            np.float32(wd),
+            np.float32(bc1),
+            np.float32(bc2),
+        )
+        if self.bias is not None:
+            _K["adamw_float"](
+                A.queue,
+                (self.n_out,),
+                None,
+                self.bias,
+                self.db,
+                self.bm,
+                self.bv,
+                np.int32(self.n_out),
+                np.float32(lr),
+                np.float32(b1),
+                np.float32(b2),
+                np.float32(eps),
+                np.float32(wd),
+                np.float32(bc1),
+                np.float32(bc2),
+            )
+
+
+class MLP(object):
+    """SwiGLU: down(silu(gate(x)) * up(x))."""
+
+    def __init__(self, rows, d_model, hidden, rng=None):
+        self.rows, self.d_model, self.hidden = int(rows), int(d_model), int(hidden)
+        rng = rng or np.random.default_rng(1)
+        self.gate = Linear(rows, d_model, hidden, rng=rng)
+        self.up = Linear(rows, d_model, hidden, rng=rng)
+        self.down = Linear(rows, hidden, d_model, rng=rng)
+        self.a = self.gate.y
+        self.b = self.up.y
+        self.g = _buf(rows * hidden * 2)
+        self.dg = _buf(rows * hidden * 2)
+        self.da = _buf(rows * hidden * 2)
+        self.db = _buf(rows * hidden * 2)
+        self.dx = _buf(rows * d_model * 2)
+        self.tmp = _buf(rows * d_model * 2)
+
+    def forward(self, x_dev):
+        self.gate.forward(x_dev)
+        self.up.forward(x_dev)
+        _K["silu_gate"](
+            A.queue,
+            (self.rows * self.hidden,),
+            None,
+            self.a,
+            self.b,
+            self.g,
+            np.int32(self.rows * self.hidden),
+        )
+        self._last_y = self.down.forward(self.g)
+        return self._last_y
+
+    def backward(self, dy_dev):
+        self.down.backward(dy_dev)
+        _K["silu_bwd"](
+            A.queue,
+            (self.rows * self.hidden,),
+            None,
+            self.a,
+            self.b,
+            self.dg,
+            self.da,
+            self.db,
+            np.int32(self.rows * self.hidden),
+        )
+        self.gate.backward(self.da)
+        self.up.backward(self.db)
+        _K["add_half"](
+            A.queue,
+            (self.rows * self.d_model,),
+            None,
+            self.gate.dx,
+            self.up.dx,
+            self.dx,
+            np.int32(self.rows * self.d_model),
+        )
+        return self.dx
+
+    def step(self, lr, t):
+        for m in (self.gate, self.up, self.down):
+            m.step(lr, t)
+
+
+class Block(object):
+    """Pre-norm transformer block: x + attn(norm1(x)), then + mlp(norm2(...))."""
+
+    def __init__(self, rows, d_model, hidden, attn=None, eps=1e-6):
+        self.rows, self.d_model, self.hidden = int(rows), int(d_model), int(hidden)
+        self.norm1 = RMSNorm(rows, d_model, eps=eps)
+        self.norm2 = RMSNorm(rows, d_model, eps=eps)
+        self.norm1.set_weight(np.ones(d_model, dtype=np.float16))
+        self.norm2.set_weight(np.ones(d_model, dtype=np.float16))
+        self.norm1.m = _buf(d_model * 4)
+        self.norm1.v = _buf(d_model * 4)
+        self.norm2.m = _buf(d_model * 4)
+        self.norm2.v = _buf(d_model * 4)
+        for b in (self.norm1.m, self.norm1.v, self.norm2.m, self.norm2.v):
+            cl.enqueue_fill_buffer(A.queue, b, np.float32(0), 0, d_model * 4)
+        self.attn = attn
+        self.mlp = MLP(rows, d_model, hidden)
+        self.zero = _buf(rows * d_model * 2)
+        _K["zero_half"](
+            A.queue, (rows * d_model,), None, self.zero, np.int32(rows * d_model)
+        )
+        self.x1 = _buf(rows * d_model * 2)
+        self.h2 = _buf(rows * d_model * 2)
+        self.y = _buf(rows * d_model * 2)
+        self.dx = _buf(rows * d_model * 2)
+        self.dx1 = _buf(rows * d_model * 2)
+        self.dh2 = _buf(rows * d_model * 2)
+        self.dtmp = _buf(rows * d_model * 2)
+        self._x = None
+
+    def forward(self, x_dev):
+        self._x = x_dev
+        h1 = self.norm1.forward(x_dev)
+        a = self.attn.forward(h1) if self.attn is not None else self.zero
+        _K["add_half"](
+            A.queue,
+            (self.rows * self.d_model,),
+            None,
+            x_dev,
+            a,
+            self.x1,
+            np.int32(self.rows * self.d_model),
+        )
+        h2 = self.norm2.forward(self.x1)
+        self.mlp.forward(h2)
+        _K["add_half"](
+            A.queue,
+            (self.rows * self.d_model,),
+            None,
+            self.x1,
+            self.mlp._last_y,
+            self.y,
+            np.int32(self.rows * self.d_model),
+        )
+        return self.y
+
+    def backward(self, dy_dev):
+        self.mlp.backward(dy_dev)
+        _K["add_half"](
+            A.queue,
+            (self.rows * self.d_model,),
+            None,
+            dy_dev,
+            self.mlp.dx,
+            self.dx1,
+            np.int32(self.rows * self.d_model),
+        )
+        self.norm2.weight_grad(self.dx1)
+        dtmp = self.norm2.backward(self.dx1)
+        a_dx = self.attn.backward(dtmp) if self.attn is not None else self.zero
+        _K["add_half"](
+            A.queue,
+            (self.rows * self.d_model,),
+            None,
+            self.dx1,
+            a_dx,
+            self.dtmp,
+            np.int32(self.rows * self.d_model),
+        )
+        self.norm1.weight_grad(self.dtmp)
+        dh1 = self.norm1.backward(self.dtmp)
+        _K["add_half"](
+            A.queue,
+            (self.rows * self.d_model,),
+            None,
+            self.dtmp,
+            dh1,
+            self.dx,
+            np.int32(self.rows * self.d_model),
+        )
+        return self.dx
+
+    def _norm_step(self, norm, lr, t):
+        cols = self.d_model
+        bc1 = 1.0 - 0.9**t
+        bc2 = 1.0 - 0.999**t
+        _K["adamw_halfgrad"](
+            A.queue,
+            ((cols + 63) // 64 * 64,),
+            (64,),
+            norm.w,
+            norm.dw,
+            norm.m,
+            norm.v,
+            np.int32(cols),
+            np.float32(lr),
+            np.float32(0.9),
+            np.float32(0.999),
+            np.float32(1e-8),
+            np.float32(0.0),
+            np.float32(bc1),
+            np.float32(bc2),
+        )
+
+    def step(self, lr, t):
+        self._norm_step(self.norm1, lr, t)
+        self._norm_step(self.norm2, lr, t)
+        self.mlp.step(lr, t)
+        if self.attn is not None:
+            self.attn.step(lr, t)
+
+
+def check(rows=64, d=32, hidden=64, steps=3):
+    import torch
+    import torch.nn.functional as F
+
+    rng = np.random.default_rng(0)
+    xh = (rng.standard_normal((rows, d)) * 0.05).astype(np.float16)
+    th = (rng.standard_normal((rows, d)) * 0.05).astype(np.float16)
+    x = _upload(xh)
+    t = _upload(th)
+    blk = Block(rows, d, hidden, attn=None)
+
+    # torch reference with the same weights (cast fp32)
+    class Ref(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.n1 = torch.nn.Parameter(torch.ones(d))
+            self.n2 = torch.nn.Parameter(torch.ones(d))
+            self.gate = torch.nn.Linear(d, hidden)
+            self.up = torch.nn.Linear(d, hidden)
+            self.down = torch.nn.Linear(hidden, d)
+
+        def forward(self, x):
+            h = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + 1e-6) * self.n1
+            h = torch.nn.functional.silu(self.gate(h)) * self.up(h)
+            return x + self.down(h)
+
+    ref = Ref()
+    with torch.no_grad():
+        ref.gate.weight.copy_(
+            torch.from_numpy(_read(blk.mlp.gate.w, (hidden, d)).astype(np.float32))
+        )
+        ref.up.weight.copy_(
+            torch.from_numpy(_read(blk.mlp.up.w, (hidden, d)).astype(np.float32))
+        )
+        ref.down.weight.copy_(
+            torch.from_numpy(_read(blk.mlp.down.w, (d, hidden)).astype(np.float32))
+        )
+        ref.gate.bias.zero_()
+        ref.up.bias.zero_()
+        ref.down.bias.zero_()
+    xt = torch.from_numpy(xh.astype(np.float32)).requires_grad_(True)
+    tt = torch.from_numpy(th.astype(np.float32))
+    y_ref = ref(xt)
+    loss = F.mse_loss(y_ref, tt)
+    loss.backward()
+    y = blk.forward(x)
+    yh = _read(y, (rows, d))
+    y_err = float(np.abs(yh.astype(np.float32) - y_ref.detach().numpy()).max())
+    dy = _upload(
+        ((2.0 * (yh.astype(np.float32) - tt.numpy()) / (rows * d)).astype(np.float16))
+    )
+    dx = blk.backward(dy)
+    dxh = _read(dx, (rows, d))
+    dx_err = float(np.abs(dxh.astype(np.float32) - xt.grad.numpy()).max())
+    dw_err = float(
+        np.abs(
+            _read(blk.mlp.down.dw, (d, hidden)).astype(np.float32)
+            - ref.down.weight.grad.numpy()
+        ).max()
+    )
+    # one AdamW step on both sides (fresh optimizer state), then compare a weight
+    opt = torch.optim.AdamW(
+        ref.parameters(), lr=1e-3, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0
+    )
+    blk.step(1e-3, 1)
+    opt.step()
+    w_err = float(
+        np.abs(
+            _read(blk.mlp.down.w, (d, hidden)).astype(np.float32)
+            - ref.down.weight.detach().numpy()
+        ).max()
+    )
+    print(
+        "  rows=%d d=%d hidden=%d | y maxerr %.3e | dx maxerr %.3e | dW maxerr %.3e | step dW %.3e"
+        % (rows, d, hidden, y_err, dx_err, dw_err, w_err)
+    )
+    ok = y_err < 5e-3 and dx_err < 5e-2 and dw_err < 5e-2 and w_err < 5e-3
+    print("RESULT " + ("PASS" if ok else "FAIL"))
+    return 0 if ok else 1
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--check", action="store_true")
+    ap.add_argument("--rows", type=int, default=64)
+    ap.add_argument("--d", type=int, default=32)
+    ap.add_argument("--hidden", type=int, default=64)
+    ap.add_argument("--steps", type=int, default=3)
+    a = ap.parse_args()
+    if a.check:
+        return check(a.rows, a.d, a.hidden, a.steps)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
