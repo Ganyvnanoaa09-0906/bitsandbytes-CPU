@@ -24,6 +24,7 @@ import pyopencl as cl  # noqa: E402
 import gt1030.igpu_ctx as CTX  # noqa: E402
 import gt1030.igpu_graph as G  # noqa: E402
 import gt1030.igpu_nn_ops as NN  # noqa: E402
+import gt1030.igpu_ops2 as OPS2  # noqa: E402
 from gt1030.ar_v2_multi import L as GEMM  # noqa: E402
 
 SILU_SRC = r"""
@@ -114,10 +115,11 @@ class Executor(object):
         import torch.nn as nn
         for name, mod in self.gm.named_modules():
             if isinstance(mod, nn.Linear):
-                if mod.bias is not None:
-                    raise SystemExit("dev13: Linear(bias=True) 还未支持")
                 self.params[name + ".weight"] = P(
                     self.dev, mod.weight.detach().cpu().numpy(), name + ".weight")
+                if mod.bias is not None:
+                    self.params[name + ".bias"] = P(
+                        self.dev, mod.bias.detach().cpu().numpy(), name + ".bias")
             elif isinstance(mod, nn.LayerNorm):
                 self.params[name + ".gamma"] = P(
                     self.dev, mod.weight.detach().cpu().numpy(), name + ".gamma")
@@ -133,6 +135,11 @@ class Executor(object):
                 w = mod.weight.detach().cpu().numpy().astype(np.float32)
                 cl.enqueue_copy(self.dev.q, p.master, w.reshape(-1))
                 cl.enqueue_copy(self.dev.q, p.buf, w.astype(np.float16).reshape(-1))
+                if mod.bias is not None:
+                    pb = self.params[name + ".bias"]
+                    b = mod.bias.detach().cpu().numpy().astype(np.float32)
+                    cl.enqueue_copy(self.dev.q, pb.master, b)
+                    cl.enqueue_copy(self.dev.q, pb.buf, b.astype(np.float16))
             elif isinstance(mod, nn.LayerNorm):
                 for suffix, src in ((".gamma", mod.weight), (".beta", mod.bias)):
                     p = self.params[name + suffix]
@@ -194,7 +201,10 @@ class Executor(object):
                 out = self._new((x.shape[0], sub.out_features))
                 p = self.params[node.target + ".weight"]
                 GEMM.hgemm_nt(x.buf, p.buf, out.buf, x.shape[0], sub.out_features, sub.in_features)
-                self.recs.append(("linear", node.name, x, p, None))
+                pb = self.params.get(node.target + ".bias")
+                if pb is not None:
+                    OPS2.bias_add(self.dev, out.buf, pb.buf, x.shape[0], sub.out_features)
+                self.recs.append(("linear", node.name, x, p, pb))
             elif isinstance(sub, nn.GELU):
                 out = self._new(x.shape)
                 NN._kernels()["gelu_fwd"](self.dev.q, (x.numel,), None, x.buf, out.buf,
@@ -267,6 +277,11 @@ class Executor(object):
                 GEMM.hgemm_nn(g, p.buf, dx, M, Kd, N)
                 GEMM.hgemm_tn(g, x.buf, dW, N, Kd, M)
                 self._acc_param(p, dW)
+                pb = rec[4]
+                if pb is not None:
+                    db = self._buf((pb.n,))
+                    OPS2.col_sum(self.dev, g, db, M, N)
+                    self._acc_param(pb, db)
                 self._propagate(pending, x, dx)
             elif kind in ("gelu", "silu"):
                 x = rec[2]
