@@ -73,21 +73,36 @@ class T(object):
 class P(object):
     """可训练参数：fp32 master + fp16 副本 + fp16 梯度 + Adam m/v（全部常驻）。"""
 
-    def __init__(self, dev, w_np, name=""):
+    def __init__(self, dev, w_np, name="", state_bits=32):
         self.dev, self.name = dev, name
+        self.state_bits = state_bits
         w = np.ascontiguousarray(w_np, dtype=np.float32)
         self.shape = w.shape
         self.n = w.size
         flat = w.reshape(-1)
         nb4 = max(4096, self.n * 4)
         self.master = dev.buf(nb4)
-        self.mom = dev.buf(nb4)
-        self.vel = dev.buf(nb4)
+        if state_bits == 8:
+            nblocks = (self.n + 255) // 256
+            self.mom = dev.buf(max(4096, nblocks * 4))
+            self.vel = dev.buf(max(4096, nblocks * 4))
+            self.mom8 = dev.buf(max(4096, self.n))
+            self.vel8 = dev.buf(max(4096, self.n))
+        else:
+            self.mom = dev.buf(nb4)
+            self.vel = dev.buf(nb4)
         self.buf = dev.buf(max(4096, self.n * 2))
         self.grad = dev.buf(max(4096, self.n * 2))
         cl.enqueue_copy(dev.q, self.master, flat)
-        cl.enqueue_copy(dev.q, self.mom, np.zeros(self.n, np.float32))
-        cl.enqueue_copy(dev.q, self.vel, np.zeros(self.n, np.float32))
+        if state_bits == 8:
+            nblocks = (self.n + 255) // 256
+            cl.enqueue_copy(dev.q, self.mom, np.zeros(nblocks, np.float32))
+            cl.enqueue_copy(dev.q, self.vel, np.zeros(nblocks, np.float32))
+            cl.enqueue_copy(dev.q, self.mom8, np.zeros(self.n, np.int8))
+            cl.enqueue_copy(dev.q, self.vel8, np.zeros(self.n, np.int8))
+        else:
+            cl.enqueue_copy(dev.q, self.mom, np.zeros(self.n, np.float32))
+            cl.enqueue_copy(dev.q, self.vel, np.zeros(self.n, np.float32))
         cl.enqueue_copy(dev.q, self.buf, flat.astype(np.float16))
         cl.enqueue_copy(dev.q, self.grad, np.zeros(self.n, np.float16))
         dev.q.finish()
@@ -138,7 +153,8 @@ class AttnTracer(object):
 
 
 class Executor(object):
-    def __init__(self, model, sample, arena_mb=900, name="fx"):
+    def __init__(self, model, sample, arena_mb=900, name="fx", state_bits=32):
+        self.state_bits = state_bits
         import torch.fx as fx
         self.model = model
         self.sess = G.Session(arena_mb=arena_mb, name=name)
@@ -158,18 +174,23 @@ class Executor(object):
         for name, mod in self.gm.named_modules():
             if isinstance(mod, nn.Linear):
                 self.params[name + ".weight"] = P(
-                    self.dev, mod.weight.detach().cpu().numpy(), name + ".weight")
+                    self.dev, mod.weight.detach().cpu().numpy(), name + ".weight",
+                    state_bits=self.state_bits)
                 if mod.bias is not None:
                     self.params[name + ".bias"] = P(
-                        self.dev, mod.bias.detach().cpu().numpy(), name + ".bias")
+                        self.dev, mod.bias.detach().cpu().numpy(), name + ".bias",
+                        state_bits=self.state_bits)
             elif isinstance(mod, nn.Embedding):
                 self.params[name + ".weight"] = P(
-                    self.dev, mod.weight.detach().cpu().numpy(), name + ".weight")
+                    self.dev, mod.weight.detach().cpu().numpy(), name + ".weight",
+                    state_bits=self.state_bits)
             elif isinstance(mod, nn.LayerNorm):
                 self.params[name + ".gamma"] = P(
-                    self.dev, mod.weight.detach().cpu().numpy(), name + ".gamma")
+                    self.dev, mod.weight.detach().cpu().numpy(), name + ".gamma",
+                    state_bits=self.state_bits)
                 self.params[name + ".beta"] = P(
-                    self.dev, mod.bias.detach().cpu().numpy(), name + ".beta")
+                    self.dev, mod.bias.detach().cpu().numpy(), name + ".beta",
+                    state_bits=self.state_bits)
 
     def sync_from_torch(self):
         """把 torch 当前参数灌进 device（保证同参对拍）。"""
@@ -485,12 +506,26 @@ class Executor(object):
         for p in self.params.values():
             p.zero_grad()
 
-    def step(self, lr, t, eps=1e-8):
+    def step(self, lr, t, eps=1e-8, wd=0.0):
+        if not hasattr(self, "_k8"):
+            self._k8 = None
         for p in self.params.values():
-            self.sess.adam_single(self.dev.q, (p.n,), None, p.master, p.mom, p.vel, p.grad,
-                                  p.buf, np.int32(p.n), np.float32(lr),
-                                  np.float32(0.9), np.float32(0.999), np.float32(eps),
-                                  np.float32(0.0), np.int32(t))
+            if getattr(p, "state_bits", 32) == 8:
+                if self._k8 is None:
+                    import pyopencl as _cl
+                    prog = _cl.Program(self.dev.ctx, G.EXTRA).build(
+                        options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
+                    self._k8 = _cl.Kernel(prog, "adamw1_q8")
+                nblocks = (p.n + 255) // 256
+                self._k8(self.dev.q, (nblocks * 256,), (256,), p.master, p.mom8, p.vel8,
+                         p.mom, p.vel, p.grad, p.buf, np.int32(p.n), np.float32(lr),
+                         np.float32(0.9), np.float32(0.999), np.float32(eps),
+                         np.float32(wd), np.int32(t))
+            else:
+                self.sess.adam_single(self.dev.q, (p.n,), None, p.master, p.mom, p.vel,
+                                      p.grad, p.buf, np.int32(p.n), np.float32(lr),
+                                      np.float32(0.9), np.float32(0.999), np.float32(eps),
+                                      np.float32(wd), np.int32(t))
         self.dev.q.finish()
 
 

@@ -62,6 +62,50 @@ __kernel void adamw1(__global float* w, __global float* m, __global float* v,
     wh[i] = (half)w[i];
 }
 
+
+// 8-bit 状态 AdamW：每 workgroup 处理一个 block(256)，m/v 为 int8 码，absmax 为 fp32
+__kernel void adamw1_q8(__global float* w, __global char* m8, __global char* v8,
+                        __global float* amax_m, __global float* amax_v,
+                        __global const half* g, __global half* wh, int n,
+                        float lr, float b1, float b2, float eps, float wd, int t) {
+    int blk = get_group_id(0), lid = get_local_id(0), lsz = get_local_size(0);
+    int base = blk * 256;
+    int i = base + lid;
+    __local float redm[256];
+    __local float redv[256];
+    __local float sm, sv;
+    float nm = 0.f, nv = 0.f, gt = 0.f;
+    float mm = amax_m[blk], vv = amax_v[blk];
+    if (i < n) {
+        gt = (float)g[i];
+        float m_old = ((float)m8[i] / 127.f) * mm;
+        float v_old = ((float)v8[i] / 127.f) * vv;
+        nm = b1 * m_old + (1.f - b1) * gt;
+        nv = b2 * v_old + (1.f - b2) * gt * gt;
+    }
+    redm[lid] = fabs(nm);
+    redv[lid] = fabs(nv);
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int off = lsz >> 1; off > 0; off >>= 1) {
+        if (lid < off) { redm[lid] = fmax(redm[lid], redm[lid + off]);
+                         redv[lid] = fmax(redv[lid], redv[lid + off]); }
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    if (lid == 0) { sm = fmax(redm[0], 1e-12f); sv = fmax(redv[0], 1e-12f);
+                    amax_m[blk] = sm; amax_v[blk] = sv; }
+    barrier(CLK_LOCAL_MEM_FENCE);
+    sm = amax_m[blk]; sv = amax_v[blk];
+    if (i < n) {
+        float bc1 = 1.f - pow(b1, (float)t);
+        float bc2 = 1.f - pow(b2, (float)t);
+        float upd = lr * (nm / bc1) / (sqrt(nv / bc2) + eps);
+        w[i] = w[i] - upd - lr * wd * w[i];
+        wh[i] = (half)w[i];
+        m8[i] = (char)clamp(round(nm / sm * 127.f), -127.f, 127.f);
+        v8[i] = (char)clamp(round(nv / sv * 127.f), -127.f, 127.f);
+    }
+}
+
 // 逐元素乘（反向用）
 __kernel void mul_h(__global const half* a, __global const half* b, __global half* y, long n) {
     long i = get_global_id(0);
@@ -121,6 +165,11 @@ class Session(object):
         self.adam_single = self._adam_kernel()
 
     # ---------------- 参数 ----------------
+    def _adam_kernel_q8(self):
+        prog = cl.Program(self.dev.ctx, EXTRA).build(
+            options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
+        return cl.Kernel(prog, "adamw1_q8")
+
     def _adam_kernel(self):
         # 自带 adamw1（见 EXTRA）：不再从 MM.KSRC 编译，避免源码里的非 GBK 字符在 Windows 上失败
         prog = cl.Program(self.dev.ctx, EXTRA).build(
@@ -170,13 +219,24 @@ class Session(object):
             cl.enqueue_copy(d.q, p.grad, np.zeros(p.numel, np.float16))
         d.q.finish()
 
-    def adam_step(self, lr, t, eps=1e-8):
+    def adam_step(self, lr, t, eps=1e-8, wd=0.0):
         d = self.dev
+        if not hasattr(self, "_k8"):
+            self._k8 = None
         for p in self.params.values():
-            self.adam_single(d.q, (p.numel,), None, p.master, p.mom, p.vel, p.grad,
-                             p.buf, np.int32(p.numel), np.float32(lr),
-                             np.float32(0.9), np.float32(0.999), np.float32(eps),
-                             np.float32(0.0), np.int32(t))  # (w,m,v,g,wh,n,lr,b1,b2,eps,wd,t)
+            if getattr(p, "state_bits", 32) == 8:
+                if self._k8 is None:
+                    self._k8 = self._adam_kernel_q8()
+                nblocks = (p.numel + 255) // 256
+                self._k8(d.q, (nblocks * 256,), (256,), p.master, p.mom8, p.vel8,
+                         p.mom, p.vel, p.grad, p.buf, np.int32(p.numel),
+                         np.float32(lr), np.float32(0.9), np.float32(0.999),
+                         np.float32(eps), np.float32(wd), np.int32(t))
+            else:
+                self.adam_single(d.q, (p.numel,), None, p.master, p.mom, p.vel, p.grad,
+                                 p.buf, np.int32(p.numel), np.float32(lr),
+                                 np.float32(0.9), np.float32(0.999), np.float32(eps),
+                                 np.float32(wd), np.int32(t))
         d.q.finish()
 
 
@@ -251,6 +311,16 @@ def acc_grad(sess, target_buf, dy_buf, n):
 
 
 # ---------------------------------------------------------------- 最小闭环测试
+def cosine_lr(t, total, lr_max, lr_min=0.0, warmup=0):
+    """warmup 线性升温 → 余弦退火到 lr_min。t 从 1 计。"""
+    import math
+    if warmup and t <= warmup:
+        return lr_max * t / float(warmup)
+    span = max(1, total - warmup)
+    prog = min(1.0, (t - warmup) / float(span))
+    return lr_min + 0.5 * (lr_max - lr_min) * (1.0 + math.cos(math.pi * prog))
+
+
 def check(steps=5, d_in=64, d_h=128, batch=32, scale=65536.0):
     import torch
     import torch.nn.functional as F
