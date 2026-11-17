@@ -634,7 +634,7 @@ eval loss 7.2629（fp32）→ 7.2623（从磁盘回读的 NF2）。
 **2-bit NF +0.0028、9.2 MB（12.69×）**；2-bit uniform +0.0263；3-bit NF −0.0217、12.8 MB。
 **`pack_state_dict(sd, ..., exclude_prefixes=("token_emb.", "head."))`** -- 可选排除
 对量化敏感的张量。**重要**：在 converged 32×32 AR 上把 token embedding/head 也压到 2-bit
-会让 CE +2.49 nats；只压 `blocks.*` 时 NF2 +0.126、NF3 +0.027，对应存储约 7.9×（14.8 MB）。
+会让 CE +2.49 nats；只压 `blocks.*` 时 NF2 +0.129、NF3 +0.027，对应存储约 7.9×（14.8 MB）。
 所以 2-bit checkpoint 默认应排除 embedding/head，除非逐模型验证过 all-scope。
 
 

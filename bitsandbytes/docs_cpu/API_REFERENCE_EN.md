@@ -616,7 +616,7 @@ returns the count; `lm_head` stays fp32.
 
 **`pack_state_dict(sd, ..., exclude_prefixes=("token_emb.", "head."))`** -- optionally keep
 quality-sensitive tensors in fp32. **Important**: packing token embeddings/head at 2 bits on
-the converged 32x32 AR model costs +2.49 nats CE; packing only `blocks.*` gives NF2 +0.126,
+the converged 32x32 AR model costs +2.49 nats CE; packing only `blocks.*` gives NF2 +0.129,
 NF3 +0.027 at ~7.9x storage (14.8 MB). Keep embeddings/head fp32 for 2-bit checkpoints unless
 all-scope has been verified per model.
 
