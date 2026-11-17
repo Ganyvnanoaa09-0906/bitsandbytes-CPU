@@ -116,8 +116,26 @@ def build_optimizers(a, model):
     """
     import bitsandbytes as bnb
     name = (getattr(a, 'optimizer', 'adamw') or 'adamw').lower()
+    variant = (getattr(a, 'adam_optim', '8bit') or '8bit').lower()
+
+    def _adam(params):
+        """dev13：按 --adam-optim 选 Adam 变体（fp32 / 8bit / 4bit blockwise）。"""
+        if variant == '4bit':
+            if not hasattr(bnb.optim, 'AdamW4bit'):
+                raise SystemExit('本机 bnb 没有 AdamW4bit（需要 0.50.2.dev8+）')
+            print('[optim] AdamW4bit（4-bit blockwise，状态≈n/2 字节 + absmax/256）', flush=True)
+            return bnb.optim.AdamW4bit(params, lr=a.lr)
+        if variant == 'fp32':
+            import torch as _torch
+            print('[optim] torch AdamW（fp32 状态）', flush=True)
+            return _torch.optim.AdamW(params, lr=a.lr)
+        return bnb.optim.AdamW8bit(params, lr=a.lr)
+
+    if name == 'adamw4bit':
+        variant = '4bit'
+        return [_adam(model.parameters())]
     if name != 'muon':
-        return [bnb.optim.AdamW8bit(model.parameters(), lr=a.lr)]
+        return [_adam(model.parameters())]
     muon_p, adam_p = [], []
     for n, p in model.named_parameters():
         if not p.requires_grad:
@@ -127,11 +145,11 @@ def build_optimizers(a, model):
         else:
             adam_p.append(p)
     ns_it = int(getattr(a, 'ns_iters', 5) or 5)
-    print('[muon] %d 个 2D 权重走 Muon（NS=%d）· %d 个其余走 AdamW8bit'
-          % (len(muon_p), ns_it, len(adam_p)), flush=True)
+    print('[muon] %d 个 2D 权重走 Muon（NS=%d）· %d 个其余走 Adam(%s)'
+          % (len(muon_p), ns_it, len(adam_p), variant), flush=True)
     return [Muon(muon_p, lr=float(getattr(a, 'muon_lr', 0.02)), ns_iters=ns_it,
                   weight_decay=float(getattr(a, 'muon_wd', 0.0) or 0.0)),
-            bnb.optim.AdamW8bit(adam_p, lr=a.lr)]
+            _adam(adam_p)]
 
 
 
@@ -253,8 +271,21 @@ def main():
     # ★ H3 实验用：Muon 的 Newton-Schulz 迭代次数。默认 5（原文与基线）。
     # 第二轮微基准：5→3 每步省 763 ms（优化器 2562→1799 ms），但 512×512 更新的条件数
     # 从 27 涨到 320。是否可接受只能在训练里测，见 research/ns_iterations.md。
-    ap.add_argument('--optimizer', default='adamw', choices=['adamw', 'muon'],
-                    help='adamw = 现有行为（默认）；muon = 2D 权重走 Muon，其余走 AdamW8bit')
+    ap.add_argument('--optimizer', default='adamw', choices=['adamw', 'muon', 'adamw4bit'],
+                    help='adamw = 现有行为（默认）；muon = 2D 权重走 Muon，其余走 Adam；'
+                         'adamw4bit = 4-bit blockwise AdamW（状态 ≈ n/2 字节 + absmax/256）')
+    # ---- dev13：极低 bit 训练（CLI 优先于 AR_QAT_* 环境变量）----
+    ap.add_argument('--qat-bits', type=int, default=0,
+                    help='QAT+STE 位宽：0=关闭，1=二值(±1)，2=2bit（配 --qat-mode ternary 即 1.58bit）')
+    ap.add_argument('--qat-mode', default='',
+                    choices=['', 'uniform', 'nf', 'mixed', 'mixed32', 'binary', 'ternary'],
+                    help='量化网格：uniform/nf/mixed/mixed32/binary(±1)/ternary({-1,0,+1})')
+    ap.add_argument('--qat-block', type=int, default=64, help='per-block scale 的块大小')
+    ap.add_argument('--qat-hi-bits', type=int, default=4, help='mixed 模式高比特块的位宽')
+    ap.add_argument('--qat-hi-frac', type=float, default=0.1, help='mixed 模式高比特块的比例')
+    # ---- dev13：4-bit 优化器 ----
+    ap.add_argument('--adam-optim', default='8bit', choices=['8bit', '4bit', 'fp32'],
+                    help='Adam 变体：8bit（默认）/4bit/fp32；muon 模式下作用于非 2D 参数')
     # ★ 权重衰减。Muon 原本【完全没有】衰减（只有 p.add_ 更新），而它管着 60/65 个 2D 权重。
     # 12000 步长跑暴露了后果：train 降到 3.83 而 val 涨到 6.01。默认 0 保持原行为。
     ap.add_argument('--muon-wd', type=float, default=0.0,
@@ -666,13 +697,14 @@ def main():
                                token_scale=int(getattr(a, 'token_scale', 1) or 1))
     model = SmallARImageModelV2(cfg)
     # ★ 2026-11-17：直接在 2/3-bit 下训练（QAT + STE，无 pack/unpack）
-    _qat_bits = int(os.environ.get('AR_QAT_BITS', '0') or 0)
+    _qat_bits = int(getattr(a, 'qat_bits', 0) or 0) or int(os.environ.get('AR_QAT_BITS', '0') or 0)
     if _qat_bits > 0:
         from scripts.lib.qat_ste import wrap_qat
-        _qat_mode = os.environ.get('AR_QAT_MODE', 'uniform')
-        _hi_bits = int(os.environ.get('AR_QAT_HI_BITS', '4'))
-        _hi_frac = float(os.environ.get('AR_QAT_HI_FRAC', '0.1'))
-        _nq = wrap_qat(model, bits=_qat_bits, block=int(os.environ.get('AR_QAT_BLOCK', '64')),
+        _qat_mode = getattr(a, 'qat_mode', '') or os.environ.get('AR_QAT_MODE', 'uniform')
+        _hi_bits = int(getattr(a, 'qat_hi_bits', 0) or os.environ.get('AR_QAT_HI_BITS', '4'))
+        _hi_frac = float(getattr(a, 'qat_hi_frac', 0.0) or os.environ.get('AR_QAT_HI_FRAC', '0.1'))
+        _qat_block = int(getattr(a, 'qat_block', 0) or os.environ.get('AR_QAT_BLOCK', '64'))
+        _nq = wrap_qat(model, bits=_qat_bits, block=_qat_block,
                        mode=_qat_mode, hi_bits=_hi_bits, hi_frac=_hi_frac)
         print('[v2] QAT-STE 已启用: %d-bit mode=%s hi=%d/hi_frac=%.2f，替换 %d 个 Linear（无 pack/unpack）'
               % (_qat_bits, _qat_mode, _hi_bits, _hi_frac, _nq), flush=True)

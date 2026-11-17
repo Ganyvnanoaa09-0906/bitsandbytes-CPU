@@ -52,9 +52,16 @@ def _erfinv(x: float) -> float:
 
 
 def _uniform_levels(bits: int) -> list:
+    if bits == 1:
+        return [-1.0, 1.0]      # 二值：±1（默认公式会给 ±0.5，白丢一半幅度）
     n = 1 << bits
     half = n / 2.0
     return [(i - half + 0.5) / half for i in range(n)]     # -1+1/half ... 1-1/half
+
+
+def _ternary_levels() -> list:
+    """1.58-bit 三值：{-1, 0, +1}（配 per-block absmax scale）。"""
+    return [-1.0, 0.0, 1.0]
 
 
 def _quant_block(blk: torch.Tensor, levels: list) -> torch.Tensor:
@@ -80,7 +87,11 @@ def _qat(w: torch.Tensor, bits: int, block: int, mode: str,
         wf = F.pad(wf, (0, pad))
     blk = wf.reshape(rows, -1, block)
 
-    if mode == "nf":
+    if mode == "ternary":
+        dq = _quant_block(blk, _ternary_levels())
+    elif mode == "binary":
+        dq = _quant_block(blk, _uniform_levels(1))
+    elif mode == "nf":
         dq = _quant_block(blk, _nf_levels(bits))
     elif mode == "mixed32":
         lo = _quant_block(blk, _uniform_levels(bits))
