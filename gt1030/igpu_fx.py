@@ -166,8 +166,10 @@ class Executor(object):
     def __init__(self, model, sample, arena_mb=900, name="fx", state_bits=32,
                  muon=False, muon_lr=None, muon_wd=0.0, muon_momentum=0.95):
         self.state_bits = state_bits
+        self.schedule = None       # set_schedule(...) 之后 step() 可以不传 lr
         self.use_muon = muon
-        self.muon_lr = muon_lr
+        # 实测：muon_lr=0.02 在 64-vocab 小 LM 上 12 步内 NaN；安全区 ≤0.005
+        self.muon_lr = muon_lr if muon_lr is not None else 0.005
         self.muon_wd = muon_wd
         self.muon_momentum = muon_momentum
         import torch.fx as fx
@@ -521,21 +523,53 @@ class Executor(object):
         for p in self.params.values():
             p.zero_grad()
 
+    def set_schedule(self, kind="cosine", total=1000, lr_max=1e-3, lr_min=0.0,
+                     warmup=0, t_mult=2, t0=None):
+        """kind: 'constant' | 'cosine' | 'sgdr'。设置后 step(lr=None) 自动按 step 号取 lr。"""
+        self.schedule = dict(kind=kind, total=int(total), lr_max=float(lr_max),
+                             lr_min=float(lr_min), warmup=int(warmup),
+                             t_mult=int(t_mult), t0=int(t0 or max(1, total)))
+        return self.schedule
+
+    def lr_at(self, t):
+        if self.schedule is None:
+            return None
+        cfg = self.schedule
+        if cfg["kind"] == "constant":
+            return cfg["lr_max"]
+        if cfg["kind"] == "sgdr":
+            return G.sgdr_lr(t, cfg["t0"], cfg["lr_max"], cfg["lr_min"],
+                             t_mult=cfg["t_mult"], warmup=cfg["warmup"])[0]
+        return G.cosine_lr(t, cfg["total"], cfg["lr_max"], cfg["lr_min"],
+                           warmup=cfg["warmup"])
+
     def _is_muon_param(self, name, p):
         """2D 权重且不是 embedding/head（与 CPU 侧 Muon 的分工一致）。"""
         if not self.use_muon or len(p.shape) != 2:
             return False
+        # 量化状态（8/4-bit）下 Muon 用独立动量缓冲（igpu_muon._mom_buf），可以共存
         if "emb" in name or "head" in name:
             return False
         return name.endswith(".weight")
 
-    def step(self, lr, t, eps=1e-8, wd=0.0):
+    def step(self, lr=None, t=1, eps=1e-8, wd=0.0):
+        if lr is None:
+            lr = self.lr_at(t)
+            if lr is None:
+                raise SystemExit("step(lr=None) 需要先 set_schedule(...)")
         if self.use_muon:
             import gt1030.igpu_muon as MU
+            # Muon 跟随调度缩放：热重启把 Adam lr 拉回峰值时，Muon 不能还按常数走，
+            # 否则两者叠加会把更新推爆（实测 SGDR + Muon 常数 lr 会在重启后 NaN）。
+            muon_scale = 1.0
+            if self.schedule is not None:
+                peak = float(self.schedule.get("lr_max") or 0.0)
+                if peak > 0:
+                    muon_scale = float(lr) / peak
             for name, p in self.params.items():
                 if self._is_muon_param(name, p):
                     MU.muon_step(self.dev, p, p.grad,
-                                 lr=float(self.muon_lr or lr),
+                                 lr=float(self.muon_lr or lr) * muon_scale,
                                  wd=float(self.muon_wd),
                                  momentum=float(self.muon_momentum))
         if not hasattr(self, "_k8"):

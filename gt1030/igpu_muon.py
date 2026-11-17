@@ -26,6 +26,9 @@ import gt1030.igpu_ctx as CTX  # noqa: E402
 from gt1030.ar_v2_multi import L as GEMM  # noqa: E402
 
 SRC = r"""
+// NS 输出的 RMS 上限：正交化后的单位方向在热重启时会被 lr 放大，这里限幅
+
+#define BLK32 32
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
 
 // 1) 归一化：X = G / (||G||_F + eps)  —— 每个 workgroup 处理一行，最后再整体除
@@ -99,7 +102,7 @@ __kernel void muon_d_q8(__global char* mom, __global float* amax, __global const
                         float mu, int transposed) {
     int r = get_global_id(0), c = get_local_id(0);
     long i = (long)r * cols + c;
-    int blk = (int)(i / 256);
+    int blk = (int)(i / BLK32);
     float m = ((float)mom[i] / 127.f) * amax[blk];
     float gt = (float)g[i];
     float nm = mu * m + gt;
@@ -112,7 +115,7 @@ __kernel void muon_d_q8(__global char* mom, __global float* amax, __global const
 __kernel void mom_requant8(__global const float* momf, __global char* mom, __global float* amax,
                            int n) {
     int blk = get_group_id(0), lid = get_local_id(0), lsz = get_local_size(0);
-    int base = blk * 256;
+    int base = blk * BLK32;
     __local float red[256];
     float a = 0.f;
     int i = base + lid;
@@ -133,7 +136,7 @@ __kernel void mom_update_f32(__global const half* g, __global const char* mom,
                              long n, float mu) {
     long i = get_global_id(0);
     if (i >= n) return;
-    int blk = (int)(i / 256);
+    int blk = (int)(i / BLK32);
     float m = ((float)mom[i] / 127.f) * amax[blk];
     momf[i] = mu * m + (float)g[i];
 }
@@ -193,7 +196,28 @@ __kernel void mom_requant4(__global const float* momf, __global uchar* mom,
     mom[i >> 1] = b;
 }
 
+
+// NS 输出的逐元素缩放裁剪：先求全矩阵 RMS（单 workgroup 归约），再按需缩放
+__kernel void ns_clip(__global half* x, long n, float cap) {
+    int lid = get_local_id(0), lsz = get_local_size(0);
+    __local float red[256];
+    float acc = 0.f;
+    for (long i = lid; i < n; i += lsz) { float v = (float)x[i]; acc += v * v; }
+    red[lid] = acc; barrier(CLK_LOCAL_MEM_FENCE);
+    for (int off = lsz >> 1; off > 0; off >>= 1) { if (lid < off) red[lid] += red[lid + off]; barrier(CLK_LOCAL_MEM_FENCE); }
+    __local float s_scale;
+    if (lid == 0) {
+        float rms = sqrt(red[0] / (float)n);
+        s_scale = (rms > cap && cap > 0.f) ? (cap / rms) : 1.f;
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+    float sc = s_scale;
+    if (sc < 0.9999f) for (long i = lid; i < n; i += lsz) x[i] = (half)((float)x[i] * sc);
+}
+
 """
+
+NS_RMS_CAP = 1.0
 
 _C = {}
 
@@ -207,7 +231,7 @@ def K(dev):
                    ("row_sumsq", "scale_all", "ns_bm", "ns_ax_plus", "muon_apply",
                     "muon_d", "untranspose_h", "muon_d_q8", "mom_requant8",
                     "mom_update_f32", "muon_d_q4", "mom_update_q4",
-                    "mom_requant4")}
+                    "mom_requant4", "ns_clip")}
     return _C[key]
 
 
@@ -275,6 +299,18 @@ def ns_device(dev, X_buf, m, n, steps=5, eps=1e-7):
 
 
 
+def _mom_buf(dev, p):
+    """Muon 专用 fp32 动量：量化状态（state_bits 8/4）时 p.mom 是 absmax，不能拿来当满尺寸动量。"""
+    need_full = getattr(p, "state_bits", 32) != 32
+    if need_full:
+        if getattr(p, "muon_mom", None) is None:
+            p.muon_mom = dev.buf(max(4096, p.n * 4))
+            cl.enqueue_copy(dev.q, p.muon_mom, np.zeros(p.n, np.float32))
+            dev.q.finish()
+        return p.muon_mom
+    return p.mom
+
+
 def muon_step(dev, p, grad_buf, lr, wd=0.0, momentum=0.95, ns_steps=5):
     """一步 Muon：momentum(Nesterov) → NS 正交化 → 缩放 → 应用（fp32 master）。
 
@@ -285,11 +321,13 @@ def muon_step(dev, p, grad_buf, lr, wd=0.0, momentum=0.95, ns_steps=5):
     tr = m0 > n0
     m, n = (n0, m0) if tr else (m0, n0)
     x_buf = dev.buf(max(4096, m * n * 2))
-    k["muon_d"](dev.q, (m0, n0), None, p.mom, grad_buf, x_buf,
+    k["muon_d"](dev.q, (m0, n0), None, _mom_buf(dev, p), grad_buf, x_buf,
                 np.int32(m0), np.int32(n0), np.int32(m), np.int32(n),
                 np.float32(momentum), np.int32(1 if tr else 0))
     dev.q.finish()
     ns_device(dev, x_buf, m, n, steps=ns_steps)
+    K(dev)["ns_clip"](dev.q, (256,), (256,), x_buf, np.int64(m * n), np.float32(NS_RMS_CAP))
+    dev.q.finish()
     scale = float(max(1.0, m / n)) ** 0.5
     if tr:
         y_buf = dev.buf(max(4096, m0 * n0 * 2))
@@ -336,8 +374,8 @@ def check_step(m=32, n=16, seed=0, lr=0.02):
 
 
 def alloc_mom_q8(dev, n):
-    """给 P 挂上 8-bit 动量：mom8（int8 码）+ amax（每 256 一个 fp32）+ momf（fp32 临时）。"""
-    nblocks = (n + 255) // 256
+    """给 P 挂上 8-bit 动量：mom8（int8 码）+ amax（每 32 一个 fp32）+ momf（fp32 临时）。"""
+    nblocks = (n + 31) // 32
     p_mom = dev.buf(max(4096, n))
     amax = dev.buf(max(4096, nblocks * 4))
     momf = dev.buf(max(4096, n * 4))
@@ -359,6 +397,8 @@ def muon_step_q8(dev, p, grad_buf, lr, wd=0.0, momentum=0.95, ns_steps=5):
                    np.float32(momentum), np.int32(1 if tr else 0))
     dev.q.finish()
     ns_device(dev, x_buf, m, n, steps=ns_steps)
+    K(dev)["ns_clip"](dev.q, (256,), (256,), x_buf, np.int64(m * n), np.float32(NS_RMS_CAP))
+    dev.q.finish()
     scale = float(max(1.0, m / n)) ** 0.5
     if tr:
         y_buf = dev.buf(max(4096, m0 * n0 * 2))
@@ -370,10 +410,10 @@ def muon_step_q8(dev, p, grad_buf, lr, wd=0.0, momentum=0.95, ns_steps=5):
     k["muon_apply"](dev.q, (m0 * n0,), None, p.master, src, p.buf,
                     np.int64(m0 * n0), np.float32(lr), np.float32(wd), np.float32(scale))
     # 动量重定量化
-    nblk = (p.n + 255) // 256
+    nblk = (p.n + 31) // 32
     k["mom_update_f32"](dev.q, (p.n,), None, grad_buf, p.mom8, p.amax, p.momf,
                         np.int64(p.n), np.float32(momentum))
-    k["mom_requant8"](dev.q, (nblk * 256,), (256,), p.momf, p.mom8, p.amax, np.int32(p.n))
+    k["mom_requant8"](dev.q, (nblk * 32,), (32,), p.momf, p.mom8, p.amax, np.int32(p.n))
     dev.q.finish()
 
 
@@ -431,6 +471,8 @@ def muon_step_q4(dev, p, grad_buf, lr, wd=0.0, momentum=0.95, ns_steps=5):
                    np.float32(momentum), np.int32(1 if tr else 0))
     dev.q.finish()
     ns_device(dev, x_buf, m, n, steps=ns_steps)
+    K(dev)["ns_clip"](dev.q, (256,), (256,), x_buf, np.int64(m * n), np.float32(NS_RMS_CAP))
+    dev.q.finish()
     scale = float(max(1.0, m / n)) ** 0.5
     if tr:
         y_buf = dev.buf(max(4096, m0 * n0 * 2))

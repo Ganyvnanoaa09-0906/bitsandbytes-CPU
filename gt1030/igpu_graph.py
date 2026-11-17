@@ -30,6 +30,15 @@ L = MM.L
 
 EXTRA = r"""
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
+
+// 8-bit 优化器状态的数值护栏（实测：缺了会在大约第 9 步出 NaN）
+//   1) v 的解码地板：小元素的码会舍入到 0，sqrt(0/bc2)=0 后分母只剩 eps，
+//      更新被放大约 1e3 倍，一两步后权重就溢出；
+//   2) m/v 的上下限：拦住 inf 进入动量（inf/inf 会直接产生 NaN）。
+#define Q8_V_FLOOR 1e-6f
+#define Q8_M_CLAMP 1e6f
+#define Q8_V_MIN   1e-9f
+#define Q8_V_MAX   1e6f
 // y = a + b（逐元素）
 __kernel void add_h(__global const half* a, __global const half* b, __global half* y, long n) {
     long i = get_global_id(0);
@@ -80,8 +89,7 @@ __kernel void adamw1_q8(__global float* w, __global uchar* m8, __global uchar* v
         gt = (float)g[i];
         float m_old = (((float)m8[i]) - 128.f) / 127.f * mm;
         float v_old = (((float)v8[i]) - 128.f) / 127.f * vv;
-        // 解码下溢保护：v 的码可能舍入到 0，若直接进 sqrt 会让分母只剩 eps，更新暴涨
-        v_old = fmax(v_old, 1e-12f);
+        v_old = fmax(v_old, Q8_V_FLOOR);      // 见文件头：差 1e-12 时第 9 步必 NaN
         nm = b1 * m_old + (1.f - b1) * gt;
         nv = b2 * v_old + (1.f - b2) * gt * gt;
     }
@@ -100,6 +108,8 @@ __kernel void adamw1_q8(__global float* w, __global uchar* m8, __global uchar* v
     if (i < n) {
         float bc1 = 1.f - pow(b1, (float)t);
         float bc2 = 1.f - pow(b2, (float)t);
+        nm = clamp(nm, -Q8_M_CLAMP, Q8_M_CLAMP);   // 拦住 inf，避免下一步 NaN
+        nv = clamp(nv, Q8_V_MIN, Q8_V_MAX);        // 下界同时保护 sqrt(nv/bc2)
         float upd = lr * (nm / bc1) / (sqrt(nv / bc2) + eps);
         w[i] = w[i] - upd - lr * wd * w[i];
         wh[i] = (half)w[i];
@@ -133,10 +143,13 @@ __kernel void adamw1_q4(__global float* w, __global uchar* m4, __global uchar* v
         float gt = (float)g[i];
         float m_old = nib4_get(m4, i, amax_m[blk]);
         float v_old = nib4_get(v4, i, amax_v[blk]);
+        v_old = fmax(v_old, Q8_V_FLOOR);      // 4-bit 码更粗，同样需要地板
         nm = b1 * m_old + (1.f - b1) * gt;
         nv = b2 * v_old + (1.f - b2) * gt * gt;
         float bc1 = 1.f - pow(b1, (float)t);
         float bc2 = 1.f - pow(b2, (float)t);
+        nm = clamp(nm, -Q8_M_CLAMP, Q8_M_CLAMP);   /* Q4_CLAMPED */
+        nv = clamp(nv, Q8_V_MIN, Q8_V_MAX);        /* Q4_CLAMPED */
         float upd = lr * (nm / bc1) / (sqrt(nv / bc2) + eps);
         w[i] = w[i] - upd - lr * wd * w[i];
         wh[i] = (half)w[i];
@@ -385,6 +398,32 @@ def cosine_lr(t, total, lr_max, lr_min=0.0, warmup=0):
     span = max(1, total - warmup)
     prog = min(1.0, (t - warmup) / float(span))
     return lr_min + 0.5 * (lr_max - lr_min) * (1.0 + math.cos(math.pi * prog))
+
+
+def sgdr_lr(t, t0, lr_max, lr_min=0.0, t_mult=2, warmup=0):
+    """SGDR：余弦退火 + 周期性热重启（Loshchilov & Hutter 2017）。
+
+    t      : 当前步（从 1 计）
+    t0     : 第一个周期的长度
+    t_mult : 每个周期长度倍率（1 = 等长周期）
+    warmup : 前 warmup 步线性升温（在第一个周期内）
+
+    返回 (lr, cycle_index, t_in_cycle)。
+    周期长度序列：t0, t0*t_mult, t0*t_mult^2, ...
+    """
+    import math
+    if warmup and t <= warmup:
+        return lr_max * t / float(warmup), 0, t
+    t -= warmup
+    cycle, length = 0, float(t0)
+    while t > length:
+        t -= length
+        length *= t_mult
+        cycle += 1
+    # 周期内余弦：从 lr_max 降到 lr_min
+    frac = (t - 1) / max(1.0, length - 1)
+    lr = lr_min + 0.5 * (lr_max - lr_min) * (1.0 + math.cos(math.pi * frac))
+    return lr, cycle, int(t)
 
 
 def check(steps=5, d_in=64, d_h=128, batch=32, scale=65536.0):
