@@ -252,8 +252,20 @@ def test_pack_codes_rejects_out_of_range():
     with pytest.raises(ValueError):
         nfbit.pack_codes(torch.tensor([[0, 1, 2, 4]], dtype=torch.uint8), bits=2)
 
+
 def test_forward_fp16_input():
     ql = nfbit.QuantLinearNF.from_linear(nn.Linear(64, 48), bits=2, block=32, lora_r=2)
     x = torch.randn(3, 64).half()
     y = ql(x)
     assert y.dtype == torch.float16 and y.shape == (3, 48)
+
+
+def test_pack_state_dict_exclude_prefixes():
+    sd = {"token_emb.weight": torch.randn(64, 32), "blocks.0.w": torch.randn(64, 64)}
+    packed = nfbit.pack_state_dict(
+        sd, bits=2, block=32, exclude_prefixes=("token_emb.",)
+    )
+    assert packed["token_emb.weight"] is sd["token_emb.weight"]
+    assert packed["blocks.0.w"]["kind"] == "nfbit"
+    out = nfbit.unpack_state_dict(packed)
+    assert torch.equal(out["token_emb.weight"], sd["token_emb.weight"])

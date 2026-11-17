@@ -614,6 +614,12 @@ returns the count; `lm_head` stays fp32.
 127 tensors reload **bit-exactly**, eval loss 7.2629 (fp32) -> 7.2623 (NF2 from disk).
 
 
+**`pack_state_dict(sd, ..., exclude_prefixes=("token_emb.", "head."))`** -- optionally keep
+quality-sensitive tensors in fp32. **Important**: packing token embeddings/head at 2 bits on
+the converged 32x32 AR model costs +2.49 nats CE; packing only `blocks.*` gives NF2 +0.126,
+NF3 +0.027 at ~7.9x storage (14.8 MB). Keep embeddings/head fp32 for 2-bit checkpoints unless
+all-scope has been verified per model.
+
 Measured (30M AR, grid 16, block 64, 512 validation samples): fp32 loss 7.2526 /
 116.3 MB; **2-bit NF +0.0028, 9.2 MB (12.69x)**; 2-bit uniform +0.0263; 3-bit NF -0.0217,
 12.8 MB. **Boundary**: packed + frozen base + LoRA is *not* a cheap training recipe at

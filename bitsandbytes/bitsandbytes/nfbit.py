@@ -284,7 +284,12 @@ def storage_bytes(packed: torch.Tensor, absmax: torch.Tensor) -> int:
 
 
 def pack_state_dict(
-    state_dict, bits: int = 2, block: int = 64, table=None, min_numel: int = 4096
+    state_dict,
+    bits: int = 2,
+    block: int = 64,
+    table=None,
+    min_numel: int = 4096,
+    exclude_prefixes=(),
 ):
     """Quantise every 2-D float tensor of a state dict into packed NF storage.
 
@@ -306,9 +311,12 @@ def pack_state_dict(
     }
     if meta["table"] == "custom":
         meta["table_values"] = t.tolist()
+    excluded = tuple(exclude_prefixes)
     out = {"__nfbit_meta__": meta}
     for k, v in state_dict.items():
-        if (
+        if excluded and k.startswith(excluded):
+            out[k] = v
+        elif (
             torch.is_tensor(v)
             and v.dtype == torch.float32
             and v.ndim >= 2

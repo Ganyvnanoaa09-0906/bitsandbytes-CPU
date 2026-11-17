@@ -343,6 +343,8 @@ Measured (30M AR, grid 16, 512 samples): fp32 7.2526 / 116.3 MB; **2-bit NF +0.0
 
 Whole checkpoints pack too: `nfbit.pack_state_dict(sd)` / `unpack_state_dict()` turn the 30M AR fp32 state dict (116.3 MB) into a 9.2 MB file (12.61x) that reloads bit-exactly (eval 7.2629 -> 7.2623).
 
+For 2-bit checkpoints keep `token_emb.`/`head.` in fp32 (`pack_state_dict(..., exclude_prefixes=("token_emb.", "head."))`): packing them at 2 bits cost +2.49 nats on the converged 32x32 AR model, while packing only `blocks.*` gives +0.126 at ~7.9x storage.
+
 **Boundaries**: this is a *storage* format — there is no native 2/3-bit GEMM, so forward
 dequantises into an fp32 temporary (use `forward_peak_bytes`); and packed + frozen base +
 LoRA is not a cheap training recipe at 2 bits (Qwen1.7B: +9.5 nats, +38% step time).

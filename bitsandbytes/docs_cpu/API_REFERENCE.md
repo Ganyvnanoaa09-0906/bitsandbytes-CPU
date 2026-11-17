@@ -632,6 +632,12 @@ eval loss 7.2629（fp32）→ 7.2623（从磁盘回读的 NF2）。
 
 实测（30M AR，grid 16，block 64，512 条验证样本）：fp32 loss 7.2526 / 116.3 MB；
 **2-bit NF +0.0028、9.2 MB（12.69×）**；2-bit uniform +0.0263；3-bit NF −0.0217、12.8 MB。
+**`pack_state_dict(sd, ..., exclude_prefixes=("token_emb.", "head."))`** -- 可选排除
+对量化敏感的张量。**重要**：在 converged 32×32 AR 上把 token embedding/head 也压到 2-bit
+会让 CE +2.49 nats；只压 `blocks.*` 时 NF2 +0.126、NF3 +0.027，对应存储约 7.9×（14.8 MB）。
+所以 2-bit checkpoint 默认应排除 embedding/head，除非逐模型验证过 all-scope。
+
+
 **边界**：packed+冻结基座+LoRA 在 2-bit 上又慢又学不回来（Qwen1.7B：+9.5 nats，60 步
 只回到 9.25，步时 +38%）——训练低 bit 基座请走 QAT+STE，不要把这个格式当训练加速卖点。
 
