@@ -153,8 +153,13 @@ class AttnTracer(object):
 
 
 class Executor(object):
-    def __init__(self, model, sample, arena_mb=900, name="fx", state_bits=32):
+    def __init__(self, model, sample, arena_mb=900, name="fx", state_bits=32,
+                 muon=False, muon_lr=None, muon_wd=0.0, muon_momentum=0.95):
         self.state_bits = state_bits
+        self.use_muon = muon
+        self.muon_lr = muon_lr
+        self.muon_wd = muon_wd
+        self.muon_momentum = muon_momentum
         import torch.fx as fx
         self.model = model
         self.sess = G.Session(arena_mb=arena_mb, name=name)
@@ -506,10 +511,28 @@ class Executor(object):
         for p in self.params.values():
             p.zero_grad()
 
+    def _is_muon_param(self, name, p):
+        """2D 权重且不是 embedding/head（与 CPU 侧 Muon 的分工一致）。"""
+        if not self.use_muon or len(p.shape) != 2:
+            return False
+        if "emb" in name or "head" in name:
+            return False
+        return name.endswith(".weight")
+
     def step(self, lr, t, eps=1e-8, wd=0.0):
+        if self.use_muon:
+            import gt1030.igpu_muon as MU
+            for name, p in self.params.items():
+                if self._is_muon_param(name, p):
+                    MU.muon_step(self.dev, p, p.grad,
+                                 lr=float(self.muon_lr or lr),
+                                 wd=float(self.muon_wd),
+                                 momentum=float(self.muon_momentum))
         if not hasattr(self, "_k8"):
             self._k8 = None
-        for p in self.params.values():
+        for name, p in self.params.items():
+            if self.use_muon and self._is_muon_param(name, p):
+                continue
             if getattr(p, "state_bits", 32) == 8:
                 if self._k8 is None:
                     import pyopencl as _cl
