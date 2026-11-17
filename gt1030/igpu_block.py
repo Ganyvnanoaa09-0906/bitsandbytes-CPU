@@ -74,6 +74,61 @@ __kernel void silu_bwd(__global const half* a, __global const half* b, __global 
     da[i] = (half)(d * (s + x * s * (1.f - s)) * (float)b[i]);
     db[i] = (half)(d * x * s);
 }
+__kernel void split_qkv(__global const half* x, __global half* q, __global half* k,
+                        __global half* v, int B, int T, int NH, int HD) {
+    int i = get_global_id(0);
+    int total = B * NH * T * HD;
+    if (i >= total) return;
+    int hd = i % HD;
+    int t = (i / HD) % T;
+    int bh = i / (HD * T);
+    int b = bh / NH;
+    int nh = bh % NH;
+    int D = NH * HD;
+    int src = (b * T + t) * 3 * D + nh * HD + hd;
+    q[i] = x[src];
+    k[i] = x[src + D];
+    v[i] = x[src + 2 * D];
+}
+__kernel void merge_qkv(__global const half* dq, __global const half* dk,
+                        __global const half* dv, __global half* x,
+                        int B, int T, int NH, int HD) {
+    int i = get_global_id(0);
+    int total = B * T * NH * HD;
+    if (i >= total) return;
+    int hd = i % HD;
+    int nh = (i / HD) % NH;
+    int t = (i / (HD * NH)) % T;
+    int b = i / (HD * NH * T);
+    int D = NH * HD;
+    int dst = (b * T + t) * 3 * D + nh * HD + hd;
+    int src = ((b * NH + nh) * T + t) * HD + hd;
+    x[dst] = dq[src];
+    x[dst + D] = dk[src];
+    x[dst + 2 * D] = dv[src];
+}
+__kernel void heads_to_tok(__global const half* h, __global half* x,
+                           int B, int T, int NH, int HD) {
+    int i = get_global_id(0);
+    int total = B * T * NH * HD;
+    if (i >= total) return;
+    int hd = i % HD;
+    int nh = (i / HD) % NH;
+    int t = (i / (HD * NH)) % T;
+    int b = i / (HD * NH * T);
+    x[(b * T + t) * (NH * HD) + nh * HD + hd] = h[((b * NH + nh) * T + t) * HD + hd];
+}
+__kernel void tok_to_heads(__global const half* x, __global half* h,
+                           int B, int T, int NH, int HD) {
+    int i = get_global_id(0);
+    int total = B * T * NH * HD;
+    if (i >= total) return;
+    int hd = i % HD;
+    int nh = (i / HD) % NH;
+    int t = (i / (HD * NH)) % T;
+    int b = i / (HD * NH * T);
+    h[((b * NH + nh) * T + t) * HD + hd] = x[(b * T + t) * (NH * HD) + nh * HD + hd];
+}
 __kernel void adamw_half(__global half* w, __global const half* g,
                          __global float* m, __global float* v,
                          int n, float lr, float b1, float b2, float eps, float wd,
@@ -132,6 +187,10 @@ _K = {
         "adamw_half",
         "adamw_halfgrad",
         "adamw_float",
+        "split_qkv",
+        "merge_qkv",
+        "heads_to_tok",
+        "tok_to_heads",
     )
 }
 
@@ -371,31 +430,61 @@ class SelfAttention(object):
 
     def forward(self, x_dev):
         qkv = self.qkv.forward(x_dev)
-        arr = _read(qkv, (self.rows, 3 * self.d_model))
-        q = self._to_bh(arr[:, : self.d_model])
-        k = self._to_bh(arr[:, self.d_model : 2 * self.d_model])
-        v = self._to_bh(arr[:, 2 * self.d_model :])
-        self.att.upload(q, k, v)
+        _K["split_qkv"](
+            A.queue,
+            (self.b * self.nh * self.t * self.hd,),
+            None,
+            qkv,
+            self.att.q,
+            self.att.k,
+            self.att.v,
+            np.int32(self.b),
+            np.int32(self.t),
+            np.int32(self.nh),
+            np.int32(self.hd),
+        )
         o = self.att.forward()
-        oh = self._from_bh(_read(o, (self.b * self.nh, self.t, self.hd)))
-        self._last = _upload(oh.reshape(self.rows, self.d_model))
-        return self.wo.forward(self._last)
+        _K["heads_to_tok"](
+            A.queue,
+            (self.rows * self.d_model,),
+            None,
+            o,
+            self.o_tokens,
+            np.int32(self.b),
+            np.int32(self.t),
+            np.int32(self.nh),
+            np.int32(self.hd),
+        )
+        return self.wo.forward(self.o_tokens)
 
     def backward(self, dy_dev):
         do_tokens = self.wo.backward(dy_dev)
-        arr = _read(do_tokens, (self.rows, self.d_model))
-        do_bh = self._to_bh(arr)
-        cl.enqueue_copy(
-            A.queue, self.att.do, np.ascontiguousarray(do_bh, dtype=np.float16)
+        _K["tok_to_heads"](
+            A.queue,
+            (self.rows * self.d_model,),
+            None,
+            do_tokens,
+            self.att.do,
+            np.int32(self.b),
+            np.int32(self.t),
+            np.int32(self.nh),
+            np.int32(self.hd),
         )
-        A.queue.finish()
         dq, dk, dv = self.att.backward()
-        dq = self._from_bh(_read(dq, (self.b * self.nh, self.t, self.hd)))
-        dk = self._from_bh(_read(dk, (self.b * self.nh, self.t, self.hd)))
-        dv = self._from_bh(_read(dv, (self.b * self.nh, self.t, self.hd)))
-        dqkv = np.stack([dq, dk, dv], axis=2).reshape(self.rows, 3 * self.d_model)
-        buf = _upload(np.ascontiguousarray(dqkv, dtype=np.float16))
-        return self.qkv.backward(buf)
+        _K["merge_qkv"](
+            A.queue,
+            (self.rows * self.d_model,),
+            None,
+            dq,
+            dk,
+            dv,
+            self.dqkv,
+            np.int32(self.b),
+            np.int32(self.t),
+            np.int32(self.nh),
+            np.int32(self.hd),
+        )
+        return self.qkv.backward(self.dqkv)
 
     def step(self, lr, t):
         self.qkv.step(lr, t)
