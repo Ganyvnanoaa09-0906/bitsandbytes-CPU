@@ -106,7 +106,8 @@ def _conv(dev, x, w, b, N, C, H, Wd, OC, kh=3, kw=3, sh=1, sw=1, ph=1, pw=1):
     CVK(dev)["nhwc2nchw"](dev.q, (N * OC * OH * OW,), None, y, out,
                           np.int32(N), np.int32(OC), np.int32(OH), np.int32(OW))
     # ★ 释放 Conv2d 内部缓冲（cols 是 im2col 的 M×Kdim，整链 ~30 个卷积时是水位大头）
-    assert out is not y, "_conv: 返回缓冲不能与内部 y 同名（会被下面的 _free 掉）"
+    if out is y:
+        raise RuntimeError("_conv: 返回缓冲与内部 y 同名，会被 _free 掉（内部错误）")
     _free(dev, getattr(cv, "cols", None), getattr(cv, "y", None),
           getattr(cv, "dy", None), getattr(cv, "dcols", None),
           getattr(cv, "dw", None), getattr(cv, "db", None))
@@ -352,7 +353,8 @@ def full_forward(dev, u, sample_np, timestep_np, enc_np, wc=None, verbose=True):
             #   用 in-out 之差会在深层算错，导致 conv 的 Kdim 与实际权重不符（CLBlast -1010）
             Cskip = skip.size // 2 // (N * H * Wd)
             cat = _cat(dev, h, skip, N, c, Cskip, H, Wd)
-            assert cat.size == N * (c + Cskip) * H * Wd * 2, (
+            if cat.size != N * (c + Cskip) * H * Wd * 2:
+                raise RuntimeError(
                 "_cat 尺寸不符：c=%d Cskip=%d skip.size=%d h.size=%d 期望=%d 实际=%d"
                 % (c, Cskip, skip.size, h.size, N * (c + Cskip) * H * Wd * 2, cat.size))
             _free(dev, skip, h)          # skip 在 cat2 之后才释放

@@ -162,3 +162,14 @@ Write-Host "   $($whl.FullName)"
 Write-Host ""
 Write-Host "   install:  pip install `"$($whl.FullName)`""
 Write-Host "   test   :  python -c `"import bitsandbytes as bnb; print(bnb.__version__)`""
+
+
+# ---- 导出符号检查（2026-11-18 新增）：4-bit 优化器符号必须在，否则 4-bit 会静默退回 torch ----
+Write-Host "[check] verifying optimizer symbols in libbitsandbytes_cpu.dll ..." -ForegroundColor Cyan
+$exp = & dumpbin /exports "bitsandbytes\libbitsandbytes_cpu.dll" 2>&1 | Out-String
+foreach ($sym in @("coptimizer_update_8bit_blockwise_cpu", "coptimizer_update_4bit_blockwise_cpu")) {
+    if ($exp -notmatch $sym) {
+        throw "missing exported symbol: $sym  (4-bit 会在运行时静默退回 torch 路径，见报告 A.17.3)"
+    }
+}
+Write-Host "[check] both optimizer symbols present." -ForegroundColor Green
