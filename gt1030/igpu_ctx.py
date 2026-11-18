@@ -67,7 +67,8 @@ class DevCtx(object):
         self._peak = 0            # 历史峰值
         self._n = 0
         self._free_lists = {}     # chunk_idx -> [(offset, size), ...]  显式释放的空闲块
-        self._map = {}            # cl.Buffer -> (chunk_idx, offset, size)
+        self._map = {}            # cl.Buffer -> (chunk_idx, offset, size, tag)
+        self._dead = {}           # id(Buffer) -> tag（用于 double release 报两处 owner）
         self._stats = {"reused": 0, "freed": 0, "double": 0}
         self._ensure_chunk(0)
 
@@ -102,18 +103,24 @@ class DevCtx(object):
         """显式归还：把 b 放回所属 chunk 的空闲表（权重不要调用它）。"""
         info = self._map.pop(b, None)
         if info is None:
-            # 未登记 = 已经 release 过（或不是本 arena 的缓冲）。
-            # TODO: 严格模式下这里应当 assert；整链里存在别名持有（同一 Buffer 两处引用），
-            # 尚未全部追清，先计数并暴露在 stats 里，避免静默。
+            # 未登记 = 已经 release 过（或不是本 arena 的缓冲）。打印**两处 owner** 帮助定位别名。
             self._stats["double"] = self._stats.get("double", 0) + 1
+            if self._stats["double"] <= 8:      # 只打印前 8 次，避免刷屏
+                import traceback
+                first = self._dead.get(id(b), "?")
+                now = " > ".join("%s:%d" % (f.name, f.lineno)
+                                 for f in traceback.extract_stack()[-4:-1])
+                print("[double-release] %s | 首次 owner=%s | 本次调用=%s"
+                      % (self.name, first, now))
             return False
-        idx, off, size = info
+        idx, off, size, tag = info
+        self._dead[id(b)] = tag
         self._free_lists.setdefault(idx, []).append((off, size))
         self._off -= size
         self._stats["freed"] += size
         return True
 
-    def _try_reuse(self, n):
+    def _try_reuse(self, n, tag=""):
         """best-fit：找 >= n 的最小空闲块，切掉用掉的部分，余量放回。"""
         best = None
         for idx, lst in self._free_lists.items():
@@ -128,12 +135,12 @@ class DevCtx(object):
         if size - n >= ALIGN:
             lst.append((off + n, size - n))
         b = self.arenas[idx].get_sub_region(off, n)
-        self._map[b] = (idx, off, n)
+        self._map[b] = (idx, off, n, "reuse:" + tag)
         self._off += n
         self._stats["reused"] += n
         return b
 
-    def buf(self, nbytes):
+    def buf(self, nbytes, tag=""):
         n = (int(nbytes) + ALIGN - 1) // ALIGN * ALIGN
         if n > self._chunk_bytes:
             raise RuntimeError("%s 单次申请 %d 字节超过分块大小 %.0f MB"
@@ -152,13 +159,13 @@ class DevCtx(object):
         if self._chunk_idx < 0 or self._chunk_off + n > self._chunk_bytes:
             self._chunk_idx += 1
             self._chunk_off = 0
-        reuse = self._try_reuse(n)
+        reuse = self._try_reuse(n, tag)
         if reuse is not None:
             self._n += 1
             return reuse
         arena = self._ensure_chunk(self._chunk_idx)
         b = arena.get_sub_region(self._chunk_off, n)
-        self._map[b] = (self._chunk_idx, self._chunk_off, n)
+        self._map[b] = (self._chunk_idx, self._chunk_off, n, tag)
         self._chunk_off += n
         self._off += n
         self._peak = max(self._peak, self._off)
