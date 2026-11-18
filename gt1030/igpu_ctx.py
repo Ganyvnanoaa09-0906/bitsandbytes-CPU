@@ -59,7 +59,15 @@ class DevCtx(object):
         self.mf = cl.mem_flags
         # 多 arena：单块 ≤ CHUNK_MB，按需申请（驱动单 buffer 上限 4.74 GB）
         self._mb = int(arena_mb)
-        self._chunk_bytes = min(int(arena_mb) << 20, int(CHUNK_MB) << 20)
+        # 单块上限必须受设备约束：Intel UHD 730 的 MAX_MEM_ALLOC_SIZE = 3.47 GB < 我们的 3900 MB，
+        # 硬编码会让第一步分配就失败。取 0.9× 留余量；AMD(4.74 GB) 上不改变原行为。
+        try:
+            cap = int(dev.get_info(cl.device_info.MAX_MEM_ALLOC_SIZE))
+        except Exception:
+            cap = 0
+        self._dev_cap_bytes = cap
+        budget = int(cap * 0.9) if cap else (int(CHUNK_MB) << 20)
+        self._chunk_bytes = min(int(arena_mb) << 20, int(CHUNK_MB) << 20, budget)
         self.arenas = []          # [cl.Buffer, ...]
         self._chunk_off = 0       # 当前块内偏移
         self._chunk_idx = -1
