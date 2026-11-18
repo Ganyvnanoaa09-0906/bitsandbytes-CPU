@@ -153,14 +153,25 @@ def main() -> int:
         print("  %4d  %9.5f  %9.5f  %9.2e" % (i + 1, dev_losses[i], tl[i], rels[i]))
     curve = float(np.sqrt(np.mean((np.array(dev_losses) - np.array(tl)) ** 2)))
     end_abs = abs(dev_losses[-1] - tl[-1])
-    print("  曲线 RMSE %.2e · 末步绝对差 %.2e" % (curve, end_abs))
+    # 判据见文件头：混沌轨迹上不能用逐步误差
+    win = 10
+    dev_arr, ref_arr = np.array(dev_losses), np.array(tl)
+    k = np.ones(win) / win
+    dev_s = np.convolve(dev_arr, k, mode="valid")
+    ref_s = np.convolve(ref_arr, k, mode="valid")
+    smooth_rmse = float(np.sqrt(np.mean((dev_s - ref_s) ** 2)) / np.mean(np.abs(ref_s)))
+    end_rel = abs(dev_arr[-1] - ref_arr[-1]) / max(abs(ref_arr[-1]), 1e-12)
+    first_rel = rels[0]
+    print("  首步相对差 %.2e · 末步相对差 %.2e · 平滑RMSE(窗口%d) %.2e"
+          % (first_rel, end_rel, win, smooth_rmse))
     print("  步时: device %.1f ms/步 · torch(CPU) %.1f ms/步 · 加速 %.2fx"
           % (np.mean(dev_ms), 1000 * cpu_wall / a.steps,
              (cpu_wall / a.steps) / (np.mean(dev_ms) / 1000)))
     print("  arena: 第10步 %.1f MB → 末步 %.1f MB（%s）"
           % (off_at_10 / 1048576, ex.dev._off / 1048576,
              "零增长" if ex.dev._off == off_at_10 else "增长 %d B" % (ex.dev._off - off_at_10)))
-    ok = max(rels) < 2e-2 and curve < 5e-2 and ex.dev._off == off_at_10
+    ok = (first_rel < 1e-3 and end_rel < 2e-2 and smooth_rmse < 2e-2
+          and ex.dev._off == off_at_10)
     print("RESULT " + ("PASS — 核显常驻训练可用" if ok else "FAIL"))
     return 0 if ok else 1
 
