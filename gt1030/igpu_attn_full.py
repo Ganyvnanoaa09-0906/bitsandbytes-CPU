@@ -47,6 +47,8 @@ __kernel void softmax_window(__global const half* s, __global half* p,
         p[base + j] = (half)(exp((float)s[base + j] * scale - mx) * inv);
 }
 
+"""
+
 _C = {}
 
 
@@ -55,7 +57,7 @@ def K(dev):
     if key not in _C:
         prog = cl.Program(dev.ctx, SRC).build(
             options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
-        _C[key] = {n: cl.Kernel(prog, n) for n in ("softmax_window", "mask_outside")}
+        _C[key] = {n: cl.Kernel(prog, n) for n in ("softmax_window",)}
     return _C[key]
 
 
