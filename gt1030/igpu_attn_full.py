@@ -95,6 +95,8 @@ class FullAttn(object):
         self.k = dev.buf(max(4096, self.C * self.C * 2))
         self.v = dev.buf(max(4096, self.C * self.C * 2))
         self.o = dev.buf(max(4096, self.C * self.C * 2))
+        for _b in ("qb", "kb", "vb", "ob"):
+            setattr(self, _b, dev.buf(max(4096, self.C * 2)))
         self.tok = dev.buf(max(4096, self.rows * self.C * 2))
         self.qt = dev.buf(max(4096, self.rows * self.C * 2))
         self.kt = dev.buf(max(4096, self.rows * self.C * 2))
@@ -120,10 +122,13 @@ class FullAttn(object):
         self.dwv = dev.buf(max(4096, self.C * self.C * 2))
         self.dwo = dev.buf(max(4096, self.C * self.C * 2))
 
-    def set_weights(self, q, k, v, o):
+    def set_weights(self, q, k, v, o, qb=None, kb=None, vb=None, ob=None):
         for buf, w in ((self.q, q), (self.k, k), (self.v, v), (self.o, o)):
             cl.enqueue_copy(self.dev.q, buf,
                             np.ascontiguousarray(w.reshape(-1), np.float16))
+        for buf, b in ((self.qb, qb), (self.kb, kb), (self.vb, vb), (self.ob, ob)):
+            arr = np.zeros(self.C, np.float16) if b is None else np.asarray(b, np.float16)
+            cl.enqueue_copy(self.dev.q, buf, np.ascontiguousarray(arr.reshape(-1)))
 
     def forward(self, x):
         d = self.dev
@@ -133,11 +138,15 @@ class FullAttn(object):
         GEMM.hgemm_nt(self.tok, self.q, self.qt, R, C, C)
         GEMM.hgemm_nt(self.tok, self.k, self.kt, R, C, C)
         GEMM.hgemm_nt(self.tok, self.v, self.vt, R, C, C)
+        for y, b in ((self.qt, self.qb), (self.kt, self.kb), (self.vt, self.vb)):
+            CV.K(d)["bias_add_oc"](d.q, (R, C), None, y, b, np.int32(R), np.int32(C))
         GEMM.hgemm_nt(self.qt, self.kt, self.s, R, R, C)   # S = Q Kᵀ（含跨样本块）
         K(d)["softmax_window"](d.q, (R,), None, self.s, self.p,
                                np.int32(N), np.int32(T), np.float32(self.scale))
         GEMM.hgemm_nn(self.p, self.vt, self.ot, R, C, R)   # P·V（跨样本块已清零）
         GEMM.hgemm_nt(self.ot, self.o, self.out, R, C, C)
+        CV.K(d)["bias_add_oc"](d.q, (R, C), None, self.out, self.ob,
+                               np.int32(R), np.int32(C))
         CV.K(d)["nhwc2nchw"](d.q, (R * C,), None, self.out, self._dst(),
                              np.int32(N), np.int32(C), np.int32(H), np.int32(W))
         return self._dst()
