@@ -121,6 +121,10 @@ class FullAttn(object):
         self.dwk = dev.buf(max(4096, self.C * self.C * 2))
         self.dwv = dev.buf(max(4096, self.C * self.C * 2))
         self.dwo = dev.buf(max(4096, self.C * self.C * 2))
+        self.dbq = dev.buf(max(4096, self.C * 2))
+        self.dbk = dev.buf(max(4096, self.C * 2))
+        self.dbv = dev.buf(max(4096, self.C * 2))
+        self.dbo = dev.buf(max(4096, self.C * 2))
 
     def set_weights(self, q, k, v, o, qb=None, kb=None, vb=None, ob=None):
         for buf, w in ((self.q, q), (self.k, k), (self.v, v), (self.o, o)):
@@ -179,6 +183,14 @@ class FullAttn(object):
         GEMM.hgemm_tn(self.dq, self.tok, self.dwq, C, C, R)
         GEMM.hgemm_tn(self.dk, self.tok, self.dwk, C, C, R)
         GEMM.hgemm_tn(self.dv, self.tok, self.dwv, C, C, R)
+        # 四个 bias 的梯度 = 对应梯度按 token 维求和（bias_add_oc 的伴随）
+        import gt1030.igpu_ops2 as _OPS2
+
+        _OPS2.col_sum(d, self.dq, self.dbq, R, C)
+        _OPS2.col_sum(d, self.dk, self.dbk, R, C)
+        _OPS2.col_sum(d, self.dv, self.dbv, R, C)
+        # ob 是直接加在**输出**上的，所以它的梯度是 dY 按 token 求和，不是 dO_pre
+        _OPS2.col_sum(d, self.do, self.dbo, R, C)
         # dTok = dQ·Wq + dK·Wk + dV·Wv
         GEMM.hgemm_nn(self.dq, self.q, self.dt1, R, C, C)
         GEMM.hgemm_nn(self.dk, self.k, self.dt2, R, C, C)
