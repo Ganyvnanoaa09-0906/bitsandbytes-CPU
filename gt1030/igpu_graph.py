@@ -36,6 +36,7 @@ EXTRA = r"""
 //      更新被放大约 1e3 倍，一两步后权重就溢出；
 //   2) m/v 的上下限：拦住 inf 进入动量（inf/inf 会直接产生 NaN）。
 #define Q8_V_FLOOR 1e-6f
+#define Q8_V_REL   1e-3f   // 相对块最大值的地板：深层分布变宽时保护小元素
 #define Q8_M_CLAMP 1e6f
 #define Q8_V_MIN   1e-9f
 #define Q8_V_MAX   1e6f
@@ -76,7 +77,8 @@ __kernel void adamw1(__global float* w, __global float* m, __global float* v,
 __kernel void adamw1_q8(__global float* w, __global uchar* m8, __global uchar* v8,
                         __global float* amax_m, __global float* amax_v,
                         __global const half* g, __global half* wh, int n,
-                        float lr, float b1, float b2, float eps, float wd, int t) {
+                        float lr, float b1, float b2, float eps, float wd,
+                        float bc1r, float bc2r) {
     int blk = get_group_id(0), lid = get_local_id(0), lsz = get_local_size(0);
     int base = blk * 256;
     int i = base + lid;
@@ -89,7 +91,7 @@ __kernel void adamw1_q8(__global float* w, __global uchar* m8, __global uchar* v
         gt = (float)g[i];
         float m_old = (((float)m8[i]) - 128.f) / 127.f * mm;
         float v_old = (((float)v8[i]) - 128.f) / 127.f * vv;
-        v_old = fmax(v_old, Q8_V_FLOOR);      // 见文件头：差 1e-12 时第 9 步必 NaN
+        v_old = fmax(v_old, fmax(Q8_V_FLOOR, Q8_V_REL * vv));   // 绝对 + 相对双保险
         nm = b1 * m_old + (1.f - b1) * gt;
         nv = b2 * v_old + (1.f - b2) * gt * gt;
     }
@@ -106,11 +108,10 @@ __kernel void adamw1_q8(__global float* w, __global uchar* m8, __global uchar* v
     barrier(CLK_LOCAL_MEM_FENCE);
     sm = amax_m[blk]; sv = amax_v[blk];
     if (i < n) {
-        float bc1 = 1.f - pow(b1, (float)t);
-        float bc2 = 1.f - pow(b2, (float)t);
-        nm = clamp(nm, -Q8_M_CLAMP, Q8_M_CLAMP);   // 拦住 inf，避免下一步 NaN
-        nv = clamp(nv, Q8_V_MIN, Q8_V_MAX);        // 下界同时保护 sqrt(nv/bc2)
-        float upd = lr * (nm / bc1) / (sqrt(nv / bc2) + eps);
+          nm = clamp(nm, -Q8_M_CLAMP, Q8_M_CLAMP);   // 拦住 inf，避免下一步 NaN
+          nv = clamp(nv, Q8_V_MIN, Q8_V_MAX);        // 下界同时保护 sqrt(nv)
+          // bias correction 由主机预算：bc1r = 1/(1-b1^t)，bc2r = 1/sqrt(1-b2^t)
+          float upd = lr * (nm * bc1r) / (sqrt(nv) * bc2r + eps);
         w[i] = w[i] - upd - lr * wd * w[i];
         wh[i] = (half)w[i];
         // uchar 编码：0..255 表示 -1..+1（128 = 0）；NaN/Inf 一律落回中性值
@@ -132,7 +133,8 @@ inline float nib4_get(__global const uchar* buf, long i, float am) {
 __kernel void adamw1_q4(__global float* w, __global uchar* m4, __global uchar* v4,
                         __global float* amax_m, __global float* amax_v,
                         __global const half* g, __global half* wh, int n,
-                        float lr, float b1, float b2, float eps, float wd, int t) {
+                        float lr, float b1, float b2, float eps, float wd,
+                        float bc1r, float bc2r) {
     int blk = get_group_id(0), lid = get_local_id(0), lsz = get_local_size(0);
     int base = blk * 256;
     int i = base + lid;
@@ -143,14 +145,12 @@ __kernel void adamw1_q4(__global float* w, __global uchar* m4, __global uchar* v
         float gt = (float)g[i];
         float m_old = nib4_get(m4, i, amax_m[blk]);
         float v_old = nib4_get(v4, i, amax_v[blk]);
-        v_old = fmax(v_old, Q8_V_FLOOR);      // 4-bit 码更粗，同样需要地板
+        v_old = fmax(v_old, fmax(Q8_V_FLOOR, Q8_V_REL * amax_v[blk]));
         nm = b1 * m_old + (1.f - b1) * gt;
         nv = b2 * v_old + (1.f - b2) * gt * gt;
-        float bc1 = 1.f - pow(b1, (float)t);
-        float bc2 = 1.f - pow(b2, (float)t);
         nm = clamp(nm, -Q8_M_CLAMP, Q8_M_CLAMP);   /* Q4_CLAMPED */
         nv = clamp(nv, Q8_V_MIN, Q8_V_MAX);        /* Q4_CLAMPED */
-        float upd = lr * (nm / bc1) / (sqrt(nv / bc2) + eps);
+        float upd = lr * (nm * bc1r) / (sqrt(nv) * bc2r + eps);
         w[i] = w[i] - upd - lr * wd * w[i];
         wh[i] = (half)w[i];
     }
@@ -289,6 +289,9 @@ class Session(object):
 
     def adam_step(self, lr, t, eps=1e-8, wd=0.0):
         d = self.dev
+        import math
+        bc1r = 1.0 / (1.0 - 0.9 ** int(t))
+        bc2r = 1.0 / math.sqrt(1.0 - 0.999 ** int(t))
         if not hasattr(self, "_k8"):
             self._k8 = None
         for p in self.params.values():
@@ -301,7 +304,7 @@ class Session(object):
                 self._k4(self.dev.q, (nblocks * 256,), (256,), p.master, p.mom8, p.vel8,
                          p.mom, p.vel, p.grad, p.buf, np.int32(p.n), np.float32(lr),
                          np.float32(0.9), np.float32(0.999), np.float32(eps),
-                         np.float32(wd), np.int32(t))
+                         np.float32(wd), np.float32(bc1r), np.float32(bc2r))
                 continue
             if getattr(p, "state_bits", 32) == 8:
                 if self._k8 is None:

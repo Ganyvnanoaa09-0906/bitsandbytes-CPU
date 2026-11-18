@@ -255,11 +255,18 @@ class Executor(object):
     # ---------------- 内存 ----------------
     def _attn_block(self, name, bt, nh, hd):
         import gt1030.igpu_attn_block as AB
+        try:
+            import gt1030.igpu_attn_fast as AF
+        except Exception:
+            AF = None
         if not hasattr(self, "_attn_cache"):
             self._attn_cache = {}
         key = (name, bt, nh, hd)
         if key not in self._attn_cache:
-            self._attn_cache[key] = AB.AttnBlock(self.dev, bt, nh, hd)
+            if AF is not None:
+                self._attn_cache[key] = AF.FastAttn(self.dev, bt, nh, hd)   # head-batched（快）
+            else:
+                self._attn_cache[key] = AB.AttnBlock(self.dev, bt, nh, hd)
         return self._attn_cache[key]
 
     def _cached(self, key, shape):
@@ -583,6 +590,9 @@ class Executor(object):
         return name.endswith(".weight")
 
     def step(self, lr=None, t=1, eps=1e-8, wd=0.0):
+        import math
+        bc1r = 1.0 / (1.0 - 0.9 ** int(t))
+        bc2r = 1.0 / math.sqrt(1.0 - 0.999 ** int(t))
         if lr is None:
             lr = self.lr_at(t)
             if lr is None:
@@ -617,7 +627,7 @@ class Executor(object):
                 self._k4(self.dev.q, (nblocks * 256,), (256,), p.master, p.mom8, p.vel8,
                          p.mom, p.vel, p.grad, p.buf, np.int32(p.n), np.float32(lr),
                          np.float32(0.9), np.float32(0.999), np.float32(eps),
-                         np.float32(wd), np.int32(t))
+                         np.float32(wd), np.float32(bc1r), np.float32(bc2r))
                 continue
             if getattr(p, "state_bits", 32) == 8:
                 if self._k8 is None:
@@ -629,7 +639,7 @@ class Executor(object):
                 self._k8(self.dev.q, (nblocks * 256,), (256,), p.master, p.mom8, p.vel8,
                          p.mom, p.vel, p.grad, p.buf, np.int32(p.n), np.float32(lr),
                          np.float32(0.9), np.float32(0.999), np.float32(eps),
-                         np.float32(wd), np.int32(t))
+                         np.float32(wd), np.float32(bc1r), np.float32(bc2r))
             else:
                 self.sess.adam_single(self.dev.q, (p.n,), None, p.master, p.mom, p.vel,
                                       p.grad, p.buf, np.int32(p.n), np.float32(lr),
