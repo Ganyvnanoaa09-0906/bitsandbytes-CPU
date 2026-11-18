@@ -305,7 +305,7 @@ def full_forward(dev, u, sample_np, timestep_np, enc_np, wc=None, verbose=True):
         if ups is not None and len(ups) > 0:
             w, b = wc.lin(ups[0].conv)
             nxt, H, Wd = _conv(dev, h, w, b, N, c, H, Wd, ups[0].conv.out_channels, 3, 3, 2, 2, 1, 1)
-            _free(dev, h)
+            # ★ 不能释放 h：它（pre-downsample）和 nxt（post-downsample）**都是 skip**，up 还要用
             h = nxt
             c = ups[0].conv.out_channels
             skips.append(h)
