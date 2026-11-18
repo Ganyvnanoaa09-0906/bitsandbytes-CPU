@@ -145,6 +145,8 @@ def main() -> int:
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--bits", type=int, default=8)
     ap.add_argument("--lora-r", type=int, default=0, help=">0 时给 Conv2d 挂 LoRA 并冻结底座")
+    ap.add_argument("--lora-scope", choices=["all", "boundary"], default="all",
+                    help="all=所有 Conv；boundary=conv_in/conv_out + 每块第一个 resnet")
     ap.add_argument("--arena", type=int, default=3000)
     ap.add_argument("--image", default="", help="真实图片路径；空则用 torch.randn")
     a = ap.parse_args()
@@ -155,7 +157,15 @@ def main() -> int:
     nbase = sum(p.numel() for p in model.parameters())
     train_names = None
     if a.lora_r > 0:
-        n = wrap_lora(model, r=a.lora_r, conv=True)
+        filt = None
+        if a.lora_scope == "boundary":
+            def filt(nm):
+                if nm.endswith("conv_in") or nm.endswith("conv_out"):
+                    return True
+                return ".resnets.0." in nm and (
+                    nm.endswith(".conv1") or nm.endswith(".conv2")
+                )
+        n = wrap_lora(model, r=a.lora_r, conv=True, name_filter=filt)
         lora_names = [nm for nm, _ in model.named_parameters() if ".lora_" in nm]
         train_names = sorted({nm.rsplit(".", 1)[0] for nm in lora_names})
         print("  LoRA r=%d：包裹 %d 层 · adapter %.2f M / 底座 %.1f M"

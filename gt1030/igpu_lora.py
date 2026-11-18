@@ -61,23 +61,29 @@ class LoRAConv2d(nn.Module):
         return self.base(x) + self.lora_B(self.lora_A(x))
 
 
-def wrap_lora(model: nn.Module, r: int = 8, conv: bool = True) -> int:
-    """Replace every Linear (and optionally Conv2d) child with a LoRA wrapper."""
+def wrap_lora(model: nn.Module, r: int = 8, conv: bool = True, name_filter=None) -> int:
+    """Replace every Linear (and optionally Conv2d) child with a LoRA wrapper.
+
+    name_filter(full_name) can restrict which modules get adapters; children of a
+    skipped module are still visited.
+    """
     n = 0
 
-    def walk(mod):
+    def walk(mod, prefix=""):
         nonlocal n
         for name, child in list(mod.named_children()):
+            full = prefix + name
             if getattr(child, "_lora_no_wrap", False):
                 continue
-            if isinstance(child, nn.Linear):
+            take = name_filter is None or name_filter(full)
+            if take and isinstance(child, nn.Linear):
                 setattr(mod, name, LoRALinear(child, r))
                 n += 1
-            elif conv and isinstance(child, nn.Conv2d):
+            elif take and conv and isinstance(child, nn.Conv2d):
                 setattr(mod, name, LoRAConv2d(child, r))
                 n += 1
             else:
-                walk(child)
+                walk(child, full + ".")
 
     walk(model)
     return n
