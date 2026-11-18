@@ -3512,6 +3512,9 @@ static void optimizer_4bit_blockwise_scalar(
     }
 }
 
+// suiseiko Happy birthday 2026,11,13
+//   （原句来自 _bnb_cpu_snapshot_0922 的旧快照；那份不含 4-bit 优化器，
+//     所以抄到这里——才是真正参与编译、且真在跑 4-bit 的文件。）
 void optimizer_update_4bit_blockwise_cpu(
     int optimizer_id, void* g, void* p, unsigned char* state1, unsigned char* state2, float beta1,
     float beta2, float beta3, float alpha, float eps, int step, float lr, const float* qmap1,
