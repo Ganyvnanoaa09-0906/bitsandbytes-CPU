@@ -5,12 +5,48 @@
 > toolkit and no driver** — just an AVX2 x86-64 CPU (or ARM64 NEON), the CPU build of PyTorch,
 > and 12–16 GB of RAM.
 
-**Version: `0.50.2.dev12`** · import name is unchanged (`import bitsandbytes as bnb`) · MIT.
+**Version: `0.50.2.dev13`** · import name is unchanged (`import bitsandbytes as bnb`) · MIT.
 
 What the CPU backend provides: 8-bit blockwise optimizers (≈2.3 bytes of state per parameter
 instead of 8; the 4-bit optimizer ≈1.03), 4/8-bit layers that run on CPU tensors, the fused
 Gated DeltaNet kernel for Qwen3-Next / Qwen3.5 linear attention, fused `gemm_8bit`, fused
 RMSNorm/SwiGLU (with NT-store fast paths for large outputs), an SSD cold-memory balancer, and a CPU training/concurrency toolbox.
+
+## What's new in `0.50.2.dev13`
+
+**The 4-bit optimizer symbol is back, and the build now refuses to ship without it.**
+`0.50.2.dev12` on PyPI shipped a `libbitsandbytes_cpu.dll` that did **not** export
+`coptimizer_update_4bit_blockwise_cpu`, so `AdamW4bit` silently fell back to the pure-torch path
+(≈4 GB/s vs ≈10.9 GB/s for the AVX2 8-bit kernel — 1.6–2.4× slower, ≈6× at 256M parameters).
+Two changes:
+
+- `build_wheel.ps1` runs `dumpbin /exports` and **fails the build** when either optimizer symbol is
+  missing, so this class of regression cannot reach PyPI again;
+- `AdamW4bit` raises a `RuntimeWarning` instead of falling back silently.
+
+Verify on your machine:
+
+```bash
+bitsandbytes-cpu doctor    # should list coptimizer_update_4bit_blockwise_cpu
+```
+
+**iGPU (OpenCL) work, all measured on AMD Vega 6 / Radeon with CLBlast:**
+
+- the arena chunk is now clamped to 0.9× `CL_DEVICE_MAX_MEM_ALLOC_SIZE`, so devices that cap a single
+  allocation below 3.9 GB (e.g. Intel UHD 730 at 3.47 GB) no longer fail on the first allocation;
+- SD1.5 VAE decode envelope: the iGPU is worth it only for **a single frame at ≤256×256** (128×128 is
+  39% faster); at 512×512 the gain is 11%, at 1024×1024 parity breaks, and batch > 1 breaks parity too;
+- UNet convolution sweep: the iGPU wins on **high channel × low resolution** (0.40× on 1920→640 at
+  32×32) and loses on low channel × high resolution (1.62×), with `conv_out` 320→4 the worst case
+  (10.4×);
+- **segmented hybrid execution 0.82×** (all-CPU 1672.8 ms → 1368.4 ms), which is better than either
+  extreme (all-iGPU 0.91×).
+
+**Known limitation — do not treat as verified:** the device-side UNet chain runs end to end
+(2.28 GB peak, zero double releases) but its output is still all zeros, so numerical equivalence is
+not established. It is WIP.
+
+---
 
 ---
 
@@ -504,6 +540,7 @@ imported by the library:
 | `0.50.2.dev8` | **restored `AdamW4bit`** (the kernel was dropped when dev4 vendored upstream; now scalar C kernel + torch fallback, 1.031 B/param); **new `bitsandbytes.q3bit` API** — `quantize_3bit`/`dequantize_3bit`/`gemm_3bit`/`gemm_3bit_transposed`, `QuantLinear3bit` (frozen 3-bit base + LoRA), `convert_linears_3bit`, native kernels on Linux with identical pure-torch fallback; CLI reference now includes 4bitopt/q3bit and all 43 examples execute in CI-style verification |
 | `0.50.2.dev9` | **Windows native kernels**: CI now compiles the MSVC DLL from the current csrc and the export list includes the 4-bit optimizer and 2/3-bit symbols (they were silently missing before); **q3bit real-model validation** on Qwen3-1.7B (frozen 3-bit base + LoRA, eval 4.34→4.03 over 80 steps, RSS −67%, native step 7.7 s vs fp32 5.5 s); fixed the causal-LM **double-shift** label bug in the iGPU training kit (Windows package v0.1.2) |
 | `0.50.2.dev10` | **NTFS recovery toolkit** (`sector_carve`, `mft_recover`, CLI + GUI, selftests) and the **video E2E pipeline** (generation/training, LCM and motion diagnostics); AVX2 4-bit GEMV fixes (wrong FP4 codebook, lazy-init race, non-divisible blocksize); gt1030 probe scripts and docs |
+| `0.50.2.dev13` | **4-bit optimizer symbol restored in the Windows build** + export-symbol gate in `build_wheel.ps1`; arena clamped to the device allocation limit; VAE/UNet iGPU envelope measured (hybrid segmented offload 0.82×) |
 | `0.50.2.dev12` | description sync with the verified video results (43 frames 257.0 vs 280.9 s, per-frame PSNR 73.2 dB; training is loop-verified only), 4-bit CPU usability audit fixes (9 issues), `exp/ue8m0/` negative-result archive |
 | `0.50.2.dev11` | **NT-store fast paths**: 4-bit dequant writes bypass the cache above 16 MiB (1.7–2.0× at 32–64 MB) and RMSNorm chooses NT by total footprint (x+res+out vs per-CCX L3); CPUID L3-sharing mask fix and the NT threshold wired to one macro; **byte-reproducible sdist** with an identity gate that audits the uploaded bytes (`--sdist`, 2-DLL policy, 20 adversarial cases) plus a docs gate requiring all six ZH/EN docs; repo regrouping into `scripts/*`; UTF-8 BOM strip; 5 reproducible CPU audio benches; 6 video perf fixes and 3 AR fixes |
 
