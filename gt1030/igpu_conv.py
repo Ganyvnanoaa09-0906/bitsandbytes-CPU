@@ -12,6 +12,7 @@
 
     python gt1030/igpu_conv.py --check     # 与 torch 对拍 fwd/dx/dw
 """
+
 from __future__ import annotations
 
 import argparse
@@ -158,10 +159,21 @@ def K(dev):
     key = int(dev.ctx.int_ptr)
     if key not in _C:
         prog = cl.Program(dev.ctx, SRC).build(
-            options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
-        _C[key] = {n: cl.Kernel(prog, n) for n in
-                   ("im2col", "col2im", "bias_add_oc", "bias_grad_oc",
-                   "nhwc2nchw", "nchw2nhwc", "pad01", "crop01")}
+            options=["-cl-mad-enable", "-cl-fast-relaxed-math"]
+        )
+        _C[key] = {
+            n: cl.Kernel(prog, n)
+            for n in (
+                "im2col",
+                "col2im",
+                "bias_add_oc",
+                "bias_grad_oc",
+                "nhwc2nchw",
+                "nchw2nhwc",
+                "pad01",
+                "crop01",
+            )
+        }
     return _C[key]
 
 
@@ -188,21 +200,43 @@ class Conv2d(object):
         if bias:
             self.b = d.buf(max(4096, self.OC * 2))
             self.db = d.buf(max(4096, self.OC * 2))
+            # bias_grad_oc 是 +=；首次 backward 前必须清零，否则会把 arena 旧数据算进梯度。
+            cl.enqueue_fill_buffer(d.q, self.db, np.uint16(0), 0, self.OC * 2)
 
     # ---- 前向 ----
     # 布局：x (N,C,H,W)；w (OC, C*KH*KW)；输出 y (N, OH, OW, OC)——**通道在最后**
     def forward(self, x, w, b=None):
         d = self.dev
-        K(d)["im2col"](d.q, (self.M, self.Kdim), None, x, self.cols,
-                       np.int32(self.N), np.int32(self.C), np.int32(self.H), np.int32(self.W),
-                       np.int32(self.KH), np.int32(self.KW),
-                       np.int32(self.OH), np.int32(self.OW),
-                       np.int32(self.SH), np.int32(self.SW),
-                       np.int32(self.PH), np.int32(self.PW))
+        K(d)["im2col"](
+            d.q,
+            (self.M, self.Kdim),
+            None,
+            x,
+            self.cols,
+            np.int32(self.N),
+            np.int32(self.C),
+            np.int32(self.H),
+            np.int32(self.W),
+            np.int32(self.KH),
+            np.int32(self.KW),
+            np.int32(self.OH),
+            np.int32(self.OW),
+            np.int32(self.SH),
+            np.int32(self.SW),
+            np.int32(self.PH),
+            np.int32(self.PW),
+        )
         GEMM.hgemm_nt(self.cols, w, self.y, self.M, self.OC, self.Kdim)
         if self.has_bias and b is not None:
-            K(d)["bias_add_oc"](d.q, (self.M, self.OC), None, self.y, b,
-                                np.int32(self.M), np.int32(self.OC))
+            K(d)["bias_add_oc"](
+                d.q,
+                (self.M, self.OC),
+                None,
+                self.y,
+                b,
+                np.int32(self.M),
+                np.int32(self.OC),
+            )
         d.q.finish()
         return self.y
 
@@ -212,15 +246,35 @@ class Conv2d(object):
         cl.enqueue_copy(d.q, self.dy, dy)
         GEMM.hgemm_tn(self.dy, self.cols, self.dw, self.OC, self.Kdim, self.M)
         GEMM.hgemm_nn(self.dy, w, self.dcols, self.M, self.Kdim, self.OC)
-        K(d)["col2im"](d.q, (self.N * self.C * self.H * self.W,), None, self.dcols, self.dx,
-                       np.int32(self.N), np.int32(self.C), np.int32(self.H), np.int32(self.W),
-                       np.int32(self.KH), np.int32(self.KW),
-                       np.int32(self.OH), np.int32(self.OW),
-                       np.int32(self.SH), np.int32(self.SW),
-                       np.int32(self.PH), np.int32(self.PW))
+        K(d)["col2im"](
+            d.q,
+            (self.N * self.C * self.H * self.W,),
+            None,
+            self.dcols,
+            self.dx,
+            np.int32(self.N),
+            np.int32(self.C),
+            np.int32(self.H),
+            np.int32(self.W),
+            np.int32(self.KH),
+            np.int32(self.KW),
+            np.int32(self.OH),
+            np.int32(self.OW),
+            np.int32(self.SH),
+            np.int32(self.SW),
+            np.int32(self.PH),
+            np.int32(self.PW),
+        )
         if self.has_bias:
-            K(d)["bias_grad_oc"](d.q, (self.OC,), None, self.dy, self.db,
-                                 np.int32(self.M), np.int32(self.OC))
+            K(d)["bias_grad_oc"](
+                d.q,
+                (self.OC,),
+                None,
+                self.dy,
+                self.db,
+                np.int32(self.M),
+                np.int32(self.OC),
+            )
         d.q.finish()
         return self.dx, self.dw, (self.db if self.has_bias else None)
 
@@ -243,7 +297,11 @@ def check(n=2, c=3, h=9, w=9, oc=4, kh=3, kw=3, sh=2, sw=2, ph=1, pw=1, seed=0):
 
     y_dev = layer.forward(xd, wd, bd)
     # 设备侧输出布局是 (N,OH,OW,OC)；torch 是 (N,OC,OH,OW)
-    yv = dev.down(y_dev, (n, layer.OH, layer.OW, oc)).transpose(0, 3, 1, 2).astype(np.float32)
+    yv = (
+        dev.down(y_dev, (n, layer.OH, layer.OW, oc))
+        .transpose(0, 3, 1, 2)
+        .astype(np.float32)
+    )
 
     dy = (rng.standard_normal((n, oc, layer.OH, layer.OW)) * 0.3).astype(np.float32)
     dy_dev = dev.up(np.ascontiguousarray(dy.transpose(0, 2, 3, 1)).astype(np.float16))
@@ -266,8 +324,10 @@ def check(n=2, c=3, h=9, w=9, oc=4, kh=3, kw=3, sh=2, sw=2, ph=1, pw=1, seed=0):
     r_x = rel(dxv, tx.grad.numpy())
     r_w = rel(dwv, tw.grad.reshape(oc, -1).numpy())
     r_b = rel(dbv, tb.grad.numpy()) if dbv is not None else 0.0
-    print("  conv2d N%d C%d HxW%dx%d → OC%d %dx%d s%d p%d"
-          % (n, c, h, w, oc, kh, kw, sh, ph))
+    print(
+        "  conv2d N%d C%d HxW%dx%d → OC%d %dx%d s%d p%d"
+        % (n, c, h, w, oc, kh, kw, sh, ph)
+    )
     print("    fwd %.2e   dx %.2e   dw %.2e   db %.2e   (fp16)" % (r_f, r_x, r_w, r_b))
     return max(r_f, r_x, r_w, r_b) < 3e-2
 

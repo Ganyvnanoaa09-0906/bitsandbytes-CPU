@@ -86,8 +86,9 @@ class P(object):
             # 冻结：只留 fp16 副本（2 B/参数），无梯度、无优化器状态
             self.n = w.size
             self.buf = dev.buf(max(4096, self.n * 2))
-            cl.enqueue_copy(dev.q, self.buf,
-                            np.ascontiguousarray(w.reshape(-1), dtype=np.float16))
+            cl.enqueue_copy(
+                dev.q, self.buf, np.ascontiguousarray(w.reshape(-1), dtype=np.float16)
+            )
             dev.q.finish()
             return
         self.frozen = False
@@ -110,6 +111,8 @@ class P(object):
             self.mom = dev.buf(nb4)
             self.vel = dev.buf(nb4)
         self.grad = dev.buf(max(4096, self.n * 2))
+        # auto_zero_grads 时 zero_grads() 是 no-op；第一步反传前 grad 必须是 0。
+        cl.enqueue_fill_buffer(dev.q, self.grad, np.uint16(0), 0, self.n * 2)
         cl.enqueue_copy(dev.q, self.master, flat)
         if state_bits in (8, 4):
             nblocks = (self.n + 255) // 256
@@ -125,7 +128,7 @@ class P(object):
         else:
             cl.enqueue_copy(dev.q, self.mom, np.zeros(self.n, np.float32))
             cl.enqueue_copy(dev.q, self.vel, np.zeros(self.n, np.float32))
-        self.buf = dev.buf(max(4096, self.n * 2))   # fp16 副本（前向用它）
+        self.buf = dev.buf(max(4096, self.n * 2))  # fp16 副本（前向用它）
         cl.enqueue_copy(dev.q, self.buf, flat.astype(np.float16))
         cl.enqueue_copy(dev.q, self.grad, np.zeros(self.n, np.float16))
         dev.q.finish()
@@ -247,30 +250,43 @@ class Executor(object):
                     self.dev,
                     mod.weight.detach().cpu().numpy().reshape(mod.out_channels, -1),
                     name + ".weight",
-                    state_bits=self.state_bits, frozen=self._is_frozen(name),
+                    state_bits=self.state_bits,
+                    frozen=self._is_frozen(name),
                 )
                 if not hasattr(self, "conv_meta"):
                     self.conv_meta = {}
                 self.conv_meta[name] = dict(
-                    oc=mod.out_channels, c=mod.in_channels, kh=mod.kernel_size[0],
-                    kw=mod.kernel_size[1], sh=mod.stride[0], sw=mod.stride[1],
-                    ph=mod.padding[0], pw=mod.padding[1],
+                    oc=mod.out_channels,
+                    c=mod.in_channels,
+                    kh=mod.kernel_size[0],
+                    kw=mod.kernel_size[1],
+                    sh=mod.stride[0],
+                    sw=mod.stride[1],
+                    ph=mod.padding[0],
+                    pw=mod.padding[1],
                 )
                 if mod.bias is not None:
                     self.params[name + ".bias"] = P(
                         self.dev,
                         mod.bias.detach().cpu().numpy().reshape(-1),
                         name + ".bias",
-                        state_bits=self.state_bits, frozen=self._is_frozen(name),
+                        state_bits=self.state_bits,
+                        frozen=self._is_frozen(name),
                     )
             elif isinstance(mod, nn.GroupNorm):
                 self.params[name + ".weight"] = P(
-                    self.dev, mod.weight.detach().cpu().numpy().reshape(-1),
-                    name + ".weight", state_bits=self.state_bits)
+                    self.dev,
+                    mod.weight.detach().cpu().numpy().reshape(-1),
+                    name + ".weight",
+                    state_bits=self.state_bits,
+                )
                 if mod.bias is not None:
                     self.params[name + ".bias"] = P(
-                        self.dev, mod.bias.detach().cpu().numpy().reshape(-1),
-                        name + ".bias", state_bits=self.state_bits)
+                        self.dev,
+                        mod.bias.detach().cpu().numpy().reshape(-1),
+                        name + ".bias",
+                        state_bits=self.state_bits,
+                    )
                 if not hasattr(self, "gn_meta"):
                     self.gn_meta = {}
                 self.gn_meta[name] = dict(groups=mod.num_groups, eps=float(mod.eps))
@@ -279,34 +295,39 @@ class Executor(object):
                     self.dev,
                     mod.weight.detach().cpu().numpy(),
                     name + ".weight",
-                    state_bits=self.state_bits, frozen=self._is_frozen(name),
+                    state_bits=self.state_bits,
+                    frozen=self._is_frozen(name),
                 )
                 if mod.bias is not None:
                     self.params[name + ".bias"] = P(
                         self.dev,
                         mod.bias.detach().cpu().numpy(),
                         name + ".bias",
-                        state_bits=self.state_bits, frozen=self._is_frozen(name),
+                        state_bits=self.state_bits,
+                        frozen=self._is_frozen(name),
                     )
             elif isinstance(mod, nn.Embedding):
                 self.params[name + ".weight"] = P(
                     self.dev,
                     mod.weight.detach().cpu().numpy(),
                     name + ".weight",
-                    state_bits=self.state_bits, frozen=self._is_frozen(name),
+                    state_bits=self.state_bits,
+                    frozen=self._is_frozen(name),
                 )
             elif isinstance(mod, nn.LayerNorm):
                 self.params[name + ".gamma"] = P(
                     self.dev,
                     mod.weight.detach().cpu().numpy(),
                     name + ".gamma",
-                    state_bits=self.state_bits, frozen=self._is_frozen(name),
+                    state_bits=self.state_bits,
+                    frozen=self._is_frozen(name),
                 )
                 self.params[name + ".beta"] = P(
                     self.dev,
                     mod.bias.detach().cpu().numpy(),
                     name + ".beta",
-                    state_bits=self.state_bits, frozen=self._is_frozen(name),
+                    state_bits=self.state_bits,
+                    frozen=self._is_frozen(name),
                 )
 
     def sync_from_torch(self):
@@ -456,15 +477,26 @@ class Executor(object):
 
         if node.op == "call_function" and getattr(node.target, "__name__", "") == "pad":
             import gt1030.igpu_conv as CV
+
             x = self._arg(node.args[0])
             pads = tuple(int(v) for v in node.args[1])
             if pads != (0, 1, 0, 1):
-                raise SystemExit("FX: 目前只支持 F.pad(x, (0,1,0,1))，收到 %r" % (pads,))
+                raise SystemExit(
+                    "FX: 目前只支持 F.pad(x, (0,1,0,1))，收到 %r" % (pads,)
+                )
             N, C, H, W = x.shape
             out = self._node_buf(node.name, (N, C, H + 1, W + 1))
-            CV.K(self.dev)["pad01"](self.dev.q, (N * C * (H + 1) * (W + 1),), None,
-                                    x.buf, out.buf, np.int32(N), np.int32(C),
-                                    np.int32(H), np.int32(W))
+            CV.K(self.dev)["pad01"](
+                self.dev.q,
+                (N * C * (H + 1) * (W + 1),),
+                None,
+                x.buf,
+                out.buf,
+                np.int32(N),
+                np.int32(C),
+                np.int32(H),
+                np.int32(W),
+            )
             self.recs.append(("pad01", node.name, x))
             self.env[node.name] = out
             return out
@@ -484,7 +516,9 @@ class Executor(object):
                     for d in new_shape:
                         if d != 0:
                             known *= d
-                    new_shape = tuple(int(x.numel) // known if d == 0 else d for d in new_shape)
+                    new_shape = tuple(
+                        int(x.numel) // known if d == 0 else d for d in new_shape
+                    )
             out = T(x.buf, tuple(int(d) for d in new_shape))
             self.env[node.name] = out
             # 登记 view 记录：反传到这个节点时要把梯度原样传回上游
@@ -495,14 +529,16 @@ class Executor(object):
             x = self._arg(node.args[0])
             if isinstance(sub, nn.GroupNorm):
                 import gt1030.igpu_gn as GN
+
                 meta = self.gn_meta[node.target]
                 N, C, H, W = x.shape
                 if not hasattr(self, "_gns"):
                     self._gns = {}
                 key = (node.name, N, C, H, W)
                 if key not in self._gns:
-                    self._gns[key] = GN.GroupNorm(self.dev, N, C, H, W, meta["groups"],
-                                                  meta["eps"])
+                    self._gns[key] = GN.GroupNorm(
+                        self.dev, N, C, H, W, meta["groups"], meta["eps"]
+                    )
                 gn = self._gns[key]
                 pg = self.params[node.target + ".weight"]
                 pb = self.params.get(node.target + ".bias")
@@ -515,6 +551,7 @@ class Executor(object):
                 self.env[node.name] = out
             elif isinstance(sub, nn.Conv2d):
                 import gt1030.igpu_conv as CV
+
                 meta = self.conv_meta[node.target]
                 N, C, H, W = x.shape
                 OH = (H + 2 * meta["ph"] - meta["kh"]) // meta["sh"] + 1
@@ -524,16 +561,35 @@ class Executor(object):
                 key = (node.name, N, C, H, W)
                 if key not in self._convs:
                     self._convs[key] = CV.Conv2d(
-                        self.dev, N, C, H, W, meta["oc"], meta["kh"], meta["kw"],
-                        meta["sh"], meta["sw"], meta["ph"], meta["pw"])
+                        self.dev,
+                        N,
+                        C,
+                        H,
+                        W,
+                        meta["oc"],
+                        meta["kh"],
+                        meta["kw"],
+                        meta["sh"],
+                        meta["sw"],
+                        meta["ph"],
+                        meta["pw"],
+                    )
                 layer = self._convs[key]
                 p = self.params[node.target + ".weight"]
                 pb = self.params.get(node.target + ".bias")
                 y_nhwc = layer.forward(x.buf, p.buf, pb.buf if pb is not None else None)
                 out = self._node_buf(node.name, (N, meta["oc"], OH, OW))
                 CV.K(self.dev)["nhwc2nchw"](
-                    self.dev.q, (N * meta["oc"] * OH * OW,), None, y_nhwc, out.buf,
-                    np.int32(N), np.int32(meta["oc"]), np.int32(OH), np.int32(OW))
+                    self.dev.q,
+                    (N * meta["oc"] * OH * OW,),
+                    None,
+                    y_nhwc,
+                    out.buf,
+                    np.int32(N),
+                    np.int32(meta["oc"]),
+                    np.int32(OH),
+                    np.int32(OW),
+                )
                 self.recs.append(("conv2d", node.name, x, p, pb, layer, (N, OH, OW)))
                 self.env[node.name] = out
             elif isinstance(sub, nn.Linear):
@@ -744,23 +800,35 @@ class Executor(object):
                 continue
             if kind == "pad01":
                 import gt1030.igpu_conv as CV
+
                 x = rec[2]
                 Nx, Cx, Hx, Wx = x.shape
                 dx = self._cached("bwd.pad01.dx." + name, x.shape)
-                CV.K(self.dev)["crop01"](self.dev.q, (Nx * Cx * Hx * Wx,), None,
-                                         g, dx, np.int32(Nx), np.int32(Cx),
-                                         np.int32(Hx), np.int32(Wx))
+                CV.K(self.dev)["crop01"](
+                    self.dev.q,
+                    (Nx * Cx * Hx * Wx,),
+                    None,
+                    g,
+                    dx,
+                    np.int32(Nx),
+                    np.int32(Cx),
+                    np.int32(Hx),
+                    np.int32(Wx),
+                )
                 self._propagate(pending, x, dx)
             elif kind == "gn":
                 import gt1030.igpu_gn as GN
+
                 x, pg, pb, gn = rec[2], rec[3], rec[4], rec[5]
                 dx = self._cached("bwd.gn.dx." + name, x.shape)
                 gn.backward(g, x.buf, dx)
-                NN._kernels()["acc_from_f32"](self.dev.q, (pg.n,), None, pg.grad,
-                                              gn.dgamma, np.int64(pg.n))
+                NN._kernels()["acc_from_f32"](
+                    self.dev.q, (pg.n,), None, pg.grad, gn.dgamma, np.int64(pg.n)
+                )
                 if pb is not None:
-                    NN._kernels()["acc_from_f32"](self.dev.q, (pb.n,), None, pb.grad,
-                                                  gn.dbeta, np.int64(pb.n))
+                    NN._kernels()["acc_from_f32"](
+                        self.dev.q, (pb.n,), None, pb.grad, gn.dbeta, np.int64(pb.n)
+                    )
                 self._propagate(pending, x, dx)
             elif kind == "view":
                 # 形状变了但 buffer 相同，梯度直接回传给源张量
@@ -770,16 +838,27 @@ class Executor(object):
                 self._propagate(pending, x_src, g_src)
             elif kind == "conv2d":
                 import gt1030.igpu_conv as CV
+
                 x, p, pb, layer, (N, OH, OW) = rec[2], rec[3], rec[4], rec[5], rec[6]
                 dy_nhwc = self._cached("bwd.conv.dy." + name, (N, OH, OW, p.shape[0]))
                 CV.K(self.dev)["nchw2nhwc"](
-                    self.dev.q, (N * p.shape[0] * OH * OW,), None, g, dy_nhwc,
-                    np.int32(N), np.int32(p.shape[0]), np.int32(OH), np.int32(OW))
+                    self.dev.q,
+                    (N * p.shape[0] * OH * OW,),
+                    None,
+                    g,
+                    dy_nhwc,
+                    np.int32(N),
+                    np.int32(p.shape[0]),
+                    np.int32(OH),
+                    np.int32(OW),
+                )
                 dx, dw, db = layer.backward(dy_nhwc, x.buf, p.buf)
                 self._acc_param(p, dw)
                 if pb is not None and db is not None:
                     self._acc_param(pb, db)
-                    cl.enqueue_fill_buffer(self.dev.q, layer.db, np.uint16(0), 0, layer.db.size)
+                    cl.enqueue_fill_buffer(
+                        self.dev.q, layer.db, np.uint16(0), 0, layer.db.size
+                    )
                 self._propagate(pending, x, dx)
             elif kind == "linear":
                 x, p = rec[2], rec[3]
@@ -983,7 +1062,7 @@ class Executor(object):
 
     def _acc_param(self, p, dW_buf):
         if getattr(p, "frozen", False):
-            return          # 冻结参数不吃梯度
+            return  # 冻结参数不吃梯度
         G._kernels(self.dev)["acc_h"](
             self.dev.q, (p.n,), None, p.grad, dW_buf, np.int64(p.n)
         )
@@ -1085,7 +1164,7 @@ class Executor(object):
             self._k8 = None
         for name, p in self.params.items():
             if getattr(p, "frozen", False):
-                continue        # 冻结参数不更新
+                continue  # 冻结参数不更新
             if self.use_muon and self._is_muon_param(name, p):
                 continue
             if getattr(p, "state_bits", 32) == 4:
