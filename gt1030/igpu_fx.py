@@ -459,13 +459,16 @@ class Executor(object):
                 # 这里撤掉它的 rec，改用 ln_fwd_res 一次算 h=x+res 和 LN(h)。
                 prev = node.args[0]
                 fused = None
+                pop_add = False
                 if isinstance(prev, fx.Node) and prev.op == "call_function":
                     pname = getattr(prev.target, "__name__", str(prev.target))
-                    if pname in ("add", "__add__") and len(prev.users) == 1:
+                    if pname in ("add", "__add__"):
                         for ri, rec in enumerate(self.recs):
                             if rec[0] == "add" and rec[1] == prev.name:
                                 fused = rec[2]
-                                self.recs.pop(ri)
+                                pop_add = len(prev.users) == 1
+                                if pop_add:
+                                    self.recs.pop(ri)
                                 break
                 rows, cols = int(np.prod(x.shape[:-1])), x.shape[-1]
                 out = self._node_buf(node.name, x.shape)
@@ -476,7 +479,9 @@ class Executor(object):
                 K = NN._kernels()
                 if fused is not None:
                     a, b = fused
-                    hbuf = self._node_buf(node.name + ".h", x.shape)
+                    # pop_add=True 时 add 已被撤掉，需要独立 h；
+                    # 否则 add 节点仍保留，h 就写进它的输出 buffer（add kernel 已跳过）。
+                    hbuf = self._node_buf(node.name + ".h", x.shape) if pop_add else x
                     K["ln_fwd_res"](
                         self.dev.q,
                         (rows * 256,),
@@ -492,15 +497,26 @@ class Executor(object):
                         np.int32(cols),
                         np.float32(sub.eps),
                     )
-                    self.recs.append(
-                        (
-                            "ln_res",
-                            node.name,
-                            (a, b, rows, cols, mean, rstd, hbuf),
-                            (gp, bp),
-                            None,
+                    if pop_add:
+                        self.recs.append(
+                            (
+                                "ln_res",
+                                node.name,
+                                (a, b, rows, cols, mean, rstd, hbuf),
+                                (gp, bp),
+                                None,
+                            )
                         )
-                    )
+                    else:
+                        self.recs.append(
+                            (
+                                "ln",
+                                node.name,
+                                (x, rows, cols, mean, rstd),
+                                (gp, bp),
+                                None,
+                            )
+                        )
                 else:
                     K["ln_fwd_fused"](
                         self.dev.q,
@@ -527,15 +543,28 @@ class Executor(object):
             if fname in ("add", "__add__"):
                 a, b = self._arg(node.args[0]), self._arg(node.args[1])
                 out = self._node_buf(node.name, a.shape)
-                G._kernels(self.dev)["add_h"](
-                    self.dev.q,
-                    (a.numel,),
-                    None,
-                    a.buf,
-                    b.buf,
-                    out.buf,
-                    np.int64(a.numel),
-                )
+                # 若 add 的输出被 LayerNorm 消费，add 的 fwd 可省：由 ln_fwd_res
+                # 一次写 h=x+res 和 LN(h)；add 节点/反向 identity 仍保留。
+                skip = False
+                for u in node.users:
+                    if u.op == "call_module":
+                        try:
+                            us = self.gm.get_submodule(u.target)
+                        except Exception:
+                            continue
+                        if isinstance(us, nn.LayerNorm):
+                            skip = True
+                            break
+                if not skip:
+                    G._kernels(self.dev)["add_h"](
+                        self.dev.q,
+                        (a.numel,),
+                        None,
+                        a.buf,
+                        b.buf,
+                        out.buf,
+                        np.int64(a.numel),
+                    )
                 self.recs.append(("add", node.name, (a, b), None, None))
             elif fname == "gelu":
                 x = self._arg(node.args[0])
