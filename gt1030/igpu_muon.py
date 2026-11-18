@@ -75,14 +75,14 @@ __kernel void muon_apply(__global float* w, __global const half* X, __global hal
 // 两种布局都用同一 kernel，用 step/col 的显式 stride 控制是否转置
 __kernel void muon_d(__global float* mom, __global const half* g, __global half* d,
                      int rows, int cols, int out_rows, int out_cols,
-                     float mu, int transposed) {
+                     float mu, int transposed, float gscale) {
     int r = get_global_id(0), c = get_global_id(1);
     if (r >= rows || c >= cols) return;
     long i = (long)r * cols + c;
     float gt = (float)g[i];
     float m = mu * mom[i] + gt;
     mom[i] = m;
-    float dv = gt + mu * m;
+    float dv = (gt + mu * m) / gscale;      // 梯度是 ×65536 存的，直接写 fp16 会 inf
     long o = transposed ? ((long)c * out_cols + r) : ((long)r * out_cols + c);
     d[o] = (half)dv;
 }
@@ -99,14 +99,14 @@ __kernel void untranspose_h(__global const half* x, __global half* y,
 // ---- 8-bit 动量：mom 为 int8 码，absmax 每 256 元素一个 fp32 ----
 __kernel void muon_d_q8(__global char* mom, __global float* amax, __global const half* g,
                         __global half* d, int rows, int cols, int out_cols,
-                        float mu, int transposed) {
+                        float mu, int transposed, float gscale) {
     int r = get_global_id(0), c = get_local_id(0);
     long i = (long)r * cols + c;
     int blk = (int)(i / BLK32);
     float m = ((float)mom[i] / 127.f) * amax[blk];
     float gt = (float)g[i];
     float nm = mu * m + gt;
-    float dv = gt + mu * nm;
+    float dv = (gt + mu * nm) / gscale;
     long o = transposed ? ((long)c * out_cols + r) : ((long)r * out_cols + c);
     d[o] = (half)dv;
 }
@@ -152,14 +152,15 @@ inline uchar nib_pack(uchar lo, uchar hi) { return (uchar)((hi << 4) | (lo & 0xF
 
 __kernel void muon_d_q4(__global const uchar* mom, __global const float* amax,
                         __global const half* g, __global half* d,
-                        int rows, int cols, int out_cols, float mu, int transposed) {
+                        int rows, int cols, int out_cols, float mu, int transposed,
+                        float gscale) {
     int r = get_global_id(0), c = get_local_id(0);
     long i = (long)r * cols + c;
     int blk = (int)(i / 256);
     float m = nib_get(mom, i, amax[blk]);
     float gt = (float)g[i];
     float nm = mu * m + gt;
-    float dv = gt + mu * nm;
+    float dv = (gt + mu * nm) / gscale;
     long o = transposed ? ((long)c * out_cols + r) : ((long)r * out_cols + c);
     d[o] = (half)dv;
 }
@@ -323,7 +324,7 @@ def muon_step(dev, p, grad_buf, lr, wd=0.0, momentum=0.95, ns_steps=5):
     x_buf = dev.buf(max(4096, m * n * 2))
     k["muon_d"](dev.q, (m0, n0), None, _mom_buf(dev, p), grad_buf, x_buf,
                 np.int32(m0), np.int32(n0), np.int32(m), np.int32(n),
-                np.float32(momentum), np.int32(1 if tr else 0))
+                np.float32(momentum), np.int32(1 if tr else 0), np.float32(65536.0))
     dev.q.finish()
     ns_device(dev, x_buf, m, n, steps=ns_steps)
     K(dev)["ns_clip"](dev.q, (256,), (256,), x_buf, np.int64(m * n), np.float32(NS_RMS_CAP))
@@ -394,7 +395,7 @@ def muon_step_q8(dev, p, grad_buf, lr, wd=0.0, momentum=0.95, ns_steps=5):
     x_buf = dev.buf(max(4096, m * n * 2))
     k["muon_d_q8"](dev.q, (m0, n0), None, p.mom8, p.amax, grad_buf, x_buf,
                    np.int32(m0), np.int32(n0), np.int32(n),
-                   np.float32(momentum), np.int32(1 if tr else 0))
+                   np.float32(momentum), np.int32(1 if tr else 0), np.float32(65536.0))
     dev.q.finish()
     ns_device(dev, x_buf, m, n, steps=ns_steps)
     K(dev)["ns_clip"](dev.q, (256,), (256,), x_buf, np.int64(m * n), np.float32(NS_RMS_CAP))
@@ -468,7 +469,7 @@ def muon_step_q4(dev, p, grad_buf, lr, wd=0.0, momentum=0.95, ns_steps=5):
     x_buf = dev.buf(max(4096, m * n * 2))
     k["muon_d_q4"](dev.q, (m0, n0), None, p.mom4, p.amax, grad_buf, x_buf,
                    np.int32(m0), np.int32(n0), np.int32(n),
-                   np.float32(momentum), np.int32(1 if tr else 0))
+                   np.float32(momentum), np.int32(1 if tr else 0), np.float32(65536.0))
     dev.q.finish()
     ns_device(dev, x_buf, m, n, steps=ns_steps)
     K(dev)["ns_clip"](dev.q, (256,), (256,), x_buf, np.int64(m * n), np.float32(NS_RMS_CAP))
