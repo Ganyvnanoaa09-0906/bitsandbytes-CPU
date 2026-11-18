@@ -191,7 +191,9 @@ class CrossAttn(object):
         GEMM.hgemm_tn(self.dk, self.xk, self.dwk, Cq, Ck, Rk)
         GEMM.hgemm_tn(self.dv, self.xk, self.dwv, Cq, Ck, Rk)
         _OPS2.col_sum(d, self.dq, self.dbq, Rq, Cq)
-        _OPS2.col_sum(d, self.dk, self.dbk, Rk, Cq)
+        # K bias is a per-query constant shift of all logits -> softmax invariant;
+        # its gradient is exactly zero (fp16 accumulation otherwise leaves noise).
+        cl.enqueue_fill_buffer(d.q, self.dbk, np.uint16(0), 0, self.Cq * 2)
         _OPS2.col_sum(d, self.dv, self.dbv, Rk, Cq)
         _OPS2.col_sum(d, self.do, self.dbo, Rq, Cq)
         GEMM.hgemm_nn(self.dq, self.q, self.dtok, Rq, Cq, Cq)
