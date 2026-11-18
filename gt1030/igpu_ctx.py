@@ -63,8 +63,12 @@ class DevCtx(object):
         self.arenas = []          # [cl.Buffer, ...]
         self._chunk_off = 0       # 当前块内偏移
         self._chunk_idx = -1
-        self._off = 0             # 全局已用字节（统计用）
+        self._off = 0             # **活跃**字节（release 会减）
+        self._peak = 0            # 历史峰值
         self._n = 0
+        self._free_lists = {}     # chunk_idx -> [(offset, size), ...]  显式释放的空闲块
+        self._map = {}            # cl.Buffer -> (chunk_idx, offset, size)
+        self._stats = {"reused": 0, "freed": 0}
         self._ensure_chunk(0)
 
     # ---- 生命周期 ----
@@ -94,6 +98,37 @@ class DevCtx(object):
                                       self._chunk_bytes / 1048576.0, error))
         return self.arenas[idx]
 
+    def release(self, b):
+        """显式归还：把 b 放回所属 chunk 的空闲表（权重不要调用它）。"""
+        info = self._map.pop(b, None)
+        if info is None:
+            return False
+        idx, off, size = info
+        self._free_lists.setdefault(idx, []).append((off, size))
+        self._off -= size
+        self._stats["freed"] += size
+        return True
+
+    def _try_reuse(self, n):
+        """best-fit：找 >= n 的最小空闲块，切掉用掉的部分，余量放回。"""
+        best = None
+        for idx, lst in self._free_lists.items():
+            for i, (off, size) in enumerate(lst):
+                if size >= n and (best is None or size < best[2]):
+                    best = (idx, i, size, off)
+        if best is None:
+            return None
+        idx, i, size, off = best
+        lst = self._free_lists[idx]
+        lst.pop(i)
+        if size - n >= ALIGN:
+            lst.append((off + n, size - n))
+        b = self.arenas[idx].get_sub_region(off, n)
+        self._map[b] = (idx, off, n)
+        self._off += n
+        self._stats["reused"] += n
+        return b
+
     def buf(self, nbytes):
         n = (int(nbytes) + ALIGN - 1) // ALIGN * ALIGN
         if n > self._chunk_bytes:
@@ -113,10 +148,16 @@ class DevCtx(object):
         if self._chunk_idx < 0 or self._chunk_off + n > self._chunk_bytes:
             self._chunk_idx += 1
             self._chunk_off = 0
+        reuse = self._try_reuse(n)
+        if reuse is not None:
+            self._n += 1
+            return reuse
         arena = self._ensure_chunk(self._chunk_idx)
         b = arena.get_sub_region(self._chunk_off, n)
+        self._map[b] = (self._chunk_idx, self._chunk_off, n)
         self._chunk_off += n
         self._off += n
+        self._peak = max(self._peak, self._off)
         self._n += 1
         return b
 
@@ -141,6 +182,8 @@ class DevCtx(object):
     def stats(self):
         return {"name": self.name, "buffers": self._n,
                 "arena_mb": self._mb, "used_mb": round(self._off / 1048576.0, 1),
+        "peak_mb": round(self._peak / 1048576.0, 1),
+        "reused_mb": round(self._stats["reused"] / 1048576.0, 1),
             "chunks": len(self.arenas)}
 
     def __repr__(self):
