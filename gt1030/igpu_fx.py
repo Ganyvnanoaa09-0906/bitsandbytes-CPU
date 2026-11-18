@@ -520,13 +520,9 @@ class Executor(object):
                                    gp.buf, s1, s2, dx, np.int32(cols))
                 K2["ln_param_grads"](self.dev.q, (cols,), None, g, x.buf, mean, rstd,
                                      dgf, dbf, np.int32(rows), np.int32(cols))
-                # dγ/dβ 是 fp32 → 转 fp16 后累加
-                cl.enqueue_copy(self.dev.q, dg, self.dev.down(dgf, (cols,), np.float32)
-                                .astype(np.float16))
-                cl.enqueue_copy(self.dev.q, db, self.dev.down(dbf, (cols,), np.float32)
-                                .astype(np.float16))
-                self._acc_param(gp, dg)
-                self._acc_param(bp, db)
+                # dγ/dβ 留在设备上累加（原来每步 32 次 host 往返 copy）
+                K2["acc_from_f32"](self.dev.q, (cols,), None, gp.grad, dgf, np.int64(cols))
+                K2["acc_from_f32"](self.dev.q, (cols,), None, bp.grad, dbf, np.int64(cols))
                 self._propagate(pending, x, dx)
         self.dev.q.finish()
 

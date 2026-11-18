@@ -167,6 +167,13 @@ __kernel void emb_scatter(__global const half* dy, __global const int* idx,
         dtable[(long)t * cols + c] = (half)((float)dtable[(long)t * cols + c] + (float)dy[(long)r * cols + c]);
     }
 }
+// 把 fp32 梯度累加进 fp16 参数梯度（省掉 device→host→device 往返）
+__kernel void acc_from_f32(__global half* acc, __global const float* src, long n) {
+    long i = get_global_id(0);
+    if (i >= n) return;
+    acc[i] = (half)((float)acc[i] + src[i]);
+}
+
 """
 
 _PROG = {}
@@ -185,7 +192,8 @@ def _kernels():
             options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
         _K[key] = {n: cl.Kernel(_PROG[key], n) for n in
                    ("ln_stats", "ln_apply", "ln_bwd_stats", "ln_bwd_apply",
-                    "ln_param_grads", "gelu_fwd", "gelu_bwd", "emb_gather", "emb_scatter")}
+                    "ln_param_grads", "gelu_fwd", "gelu_bwd", "emb_gather", "emb_scatter",
+                      "acc_from_f32")}
     return _K[key]
 
 
