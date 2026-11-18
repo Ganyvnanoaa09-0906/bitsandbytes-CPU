@@ -992,7 +992,9 @@ class Executor(object):
                 x, p, pb, (x_np, w_np, b_np, meta, oshape) = (
                     rec[2], rec[3], rec[4], rec[5]
                 )
-                dy_np = self.dev.down(g, oshape).astype(np.float32)
+                # 设备侧梯度是 ×SCALE 的；torch 用未缩放 dy，出 torch 后再乘回，
+                # 避免缩放梯度在 fp16 上传时溢出（clip 只作最后保险）。
+                dy_np = self.dev.down(g, oshape).astype(np.float32) / 65536.0
                 tx = torch.from_numpy(x_np).requires_grad_(True)
                 tw = torch.from_numpy(w_np).requires_grad_(True)
                 tw_conv = tw.reshape(
@@ -1009,22 +1011,25 @@ class Executor(object):
                     padding=(meta["ph"], meta["pw"]),
                 )
                 ty.backward(torch.from_numpy(dy_np))
+                def _half(a):
+                    return np.clip(a * 65536.0, -65504, 65504).astype(np.float16)
+
                 dx = self._cached("bwd.convhost.dx." + name, x.shape)
                 cl.enqueue_copy(
                     self.dev.q, dx,
-                    np.ascontiguousarray(tx.grad.numpy().reshape(-1), np.float16),
+                    np.ascontiguousarray(_half(tx.grad.numpy().reshape(-1))),
                 )
                 dw = self._cached("bwd.convhost.dw." + name, p.shape)
                 cl.enqueue_copy(
                     self.dev.q, dw,
-                    np.clip(tw.grad.numpy().reshape(-1), -65504, 65504).astype(np.float16),
+                    np.ascontiguousarray(_half(tw.grad.numpy().reshape(-1))),
                 )
                 self._acc_param(p, dw)
                 if pb is not None and tb is not None:
                     db = self._cached("bwd.convhost.db." + name, pb.shape)
                     cl.enqueue_copy(
                         self.dev.q, db,
-                        np.clip(tb.grad.numpy().reshape(-1), -65504, 65504).astype(np.float16),
+                        np.ascontiguousarray(_half(tb.grad.numpy().reshape(-1))),
                     )
                     self._acc_param(pb, db)
                 self._propagate(pending, x, dx)
