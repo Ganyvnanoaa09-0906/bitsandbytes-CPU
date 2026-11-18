@@ -101,6 +101,7 @@ def run_one(spec, steps, lr_max=1e-3, bits=8, muon=False, seed=0, resample=False
     rng_np = np.random.default_rng(seed + 12345)
     ex = FX.Executor(model, toks, state_bits=bits, muon=muon,
                      arena_mb=arena_for(spec))
+    ex.auto_zero_grads = True      # 优化器 kernel 代为清零，省每参数一次 copy
     ex.sync_from_torch()
     lr_scale = 256.0 / float(spec["d"])   # 宽模型 lr 要更小
     ex.set_schedule("sgdr", lr_max=lr_max * lr_scale, lr_min=lr_max * lr_scale * 0.1, t0=max(4, steps // 4),
