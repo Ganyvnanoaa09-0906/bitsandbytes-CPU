@@ -32,7 +32,17 @@ STAGES = []
 
 
 def _mb(dev):
-    return dev._off / 2 ** 20
+    """历史峰值（不是活跃值）：量水位要用 peak。"""
+    return max(dev._peak, dev._off) / 2 ** 20
+
+
+def _free(dev, *bufs):
+    """释放；同一对象只释放一次（up 的第一个 skip 可能与 mid 输出是同一缓冲）。"""
+    seen = set()
+    for b in bufs:
+        if b is not None and id(b) not in seen:
+            seen.add(id(b))
+            dev.release(b)
 
 
 def _note(dev, name):
@@ -85,6 +95,10 @@ def _conv(dev, x, w, b, N, C, H, Wd, OC, kh=3, kw=3, sh=1, sw=1, ph=1, pw=1):
     out = _buf(dev, N * OC * OH * OW)
     CVK(dev)["nhwc2nchw"](dev.q, (N * OC * OH * OW,), None, y, out,
                           np.int32(N), np.int32(OC), np.int32(OH), np.int32(OW))
+    # ★ 释放 Conv2d 内部缓冲（cols 是 im2col 的 M×Kdim，整链 ~30 个卷积时是水位大头）
+    _free(dev, getattr(cv, "cols", None), getattr(cv, "y", None),
+          getattr(cv, "dy", None), getattr(cv, "dcols", None),
+          getattr(cv, "dw", None), getattr(cv, "db", None))
     return out, OH, OW
 
 
@@ -136,8 +150,10 @@ def _attn(dev, h, ctx, a, N, Tq, Tk, C, wc):
     token_linear(dev, src, wv, bv, v, N * Tk, C, ck)
     ao = _buf(dev, N * Tq * C)
     attn_chunked_heads(dev, q, k, v, ao, N, Tq, Tk, C, a.heads, bq=min(256, Tq))
+    _free(dev, q, k, v)
     out = _buf(dev, N * Tq * C)
     token_linear(dev, ao, wo, bo, out, N * Tq, C, C)
+    _free(dev, ao)
     return out
 
 
@@ -146,9 +162,11 @@ def _resnet(dev, r, x, temb, tembD, N, C, H, Wd, wc):
     _gn(dev, x, wc.arr(r.norm1.weight), wc.arr(r.norm1.bias), y,
         N, C, H, Wd, r.norm1.num_groups, float(r.norm1.eps))
     s = _silu(dev, y, N * C * H * Wd)
+    _free(dev, y)
     w1, b1 = wc.lin(r.conv1)
     C2 = r.conv1.out_channels
     c1, _, _ = _conv(dev, s, w1, b1, N, C, H, Wd, C2)
+    _free(dev, s)
     if temb is not None and r.time_emb_proj is not None:
         ts = _silu(dev, temb, N * tembD)
         tw, tb = wc.lin(r.time_emb_proj)
@@ -157,19 +175,26 @@ def _resnet(dev, r, x, temb, tembD, N, C, H, Wd, wc):
         c1h = _n2h(dev, c1, N, C2, H, Wd)
         CVK(dev)["bias_add_oc"](dev.q, (N * H * Wd, C2), None, c1h, tp,
                                 np.int32(N * H * Wd), np.int32(C2))
-        c1 = _h2n(dev, c1h, N, C2, H, Wd)
+        c1n = _h2n(dev, c1h, N, C2, H, Wd)
+        _free(dev, c1, c1h, tp, ts)
+        c1 = c1n
     y2 = _buf(dev, N * C2 * H * Wd)
     _gn(dev, c1, wc.arr(r.norm2.weight), wc.arr(r.norm2.bias), y2,
         N, C2, H, Wd, r.norm2.num_groups, float(r.norm2.eps))
     s2 = _silu(dev, y2, N * C2 * H * Wd)
+    _free(dev, y2, c1)
     w2, b2 = wc.lin(r.conv2)
     c2, _, _ = _conv(dev, s2, w2, b2, N, C2, H, Wd, C2)
+    _free(dev, s2)
     if r.conv_shortcut is not None:
         ws, bs = wc.lin(r.conv_shortcut)
         sc, _, _ = _conv(dev, x, ws, bs, N, C, H, Wd, C2, 1, 1, 1, 1, 0, 0)
-    else:
-        sc = x
-    return _add(dev, sc, c2, N * C2 * H * Wd), C2
+        out = _add(dev, sc, c2, N * C2 * H * Wd)
+        _free(dev, sc, c2)
+        return out, C2
+    out = _add(dev, x, c2, N * C2 * H * Wd)
+    _free(dev, c2)
+    return out, C2
 
 
 def _t2d(dev, t, x, enc, N, C, H, Wd, rk, wc):
@@ -178,13 +203,23 @@ def _t2d(dev, t, x, enc, N, C, H, Wd, rk, wc):
         N, C, H, Wd, t.norm.num_groups, float(t.norm.eps))
     wi, bi = wc.lin(t.proj_in)
     c1, _, _ = _conv(dev, y, wi, bi, N, C, H, Wd, C, 1, 1, 1, 1, 0, 0)
+    _free(dev, y)
     tok = _n2h(dev, c1, N, C, H, Wd)
+    _free(dev, c1)
     T = H * Wd
     for blk in t.transformer_blocks:
         s = _ln(dev, tok, blk.norm1, N * T, C, wc)
-        tok = _add(dev, tok, _attn(dev, s, None, blk.attn1, N, T, T, C, wc), N * T * C)
+        a1 = _attn(dev, s, None, blk.attn1, N, T, T, C, wc)
+        _free(dev, s)
+        nxt = _add(dev, tok, a1, N * T * C)
+        _free(dev, tok, a1)
+        tok = nxt
         s = _ln(dev, tok, blk.norm2, N * T, C, wc)
-        tok = _add(dev, tok, _attn(dev, s, enc, blk.attn2, N, T, rk, C, wc), N * T * C)
+        a2 = _attn(dev, s, enc, blk.attn2, N, T, rk, C, wc)
+        _free(dev, s)
+        nxt = _add(dev, tok, a2, N * T * C)
+        _free(dev, tok, a2)
+        tok = nxt
         s = _ln(dev, tok, blk.norm3, N * T, C, wc)
         w0, b0 = wc.lin(blk.ff.net[0].proj)
         hd = blk.ff.net[0].proj.out_features // 2
@@ -195,11 +230,18 @@ def _t2d(dev, t, x, enc, N, C, H, Wd, rk, wc):
         w2, b2 = wc.lin(blk.ff.net[2])
         ff = _buf(dev, N * T * C)
         token_linear(dev, gated, w2, b2, ff, N * T, C, hd)
-        tok = _add(dev, tok, ff, N * T * C)
+        _free(dev, s, hid, gated)
+        nxt = _add(dev, tok, ff, N * T * C)
+        _free(dev, tok, ff)
+        tok = nxt
     back = _h2n(dev, tok, N, C, H, Wd)
+    _free(dev, tok)
     wo_, bo_ = wc.lin(t.proj_out)
     po, _, _ = _conv(dev, back, wo_, bo_, N, C, H, Wd, C, 1, 1, 1, 1, 0, 0)
-    return _add(dev, po, x, N * C * H * Wd)
+    _free(dev, back)
+    out = _add(dev, po, x, N * C * H * Wd)
+    _free(dev, po)
+    return out
 
 
 def _cat(dev, h, skip, N, C1, C2, H, Wd):
@@ -253,6 +295,8 @@ def full_forward(dev, u, sample_np, timestep_np, enc_np, wc=None, verbose=True):
     for i, db in enumerate(u.down_blocks):
         atts = getattr(db, "attentions", None) or ()
         for j, res in enumerate(db.resnets):
+            # ★ down 每层的输出都会进 skips（up 要用），所以这里**不释放**上一层张量；
+            #   只有 resnet/t2d 内部的临时缓冲会被它们各自释放。
             h, c = _resnet(dev, res, h, temb, tembD, N, c, H, Wd, wc)
             if j < len(atts):
                 h = _t2d(dev, atts[j], h, enc, N, c, H, Wd, rk, wc)
@@ -260,15 +304,22 @@ def full_forward(dev, u, sample_np, timestep_np, enc_np, wc=None, verbose=True):
         ups = getattr(db, "downsamplers", None)
         if ups is not None and len(ups) > 0:
             w, b = wc.lin(ups[0].conv)
-            h, H, Wd = _conv(dev, h, w, b, N, c, H, Wd, ups[0].conv.out_channels, 3, 3, 2, 2, 1, 1)
+            nxt, H, Wd = _conv(dev, h, w, b, N, c, H, Wd, ups[0].conv.out_channels, 3, 3, 2, 2, 1, 1)
+            _free(dev, h)
+            h = nxt
             c = ups[0].conv.out_channels
             skips.append(h)
         _note(dev, "down%d" % i)
 
     mid = u.mid_block
+    # ★ 这里的输入 h 同时是 skips 的最后一个元素（up 还要 pop 它），不能释放
     h, c = _resnet(dev, mid.resnets[0], h, temb, tembD, N, c, H, Wd, wc)
-    h = _t2d(dev, mid.attentions[0], h, enc, N, c, H, Wd, rk, wc)
-    h, c = _resnet(dev, mid.resnets[1], h, temb, tembD, N, c, H, Wd, wc)
+    prev = h
+    h = _t2d(dev, mid.attentions[0], prev, enc, N, c, H, Wd, rk, wc)
+    _free(dev, prev)
+    prev = h
+    h, c = _resnet(dev, mid.resnets[1], prev, temb, tembD, N, c, H, Wd, wc)
+    _free(dev, prev)
     _note(dev, "mid")
 
     for i, ub in enumerate(u.up_blocks):
@@ -276,14 +327,20 @@ def full_forward(dev, u, sample_np, timestep_np, enc_np, wc=None, verbose=True):
         for j, res in enumerate(ub.resnets):
             skip = skips.pop()
             Cskip = res.conv1.in_channels - res.conv2.out_channels
-            h = _cat(dev, h, skip, N, c, Cskip, H, Wd)
+            cat = _cat(dev, h, skip, N, c, Cskip, H, Wd)
+            _free(dev, skip, h)          # skip 在 cat2 之后才释放
             c = c + Cskip
-            h, c = _resnet(dev, res, h, temb, tembD, N, c, H, Wd, wc)
+            h, c = _resnet(dev, res, cat, temb, tembD, N, c, H, Wd, wc)
+            _free(dev, cat)
             if j < len(atts):
-                h = _t2d(dev, atts[j], h, enc, N, c, H, Wd, rk, wc)
+                prev = h
+                h = _t2d(dev, atts[j], prev, enc, N, c, H, Wd, rk, wc)
+                _free(dev, prev)
         ups = getattr(ub, "upsamplers", None)
         if ups is not None and len(ups) > 0:
-            h = _upsample(dev, ups[0], h, N, c, H, Wd, wc)
+            prev = h
+            h = _upsample(dev, ups[0], prev, N, c, H, Wd, wc)
+            _free(dev, prev)
             H, Wd = H * 2, Wd * 2
             c = ups[0].conv.out_channels
         _note(dev, "up%d" % i)

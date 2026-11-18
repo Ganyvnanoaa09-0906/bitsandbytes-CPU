@@ -68,7 +68,7 @@ class DevCtx(object):
         self._n = 0
         self._free_lists = {}     # chunk_idx -> [(offset, size), ...]  显式释放的空闲块
         self._map = {}            # cl.Buffer -> (chunk_idx, offset, size)
-        self._stats = {"reused": 0, "freed": 0}
+        self._stats = {"reused": 0, "freed": 0, "double": 0}
         self._ensure_chunk(0)
 
     # ---- 生命周期 ----
@@ -102,6 +102,10 @@ class DevCtx(object):
         """显式归还：把 b 放回所属 chunk 的空闲表（权重不要调用它）。"""
         info = self._map.pop(b, None)
         if info is None:
+            # 未登记 = 已经 release 过（或不是本 arena 的缓冲）。
+            # TODO: 严格模式下这里应当 assert；整链里存在别名持有（同一 Buffer 两处引用），
+            # 尚未全部追清，先计数并暴露在 stats 里，避免静默。
+            self._stats["double"] = self._stats.get("double", 0) + 1
             return False
         idx, off, size = info
         self._free_lists.setdefault(idx, []).append((off, size))
