@@ -96,7 +96,7 @@ def main() -> int:
     toks = torch.randint(0, a.vocab, (a.T,))
     tgt = torch.randint(0, a.vocab, (a.T,))
     ex = FX.Executor(model, toks, state_bits=8, arena_mb=1200)
-    ex.sync_from_torch()
+    ex.auto_zero_grads = True   # 与 batch_sweep 同口径\n    ex.sync_from_torch()
     ex.set_schedule("sgdr", lr_max=1e-3, lr_min=1e-4, t0=5, t_mult=2, warmup=1)
     td = ex.dev.buf(4096)
     cl.enqueue_copy(ex.dev.q, td, np.ascontiguousarray(tgt.numpy(), dtype=np.int32))
