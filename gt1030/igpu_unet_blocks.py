@@ -146,9 +146,11 @@ def down_block_forward(db, x, temb, enc):
     """CrossAttnDownBlock2D：逐层 resnet→attention，第 0 层输出一个 skip，末端 downsample。"""
     skips = []
     h = x
-    for i, (res, attn) in enumerate(zip(db.resnets, db.attentions)):
+    atts = getattr(db, "attentions", None) or ()
+    for i, res in enumerate(db.resnets):
         h = resnet_forward(res, h, temb)
-        h = transformer2d_forward(attn, h, enc)
+        if i < len(atts):
+            h = transformer2d_forward(atts[i], h, enc)
         skips.append(h)          # 每层输出都进 skip（diffusers 实测返回 3 个：层0、层1、下采样后）
     if getattr(db, "downsamplers", None) and len(db.downsamplers) > 0:
         h = downsample_forward(db.downsamplers[0], h)
@@ -179,13 +181,107 @@ def check_down_block0(seed=0):
     return rel_h < 1e-6 and max(rel_s) < 1e-6
 
 
+
+def upsample_forward(us, x):
+    """Upsample2D（SD1.5：use_conv=True, use_conv_transpose=False）：nearest ×2 再 3x3 卷积。"""
+    x = torch.nn.functional.interpolate(x, scale_factor=2.0, mode="nearest")
+    return us.conv(x)
+
+
+def mid_forward(mid, h, temb, enc):
+    """UNetMidBlock2DCrossAttn：resnet → (self+cross) attention → resnet。"""
+    h = resnet_forward(mid.resnets[0], h, temb)
+    h = transformer2d_forward(mid.attentions[0], h, enc)
+    h = resnet_forward(mid.resnets[1], h, temb)
+    return h
+
+
+def up_block_forward(db, h, temb, enc, skips):
+    """CrossAttnUpBlock2D：**从 skips 末尾 pop**，先 cat([h, skip]) 再 resnet，最后 upsample。"""
+    for i, res in enumerate(db.resnets):
+        skip = skips.pop()                      # ★ 从深到浅
+        h = torch.cat([h, skip], dim=1)         # ★ hidden 在前、skip 在后
+        h = resnet_forward(res, h, temb)
+        atts = getattr(db, "attentions", None)
+        if atts is not None and len(atts) > 0:
+            h = transformer2d_forward(atts[i], h, enc)
+    ups = getattr(db, "upsamplers", None)
+    if ups is not None and len(ups) > 0:
+        h = upsample_forward(ups[0], h)
+    return h
+
+
+def unet_forward(u, sample, timestep, enc):
+    """整条 UNet2DConditionModel 前向（SD1.5 路径）。"""
+    h = u.conv_in(sample)
+    temb = u.time_proj(timestep)
+    temb = u.time_embedding(temb)
+    # ★ diffusers 的 skip 栈以 conv_in 输出开头：down_block_res_samples = (sample,)
+    #   down 路径共 11 个 + 这 1 个 = 12，正好等于 up 路径要 pop 的 12 个。
+    skips = [h]
+    for db in u.down_blocks:
+        h, sk = down_block_forward(db, h, temb, enc)
+        skips.extend(sk)
+    h = mid_forward(u.mid_block, h, temb, enc)
+    for ub in u.up_blocks:
+        h = up_block_forward(ub, h, temb, enc, skips)
+    if len(skips) != 0:
+        raise RuntimeError("skip 没用完，剩 %d 个" % len(skips))
+    h = u.conv_norm_out(h)
+    h = u.conv_act(h)
+    h = u.conv_out(h)
+    return h
+
+
+def check_mid_and_up(seed=0):
+    from diffusers import UNet2DConditionModel
+
+    torch.manual_seed(seed)
+    u = UNet2DConditionModel.from_pretrained(UNET)
+    u.eval()
+    C, D = u.config.block_out_channels[-1], u.config.cross_attention_dim
+    temb = torch.randn(2, u.config.block_out_channels[-1])
+    enc = torch.randn(2, 77, D)
+    x = torch.randn(2, C, 8, 8)
+    with torch.no_grad():
+        ref = u.mid_block(x, temb, encoder_hidden_states=enc)
+        mine = mid_forward(u.mid_block, x, temb, enc)
+    rel_mid = float((mine - ref).norm() / ref.norm())
+
+    print("  mid_block %.2e" % rel_mid)
+    return rel_mid < 1e-6
+
+
+def check_full_unet(seed=0):
+    from diffusers import UNet2DConditionModel
+
+    torch.manual_seed(seed)
+    u = UNet2DConditionModel.from_pretrained(UNET)
+    u.eval()
+    sample = torch.randn(1, 4, 64, 64)
+    t = torch.tensor([500])
+    enc = torch.randn(1, 77, u.config.cross_attention_dim)
+    with torch.no_grad():
+        ref = u(sample, t, encoder_hidden_states=enc).sample
+        mine = unet_forward(u, sample, t, enc)
+        bad = unet_forward(u, sample, t, torch.zeros_like(enc))
+    rel = float((mine - ref).norm() / ref.norm())
+    rel_bad = float((bad - ref).norm() / ref.norm())
+    print("  full UNet: out %s rel %.2e   （enc 置零后 %.2e）"
+          % (tuple(mine.shape), rel, rel_bad))
+    return rel < 1e-6 and rel_bad > 1e-3
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--check-resnet", action="store_true")
     ap.add_argument("--check-t2d", action="store_true")
     ap.add_argument("--check-down0", action="store_true")
+    ap.add_argument("--check-mid", action="store_true")
+    ap.add_argument("--check-full", action="store_true")
     a = ap.parse_args()
-    if not (a.check_resnet or a.check_t2d or a.check_down0):
+    if not (a.check_resnet or a.check_t2d or a.check_down0
+            or a.check_mid or a.check_full):
         print(__doc__)
         return 0
     ok = True
@@ -195,6 +291,10 @@ def main() -> int:
         ok &= check_transformer2d()
     if a.check_down0:
         ok &= check_down_block0()
+    if a.check_mid:
+        ok &= check_mid_and_up()
+    if a.check_full:
+        ok &= check_full_unet()
     print("RESULT " + ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
 
