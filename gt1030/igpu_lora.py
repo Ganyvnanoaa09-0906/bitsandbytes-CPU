@@ -81,5 +81,9 @@ def wrap_lora(model: nn.Module, r: int = 8, conv: bool = True) -> int:
     return n
 
 
+def lora_named_parameters(model: nn.Module):
+    return [(n, p) for n, p in model.named_parameters() if ".lora_" in n]
+
+
 def lora_parameters(model: nn.Module):
-    return [p for n, p in model.named_parameters() if ".lora_" in n]
+    return [p for _, p in lora_named_parameters(model)]
