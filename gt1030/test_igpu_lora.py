@@ -16,7 +16,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import gt1030.igpu_fx as FX
-from gt1030.igpu_lora import lora_parameters, wrap_lora
+from gt1030.igpu_lora import lora_parameters, merge_lora, wrap_lora
 
 SCALE = 65536.0
 
@@ -91,11 +91,31 @@ def run(model, x, r=4, steps=12, lr=2e-4, conv=False):
     return rel < 5e-2
 
 
+def test_merge():
+    ok = True
+    for cls, x in ((LinNet, torch.randn(8, 16)), (ConvNet, torch.randn(2, 3, 16, 16))):
+        m = cls()
+        wrap_lora(m, r=4, conv=True)
+        with torch.no_grad():
+            for n, p in m.named_parameters():
+                if ".lora_B." in n:
+                    p.normal_()
+        y0 = m(x).detach()
+        n = merge_lora(m)
+        y1 = m(x).detach()
+        rel = float((y0 - y1).norm() / y0.norm())
+        print("  merge %-8s layers=%d rel %.2e %s"
+              % (cls.__name__, n, rel, "OK" if rel < 1e-5 else "FAIL"))
+        ok &= rel < 1e-5
+    return ok
+
+
 def main() -> int:
     torch.manual_seed(0)
     ok = True
     ok &= run(LinNet(), torch.randn(8, 16), conv=False)
     ok &= run(ConvNet(), torch.randn(2, 3, 16, 16), conv=True)
+    ok &= test_merge()
     print("RESULT " + ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
 

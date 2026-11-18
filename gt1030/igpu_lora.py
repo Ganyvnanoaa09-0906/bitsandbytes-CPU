@@ -83,6 +83,39 @@ def wrap_lora(model: nn.Module, r: int = 8, conv: bool = True) -> int:
     return n
 
 
+def merge_lora(model: nn.Module) -> int:
+    """Inference-only: fold A/B into the frozen base and unwrap the adapter.
+
+    Training must keep A/B separate; call this only on an eval/export copy.
+    """
+    n = 0
+
+    def walk(mod):
+        nonlocal n
+        for name, child in list(mod.named_children()):
+            if isinstance(child, LoRALinear):
+                with torch.no_grad():
+                    child.base.weight.add_(child.lora_B.weight @ child.lora_A.weight)
+                setattr(mod, name, child.base)
+                n += 1
+            elif isinstance(child, LoRAConv2d):
+                with torch.no_grad():
+                    # B is 1x1; compose it with A's full kernel.
+                    merged = torch.einsum(
+                        "or,ri...->oi...",
+                        child.lora_B.weight[:, :, 0, 0],
+                        child.lora_A.weight,
+                    )
+                    child.base.weight.add_(merged)
+                setattr(mod, name, child.base)
+                n += 1
+            else:
+                walk(child)
+
+    walk(model)
+    return n
+
+
 def lora_named_parameters(model: nn.Module):
     return [(n, p) for n, p in model.named_parameters() if ".lora_" in n]
 
