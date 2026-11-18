@@ -44,14 +44,6 @@ def _resnet(r, h):
     return x_in + h
 
 
-def _down(d):
-    """Downsample2D：stride=2 的卷积前先 pad(0,1,0,1)。"""
-    if getattr(d, "use_conv", False):
-        return d.conv(F.pad(d.conv.weight.new_zeros(0) if False else d._dummy_input, (0, 0))
-                      ) if False else d.conv(F.pad(_down._x, (0, 1, 0, 1)))
-    return F.avg_pool2d(_down._x, 2)
-
-
 def build_autoencoder(vae_dir):
     """返回 (encoder, decoder) 两个手写前向的模块（真实权重）。"""
     from diffusers import AutoencoderKL
@@ -173,6 +165,9 @@ def main() -> int:
         y = ex.forward({"x": x.numpy()})
         n = int(np.prod(y.shape))
         yv = ex.dev.down(y.buf, y.shape).astype(np.float32)
+        if t == 1:
+            print("  forward rel vs torch %.2e"
+                  % (np.linalg.norm(yv - ref_out.numpy()) / np.linalg.norm(ref_out.numpy())))
         losses.append(float(np.mean((yv - x.numpy()) ** 2)))
         dy = (2.0 / n) * (yv - x.numpy()) * SCALE
         dyb = ex._cached("rec.dy", (n,))
