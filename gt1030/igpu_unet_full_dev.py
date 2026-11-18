@@ -326,7 +326,9 @@ def full_forward(dev, u, sample_np, timestep_np, enc_np, wc=None, verbose=True):
         atts = getattr(ub, "attentions", None) or ()
         for j, res in enumerate(ub.resnets):
             skip = skips.pop()
-            Cskip = res.conv1.in_channels - res.conv2.out_channels
+            # ★ 通道数用缓冲大小反推：up 里 hidden 的通道数不一定等于 res.conv2.out_channels，
+            #   用 in-out 之差会在深层算错，导致 conv 的 Kdim 与实际权重不符（CLBlast -1010）
+            Cskip = skip.size // 2 // (N * H * Wd)
             cat = _cat(dev, h, skip, N, c, Cskip, H, Wd)
             _free(dev, skip, h)          # skip 在 cat2 之后才释放
             c = c + Cskip
