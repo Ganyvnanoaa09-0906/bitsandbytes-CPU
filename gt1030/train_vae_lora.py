@@ -148,6 +148,9 @@ def main() -> int:
     ap.add_argument("--lora-scope", choices=["all", "boundary"], default="boundary",
                     help="all=所有 Conv；boundary=conv_in/conv_out + 每块第一个 resnet")
     ap.add_argument("--arena", type=int, default=3000)
+    ap.add_argument("--log-every", type=int, default=0,
+                    help=">0 时每 N 步写一条 CSV")
+    ap.add_argument("--log-csv", default="", help="CSV 输出路径")
     ap.add_argument("--image", default="", help="真实图片路径；空则用 torch.randn")
     a = ap.parse_args()
 
@@ -198,6 +201,9 @@ def main() -> int:
           % (ntr, nfr, ex.dev._off / 1048576))
 
     losses, ms = [], []
+    logf = open(a.log_csv, "w", buffering=1, encoding="utf-8") if a.log_csv else None
+    if logf is not None:
+        logf.write("step,loss,ms\n")
     for t in range(1, a.steps + 1):
         s = time.time()
         ex.zero_grads()

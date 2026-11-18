@@ -90,6 +90,9 @@ def main() -> int:
     ap.add_argument("--bits", type=int, default=8)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--arena", type=int, default=3000)
+    ap.add_argument("--log-every", type=int, default=0,
+                    help=">0 时每 N 步写一条 CSV")
+    ap.add_argument("--log-csv", default="", help="CSV 输出路径")
     ap.add_argument("--noise", type=float, default=0.5,
                     help="目标噪声 sigma；0.1 会让 fp16 前向误差主导 dy，对拍无意义")
     ap.add_argument(
@@ -134,6 +137,9 @@ def main() -> int:
     ex.sync_from_torch()
     td = ex.dev.up(tgt.numpy().astype(np.float16))
     dl, ms = [], []
+    logf = open(a.log_csv, "w", buffering=1, encoding="utf-8") if a.log_csv else None
+    if logf is not None:
+        logf.write("step,loss,ms\n")
     t0 = time.time()
     for t in range(1, a.steps + 1):
         s = time.time()
@@ -159,6 +165,10 @@ def main() -> int:
         ex.backward(dyb, y.shape)
         ex.step(a.lr, t, eps=1e-8 * SCALE)
         ms.append(1000 * (time.time() - s))
+        if logf is not None and a.log_every > 0 and (t == 1 or t % a.log_every == 0):
+            logf.write("%d,%.8g,%.1f\n" % (t, dl[-1], ms[-1]))
+    if logf is not None:
+        logf.close()
     dev_wall = time.time() - t0
 
     # ---------- torch 参考 ----------
