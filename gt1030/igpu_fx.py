@@ -234,7 +234,8 @@ class Executor(object):
             return False
         keep = getattr(self, "trainable_names", None)
         if keep:
-            return not any(name.startswith(k) for k in keep)
+            # prefix (conv_out.*) or module segment (blocks.0.lora_A.weight)
+            return not any(name.startswith(k) or ("." + k) in name for k in keep)
         drop = getattr(self, "frozen_modules", None)
         if drop:
             return any(name.startswith(d) for d in drop)
@@ -330,32 +331,29 @@ class Executor(object):
                     frozen=self._is_frozen(name),
                 )
 
+    def _sync_param(self, p, src):
+        """灌一个参数；冻结 P 只有 fp16 副本，没有 master。"""
+        w = np.ascontiguousarray(src.detach().cpu().numpy(), dtype=np.float32).reshape(-1)
+        if getattr(p, "frozen", False):
+            cl.enqueue_copy(self.dev.q, p.buf, w.astype(np.float16))
+            return
+        cl.enqueue_copy(self.dev.q, p.master, w)
+        cl.enqueue_copy(self.dev.q, p.buf, w.astype(np.float16))
+
     def sync_from_torch(self):
         """把 torch 当前参数灌进 device（保证同参对拍）。"""
         import torch.nn as nn
 
         for name, mod in self.gm.named_modules():
             if isinstance(mod, nn.Linear):
-                p = self.params[name + ".weight"]
-                w = mod.weight.detach().cpu().numpy().astype(np.float32)
-                cl.enqueue_copy(self.dev.q, p.master, w.reshape(-1))
-                cl.enqueue_copy(self.dev.q, p.buf, w.astype(np.float16).reshape(-1))
+                self._sync_param(self.params[name + ".weight"], mod.weight)
                 if mod.bias is not None:
-                    pb = self.params[name + ".bias"]
-                    b = mod.bias.detach().cpu().numpy().astype(np.float32)
-                    cl.enqueue_copy(self.dev.q, pb.master, b)
-                    cl.enqueue_copy(self.dev.q, pb.buf, b.astype(np.float16))
+                    self._sync_param(self.params[name + ".bias"], mod.bias)
             elif isinstance(mod, nn.Embedding):
-                p = self.params[name + ".weight"]
-                w = mod.weight.detach().cpu().numpy().astype(np.float32)
-                cl.enqueue_copy(self.dev.q, p.master, w.reshape(-1))
-                cl.enqueue_copy(self.dev.q, p.buf, w.astype(np.float16).reshape(-1))
+                self._sync_param(self.params[name + ".weight"], mod.weight)
             elif isinstance(mod, nn.LayerNorm):
-                for suffix, src in ((".gamma", mod.weight), (".beta", mod.bias)):
-                    p = self.params[name + suffix]
-                    w = src.detach().cpu().numpy().astype(np.float32)
-                    cl.enqueue_copy(self.dev.q, p.master, w.reshape(-1))
-                    cl.enqueue_copy(self.dev.q, p.buf, w.astype(np.float16).reshape(-1))
+                self._sync_param(self.params[name + ".gamma"], mod.weight)
+                self._sync_param(self.params[name + ".beta"], mod.bias)
         self.dev.q.finish()
 
     def _infer_shapes(self, sample):
