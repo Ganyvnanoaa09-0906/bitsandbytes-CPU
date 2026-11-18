@@ -1,0 +1,203 @@
+# -*- coding: utf-8 -*-
+"""igpu_unet_blocks.py — UNet 各块的**手写前向**（先做 torch 侧等价，再上设备）。
+
+为什么要手写：diffusers 的 `ResnetBlock2D` / `Transformer2DModel` 内部有大量控制流
+（`time_embedding_norm` 分支、`chunk`、`upsample` 判断），`symbolic_trace` 过不了。
+
+**与 VAE resnet 的关键差异（别直接复用）**：
+  · UNet resnet 有 `time_emb_proj(temb)`，且它加在 **conv1 之后**（不是加在 norm1 之后）；
+  · `temb` 要先过一遍 `nonlinearity`（SiLU）再进 `time_emb_proj`；
+  · 末端是 `(shortcut + h) / output_scale_factor`。
+
+    python gt1030/igpu_unet_blocks.py --check-resnet
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+
+sys.path.insert(0, r"D:\work\bitsandbytes-CPU")
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+import torch.nn.functional as F  # noqa: E402
+
+UNET = r"D:\work\textmodel\_sd15_combined\unet"
+
+
+def resnet_forward(r, x, temb):
+    """等价于 diffusers `ResnetBlock2D.forward(x, temb)`（SD1.5 的配置，非 up/down 采样）。"""
+    h = r.norm1(x)
+    h = r.nonlinearity(h)
+    if getattr(r, "conv_shortcut", None) is not None:
+        inp = r.conv_shortcut(x)
+    else:
+        inp = x
+    h = r.conv1(h)
+
+    if temb is not None and getattr(r, "time_emb_proj", None) is not None:
+        t = r.nonlinearity(temb)
+        t = r.time_emb_proj(t)[:, :, None, None]
+        h = h + t                      # ★ 加在 conv1 之后
+    h = r.norm2(h)
+    h = r.nonlinearity(h)
+    if getattr(r, "dropout", None) is not None:
+        h = r.dropout(h)
+    h = r.conv2(h)
+    return (inp + h) / r.output_scale_factor
+
+
+def check_resnet(seed=0):
+    from diffusers import UNet2DConditionModel
+
+    torch.manual_seed(seed)
+    unet = UNet2DConditionModel.from_pretrained(UNET)
+    unet.eval()
+    r = unet.down_blocks[0].resnets[0]
+    C = unet.config.block_out_channels[0]
+    x = torch.randn(2, C, 16, 16)
+    temb = torch.randn(2, unet.config.block_out_channels[-1])
+    with torch.no_grad():
+        ref = r(x, temb)
+        mine = resnet_forward(r, x, temb)
+    rel = float((mine - ref).norm() / ref.norm())
+    # 反例：把 temb 去掉，看误差是否明显变大（证明 temb 确实参与）
+    with torch.no_grad():
+        no_t = resnet_forward(r, x, None)
+    rel_no = float((no_t - ref).norm() / ref.norm())
+    print("  resnet(UNet, 含 temb): rel %.2e   （去掉 temb 后 %.2e，应显著变大）" % (rel, rel_no))
+    return rel < 1e-6 and rel_no > 1e-3
+
+
+
+
+def _sdpa_attn(a, h, enc=None):
+    """token 布局 (B,T,C) 上的多头注意力（等价 diffusers AttnProcessor2_0）。"""
+    B, T, C = h.shape
+    q = a.to_q(h)
+    k = a.to_k(h if enc is None else enc)
+    v = a.to_v(h if enc is None else enc)
+    heads = a.heads
+    dh = C // heads
+
+    def split(x):
+        return x.reshape(x.shape[0], x.shape[1], heads, dh).permute(0, 2, 1, 3)
+
+    o = torch.nn.functional.scaled_dot_product_attention(split(q), split(k), split(v))
+    o = o.permute(0, 2, 1, 3).reshape(B, q.shape[1], C)
+    o = a.to_out[0](o)
+    if len(a.to_out) > 1 and a.to_out[1] is not None:
+        o = a.to_out[1](o)
+    return o
+
+
+def _geglu_ff(ff, h):
+    """FeedForward: net[0]=GEGLU（Linear→2C 再门控）, net[1]=Dropout, net[2]=Linear。"""
+    return ff.net[2](ff.net[1](ff.net[0](h)))
+
+
+def transformer2d_forward(t, x, enc):
+    """diffusers Transformer2DModel.forward（SD1.5）：norm→proj_in→token→blocks→proj_out+残差。"""
+    residual = x
+    h = t.norm(x)
+    h = t.proj_in(h)
+    B, C, H, W = h.shape
+    h = h.flatten(2).transpose(1, 2)
+    for blk in t.transformer_blocks:
+        h = h + _sdpa_attn(blk.attn1, blk.norm1(h))
+        h = h + _sdpa_attn(blk.attn2, blk.norm2(h), enc)
+        h = h + _geglu_ff(blk.ff, blk.norm3(h))
+    h = h.transpose(1, 2).reshape(B, C, H, W)
+    h = t.proj_out(h)
+    return h + residual
+
+
+def check_transformer2d(seed=0):
+    from diffusers import UNet2DConditionModel
+
+    torch.manual_seed(seed)
+    unet = UNet2DConditionModel.from_pretrained(UNET)
+    unet.eval()
+    t = unet.down_blocks[0].attentions[0]
+    C = unet.config.block_out_channels[0]
+    L, D = 77, unet.config.cross_attention_dim
+    x = torch.randn(2, C, 16, 16)
+    enc = torch.randn(2, L, D)
+    with torch.no_grad():
+        ref = t(x, encoder_hidden_states=enc).sample
+        mine = transformer2d_forward(t, x, enc)
+    rel = float((mine - ref).norm() / ref.norm())
+    with torch.no_grad():
+        bad = transformer2d_forward(t, x, torch.zeros_like(enc))
+    rel_bad = float((bad - ref).norm() / ref.norm())
+    print("  Transformer2D(self+cross+FF): rel %.2e   （enc 置零后 %.2e，应显著变大）"
+          % (rel, rel_bad))
+    return rel < 1e-6 and rel_bad > 1e-3
+
+
+
+def downsample_forward(ds, x):
+    """Downsample2D（use_conv）：`padding == 0` 时才右下手动 pad 1 像素，否则靠 conv 自带 padding。"""
+    if getattr(ds, "padding", 0) == 0:
+        x = torch.nn.functional.pad(x, (0, 1, 0, 1))
+    return ds.conv(x)
+
+
+def down_block_forward(db, x, temb, enc):
+    """CrossAttnDownBlock2D：逐层 resnet→attention，第 0 层输出一个 skip，末端 downsample。"""
+    skips = []
+    h = x
+    for i, (res, attn) in enumerate(zip(db.resnets, db.attentions)):
+        h = resnet_forward(res, h, temb)
+        h = transformer2d_forward(attn, h, enc)
+        skips.append(h)          # 每层输出都进 skip（diffusers 实测返回 3 个：层0、层1、下采样后）
+    if getattr(db, "downsamplers", None) and len(db.downsamplers) > 0:
+        h = downsample_forward(db.downsamplers[0], h)
+        skips.append(h)
+    return h, skips
+
+
+def check_down_block0(seed=0):
+    from diffusers import UNet2DConditionModel
+
+    torch.manual_seed(seed)
+    unet = UNet2DConditionModel.from_pretrained(UNET)
+    unet.eval()
+    db = unet.down_blocks[0]
+    C = unet.config.block_out_channels[0]
+    D = unet.config.cross_attention_dim
+    x = torch.randn(2, C, 16, 16)
+    temb = torch.randn(2, unet.config.block_out_channels[-1])
+    enc = torch.randn(2, 77, D)
+    with torch.no_grad():
+        out = db(x, temb, encoder_hidden_states=enc)
+        ref_h, ref_skips = out[0], out[1]
+        mine_h, mine_skips = down_block_forward(db, x, temb, enc)
+    rel_h = float((mine_h - ref_h).norm() / ref_h.norm())
+    rel_s = [float((a - b).norm() / b.norm()) for a, b in zip(mine_skips, ref_skips)]
+    print("  down_blocks[0]: out %.2e · skip0 %.2e · skip_last %.2e · shape %s -> %s"
+          % (rel_h, rel_s[0], rel_s[-1], tuple(x.shape), tuple(mine_h.shape)))
+    return rel_h < 1e-6 and max(rel_s) < 1e-6
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--check-resnet", action="store_true")
+    ap.add_argument("--check-t2d", action="store_true")
+    ap.add_argument("--check-down0", action="store_true")
+    a = ap.parse_args()
+    if not (a.check_resnet or a.check_t2d or a.check_down0):
+        print(__doc__)
+        return 0
+    ok = True
+    if a.check_resnet:
+        ok &= check_resnet()
+    if a.check_t2d:
+        ok &= check_transformer2d()
+    if a.check_down0:
+        ok &= check_down_block0()
+    print("RESULT " + ("PASS" if ok else "FAIL"))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
