@@ -134,10 +134,13 @@ def main() -> int:
     opt = torch.optim.Adam(ref.parameters(), lr=lr_max, eps=1e-8)
     tl = []
     t0 = time.time()
+    import gt1030.igpu_graph as _G
+    _t0, _warm = max(4, a.steps // 4), 2
     for t in range(1, a.steps + 1):
+        # 与 device 侧完全同一个调度器，避免"两边 lr 轨迹不同"造成的假差异
+        lr_t = _G.sgdr_lr(t, _t0, lr_max, lr_max * 0.1, t_mult=2, warmup=_warm)[0]
         for g in opt.param_groups:
-            g["lr"] = lr_max if t <= 2 else max(
-                lr_max * 0.1, lr_max * 0.5 * (1 + np.cos(np.pi * ((t - 2) % max(4, a.steps // 4)) / max(4, a.steps // 4))))
+            g["lr"] = lr_t
         opt.zero_grad()
         loss = F.cross_entropy(ref_forward(ref, toks, a.d, nh, hd, a.bt), tgt_tbl[t])
         loss.backward()
