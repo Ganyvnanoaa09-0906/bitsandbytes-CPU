@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import os
 import sys
 
 sys.path.insert(0, r"D:\work\bitsandbytes-CPU")
@@ -37,6 +38,11 @@ import gt1030.ar_v2_multi as MM  # noqa: E402
 
 A = MM.A
 ALIGN = 4096
+
+# 累计分配的硬上限：超过它一定失败，而且实测会**静默返回全零**（T=4096 分块反向踩过）。
+# 只拦"累计超过物理上限"，不按 arena_mb 判，保留多块自动扩容的正常路径。
+# 可用环境变量 DSH_ARENA_HARD_CAP_GB 覆盖（默认 8 GB，本机实测可写到约 8 GB）。
+HARD_CAP_BYTES = int(os.environ.get("DSH_ARENA_HARD_CAP_GB", "8")) * 2 ** 30
 
 
 CHUNK_MB = 3900      # 单块上限（驱动 4.74 GB，留余量）
@@ -93,6 +99,16 @@ class DevCtx(object):
         if n > self._chunk_bytes:
             raise RuntimeError("%s 单次申请 %d 字节超过分块大小 %.0f MB"
                                % (self.name, n, self._chunk_bytes / 1048576.0))
+        # 硬上限：累计分配超过 HARD_CAP 直接报错。
+        # 为什么需要：实测 T=4096 的分块注意力反向在 arena 不足时**返回全零梯度却不报错**
+        # （静默失效），排查成本极高。这里只拦"累计超过物理上限"这种必然失败的申请，
+        # 不按 arena_mb 判（正常的多块自动扩容路径必须保留）。
+        if self._off + n > HARD_CAP_BYTES:
+            raise RuntimeError(
+                "%s 累计申请将达 %.2f GB，超过硬上限 %.2f GB（已申请 %d 块）；"
+                "请检查是否漏回收或 arena_mb 过小"
+                % (self.name, (self._off + n) / 2 ** 30, HARD_CAP_BYTES / 2 ** 30,
+                   max(self._chunk_idx + 1, 1)))
         # 当前块放不下就换块（块内不跨界，避免跨 buffer 造 sub_region）
         if self._chunk_idx < 0 or self._chunk_off + n > self._chunk_bytes:
             self._chunk_idx += 1
