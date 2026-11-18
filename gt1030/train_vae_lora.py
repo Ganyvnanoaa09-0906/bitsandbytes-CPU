@@ -145,7 +145,7 @@ def main() -> int:
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--bits", type=int, default=8)
     ap.add_argument("--lora-r", type=int, default=0, help=">0 时给 Conv2d 挂 LoRA 并冻结底座")
-    ap.add_argument("--lora-scope", choices=["all", "boundary"], default="all",
+    ap.add_argument("--lora-scope", choices=["all", "boundary"], default="boundary",
                     help="all=所有 Conv；boundary=conv_in/conv_out + 每块第一个 resnet")
     ap.add_argument("--arena", type=int, default=3000)
     ap.add_argument("--image", default="", help="真实图片路径；空则用 torch.randn")
