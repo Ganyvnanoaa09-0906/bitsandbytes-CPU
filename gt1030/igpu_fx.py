@@ -595,6 +595,48 @@ class Executor(object):
                 N, C, H, W = x.shape
                 OH = (H + 2 * meta["ph"] - meta["kh"]) // meta["sh"] + 1
                 OW = (W + 2 * meta["pw"] - meta["kw"]) // meta["sw"] + 1
+                p = self.params[node.target + ".weight"]
+                pb = self.params.get(node.target + ".bias")
+                if node.target.endswith("conv_out") or node.target.endswith(
+                    "conv_out.base"
+                ):
+                    # fp32 输出头：只把 conv_out 的单层计算/梯度放 CPU fp32，
+                    # 进出边界仍是一次 half 拷贝；其余网络保持设备 fp16。
+                    import torch
+                    import torch.nn.functional as F
+
+                    x_np = self.dev.down(x.buf, x.shape).astype(np.float32)
+                    w_np = self.dev.down(
+                        p.master if not p.frozen else p.buf, p.shape
+                    ).astype(np.float32)
+                    b_np = (
+                        self.dev.down(
+                            pb.master if not pb.frozen else pb.buf, pb.shape
+                        ).astype(np.float32)
+                        if pb is not None
+                        else None
+                    )
+                    with torch.no_grad():
+                        yv = F.conv2d(
+                            torch.from_numpy(x_np),
+                            torch.from_numpy(w_np.reshape(
+                                meta["oc"], meta["c"], meta["kh"], meta["kw"]
+                            )),
+                            torch.from_numpy(b_np) if b_np is not None else None,
+                            stride=(meta["sh"], meta["sw"]),
+                            padding=(meta["ph"], meta["pw"]),
+                        ).numpy()
+                    out = self._node_buf(node.name, (N, meta["oc"], OH, OW))
+                    cl.enqueue_copy(
+                        self.dev.q, out.buf, np.ascontiguousarray(yv.reshape(-1), np.float16)
+                    )
+                    self.recs.append(
+                        ("conv2d_host", node.name, x, p, pb,
+                         (x_np, w_np, b_np, meta, (N, meta["oc"], OH, OW)))
+                    )
+                    self.env[node.name] = out
+                    self.dev.q.finish()
+                    return
                 if not hasattr(self, "_convs"):
                     self._convs = {}
                 key = (node.name, N, C, H, W)
@@ -875,6 +917,49 @@ class Executor(object):
                 g_src = self._cached("bwd.view.g." + name, x_src.shape)
                 cl.enqueue_copy(self.dev.q, g_src, g)
                 self._propagate(pending, x_src, g_src)
+            elif kind == "conv2d_host":
+                import torch
+                import torch.nn.functional as F
+
+                x, p, pb, (x_np, w_np, b_np, meta, oshape) = (
+                    rec[2], rec[3], rec[4], rec[5]
+                )
+                dy_np = self.dev.down(g, oshape).astype(np.float32)
+                tx = torch.from_numpy(x_np).requires_grad_(True)
+                tw = torch.from_numpy(w_np).requires_grad_(True)
+                tw_conv = tw.reshape(
+                    meta["oc"], meta["c"], meta["kh"], meta["kw"]
+                )
+                tb = (
+                    torch.from_numpy(b_np).requires_grad_(True)
+                    if b_np is not None
+                    else None
+                )
+                ty = F.conv2d(
+                    tx, tw_conv, tb,
+                    stride=(meta["sh"], meta["sw"]),
+                    padding=(meta["ph"], meta["pw"]),
+                )
+                ty.backward(torch.from_numpy(dy_np))
+                dx = self._cached("bwd.convhost.dx." + name, x.shape)
+                cl.enqueue_copy(
+                    self.dev.q, dx,
+                    np.ascontiguousarray(tx.grad.numpy().reshape(-1), np.float16),
+                )
+                dw = self._cached("bwd.convhost.dw." + name, p.shape)
+                cl.enqueue_copy(
+                    self.dev.q, dw,
+                    np.ascontiguousarray(tw.grad.numpy().reshape(-1), np.float16),
+                )
+                self._acc_param(p, dw)
+                if pb is not None and tb is not None:
+                    db = self._cached("bwd.convhost.db." + name, pb.shape)
+                    cl.enqueue_copy(
+                        self.dev.q, db,
+                        np.ascontiguousarray(tb.grad.numpy().reshape(-1), np.float16),
+                    )
+                    self._acc_param(pb, db)
+                self._propagate(pending, x, dx)
             elif kind == "conv2d":
                 import gt1030.igpu_conv as CV
 
