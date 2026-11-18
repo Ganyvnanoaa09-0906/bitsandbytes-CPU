@@ -36,6 +36,16 @@ def _mb(dev):
     return max(dev._peak, dev._off) / 2 ** 20
 
 
+def _probe(dev, name, buf, shape):
+    import os
+
+    if not os.environ.get("DSH_PROBE"):
+        return
+    arr = dev.down(buf, shape).astype(np.float32)
+    print("    [probe] %-8s mean %+.5f std %.5f max %.5f"
+          % (name, arr.mean(), arr.std(), np.abs(arr).max()))
+
+
 def _free(dev, *bufs):
     """释放；同一对象只释放一次（up 的第一个 skip 可能与 mid 输出是同一缓冲）。"""
     seen = set()
@@ -309,6 +319,7 @@ def full_forward(dev, u, sample_np, timestep_np, enc_np, wc=None, verbose=True):
             h = nxt
             c = ups[0].conv.out_channels
             skips.append(h)
+        _probe(dev, "down%d" % i, h, (N, c, H, Wd))
         _note(dev, "down%d" % i)
 
     mid = u.mid_block
@@ -320,6 +331,7 @@ def full_forward(dev, u, sample_np, timestep_np, enc_np, wc=None, verbose=True):
     prev = h
     h, c = _resnet(dev, mid.resnets[1], prev, temb, tembD, N, c, H, Wd, wc)
     _free(dev, prev)
+    _probe(dev, "mid", h, (N, c, H, Wd))
     _note(dev, "mid")
 
     for i, ub in enumerate(u.up_blocks):
@@ -345,14 +357,27 @@ def full_forward(dev, u, sample_np, timestep_np, enc_np, wc=None, verbose=True):
             _free(dev, prev)
             H, Wd = H * 2, Wd * 2
             c = ups[0].conv.out_channels
+        _probe(dev, "up%d" % i, h, (N, c, H, Wd))
         _note(dev, "up%d" % i)
 
+    import os as _os
+
+    def _stat(name, buf, shape):
+        if not _os.environ.get("DSH_DEBUG_TAIL"):
+            return
+        arr = dev.down(buf, shape).astype(np.float32)
+        print("    [tail] %-4s mean %.5f std %.5f max %.5f" % (name, arr.mean(), arr.std(), np.abs(arr).max()))
+
+    _stat("h", h, (N, c, H, Wd))
     y = _buf(dev, N * c * H * Wd)
     _gn(dev, h, wc.arr(u.conv_norm_out.weight), wc.arr(u.conv_norm_out.bias), y,
         N, c, H, Wd, u.conv_norm_out.num_groups, float(u.conv_norm_out.eps))
+    _stat("y_gn", y, (N, c, H, Wd))
     s = _silu(dev, y, N * c * H * Wd)
+    _stat("s", s, (N, c, H, Wd))
     wco, bco = wc.lin(u.conv_out)
     out, _, _ = _conv(dev, s, wco, bco, N, c, H, Wd, u.conv_out.out_channels)
+    _stat("out", out, (N, u.conv_out.out_channels, H, Wd))
     dev.q.finish()
     _note(dev, "conv_out")
     if verbose:
