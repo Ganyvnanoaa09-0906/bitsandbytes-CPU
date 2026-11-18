@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
 """train_vae_lora.py — VAE **encoder + decoder 重建任务**骨架（真实 SD1.5 权重）。
 
-给 LoRA 用的底座：`--lora-r` 由 `igpu_lora.wrap_lora` 接管（见 peer commit 196e9509）。
+**定位**：这是"编解码重建"的 demo/骨架，**不重复实现 LoRA 数学**——
+`--lora-r` 直接调用 `igpu_lora.wrap_lora`（唯一实现，commit 196e9509）。
+LoRA 在**编码器任务**上的正式入口是 `train_real_vae.py --lora-r`（默认 noise 0.5，
+高信噪比下 device/torch 相对差 7.3%）。
 
-    python gt1030/train_vae_lora.py --steps 20 --size 64
+    python gt1030/train_vae_lora.py --steps 20 --size 64 [--lora-r 4]
 
 注意：SD1.5 decoder 的 `mid_block.attentions`（全注意力）**没有接**——设备路径目前只有
 因果注意力，且需要 token 布局转换；这里跳过该子块，其余 49.5M-1.05M 参数全部参与。
