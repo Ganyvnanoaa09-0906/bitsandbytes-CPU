@@ -134,6 +134,66 @@ __kernel void crop01(__global const half* src, __global half* dst,
     dst[i] = src[nc * (long)Hp * Wp + (long)h * Wp + w];
 }
 
+
+// nearest ×2 上采样：(N,C,H,W) → (N,C,2H,2W)
+__kernel void upsample2x(__global const half* src, __global half* dst,
+                         int N, int C, int H, int W) {
+    long i = get_global_id(0);
+    int H2 = H * 2, W2 = W * 2;
+    long total = (long)N * C * H2 * W2;
+    if (i >= total) return;
+    int w2 = i % W2, t = i / W2;
+    int h2 = t % H2;
+    long nc = t / H2;
+    dst[i] = src[nc * (long)H * W + (long)(h2 >> 1) * W + (w2 >> 1)];
+}
+
+// 上采样的反向：2×2 块求和回原尺寸
+__kernel void downsample_sum2x(__global const half* src, __global half* dst,
+                               int N, int C, int H, int W) {
+    long i = get_global_id(0);
+    long total = (long)N * C * H * W;
+    if (i >= total) return;
+    int w = i % W, t = i / W;
+    int h = t % H;
+    long nc = t / H;
+    long base = nc * (long)(H * 2) * (W * 2);
+    int W2 = W * 2;
+    float acc = 0.f;
+    for (int dh = 0; dh < 2; ++dh)
+        for (int dw = 0; dw < 2; ++dw)
+            acc += (float)src[base + (long)(h * 2 + dh) * W2 + (w * 2 + dw)];
+    dst[i] = (half)acc;
+}
+
+
+// 通道切片 (N,C,H,W) → (N,CN,H,W)，取 [start, start+CN)
+__kernel void chan_slice(__global const half* src, __global half* dst,
+                         int N, int C, int CN, int HW, int start) {
+    long i = get_global_id(0);
+    long total = (long)N * CN * HW;
+    if (i >= total) return;
+    int n = (int)(i / ((long)CN * HW));
+    long rest = i % ((long)CN * HW);
+    long c = rest / HW;
+    dst[i] = src[(long)n * C * HW + (start + c) * (long)HW + (rest % HW)];
+}
+
+// 反向：把 d(切片) 写回原张量的对应通道，其余置零
+__kernel void chan_scatter(__global const half* dsrc, __global half* ddst,
+                           int N, int C, int CN, int HW, int start) {
+    long i = get_global_id(0);
+    long total = (long)N * C * HW;
+    if (i >= total) return;
+    int n = (int)(i / ((long)C * HW));
+    long rest = i % ((long)C * HW);
+    long c = rest / HW;
+    if (c >= start && c < start + CN)
+        ddst[i] = dsrc[(long)n * CN * HW + (c - start) * (long)HW + (rest % HW)];
+    else
+        ddst[i] = (half)0.f;
+}
+
 // y += bias[o]
 __kernel void bias_add_oc(__global half* y, __global const half* b, int M, int OC) {
     int m = get_global_id(0), o = get_global_id(1);
@@ -172,6 +232,10 @@ def K(dev):
                 "nchw2nhwc",
                 "pad01",
                 "crop01",
+                "upsample2x",
+                "downsample_sum2x",
+                "chan_slice",
+                "chan_scatter",
             )
         }
     return _C[key]

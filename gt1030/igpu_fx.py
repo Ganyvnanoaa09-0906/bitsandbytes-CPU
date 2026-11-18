@@ -473,6 +473,47 @@ class Executor(object):
         import torch.nn as nn
         import torch.fx as fx
 
+        if node.op == "call_function" and getattr(node.target, "__name__", "") == "getitem":
+            import gt1030.igpu_conv as CV
+            x = self._arg(node.args[0])
+            idx = node.args[1]
+            sel = idx[0] if isinstance(idx, tuple) and len(idx) == 1 else idx
+            if isinstance(sel, tuple):
+                sl = sel[1] if len(sel) > 1 else slice(None)
+            else:
+                sl = sel
+            if not isinstance(sl, slice) or len(x.shape) != 4:
+                raise SystemExit("FX: getitem 只支持 4D 张量的通道切片，收到 %r" % (idx,))
+            N, C, H, W = x.shape
+            start = int(sl.start or 0)
+            stop = int(sl.stop if sl.stop is not None else C)
+            CN = stop - start
+            out = self._node_buf(node.name, (N, CN, H, W))
+            CV.K(self.dev)["chan_slice"](self.dev.q, (N * CN * H * W,), None,
+                                         x.buf, out.buf, np.int32(N), np.int32(C),
+                                         np.int32(CN), np.int32(H * W), np.int32(start))
+            self.recs.append(("chan_slice", node.name, x, (start, CN)))
+            self.env[node.name] = out
+            return out
+        if (node.op == "call_function"
+                and getattr(node.target, "__name__", "") in ("interpolate", "upsample_nearest2d")):
+            import gt1030.igpu_conv as CV
+            x = self._arg(node.args[0])
+            scale = node.kwargs.get("scale_factor", 2.0)
+            if isinstance(scale, (tuple, list)):
+                scale = scale[0]
+            mode = node.kwargs.get("mode", "nearest")
+            if float(scale) != 2.0 or mode != "nearest":
+                raise SystemExit("FX: interpolate 目前只支持 scale=2 / nearest，收到 %r/%r"
+                                 % (scale, mode))
+            N, C, H, W = x.shape
+            out = self._node_buf(node.name, (N, C, H * 2, W * 2))
+            CV.K(self.dev)["upsample2x"](self.dev.q, (N * C * H * 2 * W * 2,), None,
+                                         x.buf, out.buf, np.int32(N), np.int32(C),
+                                         np.int32(H), np.int32(W))
+            self.recs.append(("upsample2x", node.name, x))
+            self.env[node.name] = out
+            return out
         if node.op == "call_function" and getattr(node.target, "__name__", "") == "pad":
             import gt1030.igpu_conv as CV
 
