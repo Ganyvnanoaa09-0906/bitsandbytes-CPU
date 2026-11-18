@@ -39,6 +39,9 @@ A = MM.A
 ALIGN = 4096
 
 
+CHUNK_MB = 3900      # 单块上限（驱动 4.74 GB，留余量）
+
+
 class DevCtx(object):
     """一个 context + 一条 queue + 一个 arena；所有张量都是 arena 的 sub-buffer。"""
 
@@ -48,10 +51,15 @@ class DevCtx(object):
         self.ctx = cl.Context(devices=[dev])
         self.q = cl.CommandQueue(self.ctx)
         self.mf = cl.mem_flags
-        self.arena = cl.Buffer(self.ctx, self.mf.READ_WRITE, int(arena_mb) << 20)
-        self._off = 0
-        self._n = 0
+        # 多 arena：单块 ≤ CHUNK_MB，按需申请（驱动单 buffer 上限 4.74 GB）
         self._mb = int(arena_mb)
+        self._chunk_bytes = min(int(arena_mb) << 20, int(CHUNK_MB) << 20)
+        self.arenas = []          # [cl.Buffer, ...]
+        self._chunk_off = 0       # 当前块内偏移
+        self._chunk_idx = -1
+        self._off = 0             # 全局已用字节（统计用）
+        self._n = 0
+        self._ensure_chunk(0)
 
     # ---- 生命周期 ----
     def activate(self):
@@ -64,12 +72,34 @@ class DevCtx(object):
         return self
 
     # ---- 内存 ----
+    # ---- 多 arena ----
+    def _ensure_chunk(self, idx):
+        """确保第 idx 块已申请；返回该块。"""
+        while len(self.arenas) <= idx:
+            if len(self.arenas) * self._chunk_bytes >= (self._mb << 20) + self._chunk_bytes:
+                raise RuntimeError("%s arena 不够：已申请 %d 块 × %.0f MB，总量超过 %d MB"
+                                   % (self.name, len(self.arenas),
+                                      self._chunk_bytes / 1048576.0, self._mb))
+            try:
+                self.arenas.append(cl.Buffer(self.ctx, self.mf.READ_WRITE, self._chunk_bytes))
+            except Exception as error:
+                raise RuntimeError("%s arena 申请失败（第 %d 块，%.0f MB）：%r"
+                                   % (self.name, len(self.arenas),
+                                      self._chunk_bytes / 1048576.0, error))
+        return self.arenas[idx]
+
     def buf(self, nbytes):
         n = (int(nbytes) + ALIGN - 1) // ALIGN * ALIGN
-        if self._off + n > self.arena.size:
-            raise RuntimeError("%s arena 不够：需要 %d，已用 %d / %d"
-                               % (self.name, n, self._off, self.arena.size))
-        b = self.arena.get_sub_region(self._off, n)
+        if n > self._chunk_bytes:
+            raise RuntimeError("%s 单次申请 %d 字节超过分块大小 %.0f MB"
+                               % (self.name, n, self._chunk_bytes / 1048576.0))
+        # 当前块放不下就换块（块内不跨界，避免跨 buffer 造 sub_region）
+        if self._chunk_idx < 0 or self._chunk_off + n > self._chunk_bytes:
+            self._chunk_idx += 1
+            self._chunk_off = 0
+        arena = self._ensure_chunk(self._chunk_idx)
+        b = arena.get_sub_region(self._chunk_off, n)
+        self._chunk_off += n
         self._off += n
         self._n += 1
         return b
@@ -94,7 +124,8 @@ class DevCtx(object):
     # ---- 统计 ----
     def stats(self):
         return {"name": self.name, "buffers": self._n,
-                "arena_mb": self._mb, "used_mb": round(self._off / 1048576.0, 1)}
+                "arena_mb": self._mb, "used_mb": round(self._off / 1048576.0, 1),
+            "chunks": len(self.arenas)}
 
     def __repr__(self):
         return "DevCtx(%s, buffers=%d, used=%.1f/%d MB)" % (
