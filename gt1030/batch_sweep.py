@@ -91,12 +91,14 @@ def arena_for(spec):
     return int(max(600, (nparam * 16 + act) * 1.6 / (1 << 20)))
 
 
-def run_one(spec, steps, lr_max=1e-3, bits=8, muon=False, seed=0):
+def run_one(spec, steps, lr_max=1e-3, bits=8, muon=False, seed=0, resample=False):
     d, nh, hd, bt, vocab = spec["d"], spec["nh"], spec["hd"], spec["bt"], spec["vocab"]
     torch.manual_seed(seed)
     model = Stack(spec["layers"], d, nh, hd, vocab)
     toks = torch.randint(0, vocab, (bt,))
     tgt = torch.randint(0, vocab, (bt,))
+    # resample=True 时每步换一批 token/target（真·质量曲线，而不是把单批背下来）
+    rng_np = np.random.default_rng(seed + 12345)
     ex = FX.Executor(model, toks, state_bits=bits, muon=muon,
                      arena_mb=arena_for(spec))
     ex.sync_from_torch()
@@ -110,8 +112,16 @@ def run_one(spec, steps, lr_max=1e-3, bits=8, muon=False, seed=0):
     losses = []
     t0 = time.time()
     for t in range(1, steps + 1):
+        if resample:
+            toks_np = rng_np.integers(0, vocab, size=(bt,), dtype=np.int64)
+            tgt_np = rng_np.integers(0, vocab, size=(bt,), dtype=np.int64)
+            cl.enqueue_copy(ex.dev.q, td,
+                            np.ascontiguousarray(tgt_np, dtype=np.int32))
+            toks = torch.from_numpy(toks_np)
+        else:
+            toks_np = toks.numpy() if isinstance(toks, torch.Tensor) else toks
         ex.zero_grads()
-        logits = ex.forward({"tokens": toks.numpy()})
+        logits = ex.forward({"tokens": toks_np})
         OPS2.ce_forward(ex.dev, logits.buf, td, lb, gb, bt, vocab, 1.0 / bt, SCALE)
         ex.dev.q.finish()
         losses.append(float(ex.dev.down(lb, (bt,), np.float32).mean()))
@@ -134,6 +144,8 @@ def main() -> int:
     ap.add_argument("--bits", type=int, default=8)
     ap.add_argument("--muon", action="store_true")
     ap.add_argument("--no-pool", action="store_true")
+    ap.add_argument("--resample", action="store_true",
+                    help="每步换 tokens/targets（质量曲线；不加则固定单批，只适合测速）")
     a = ap.parse_args()
 
     if a.list:
@@ -154,7 +166,8 @@ def main() -> int:
         log = os.path.join(OUT, spec["name"] + ".log")
         t0 = time.time()
         try:
-            res = run_one(spec, a.steps, bits=a.bits, muon=a.muon)
+            res = run_one(spec, a.steps, bits=a.bits, muon=a.muon,
+                          resample=a.resample)
         except Exception as error:
             res = dict(name=spec["name"], error=repr(error))
         res["wall_s"] = round(time.time() - t0, 1)
