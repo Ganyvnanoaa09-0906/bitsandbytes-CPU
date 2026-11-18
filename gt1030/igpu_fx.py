@@ -166,6 +166,9 @@ class Executor(object):
     def __init__(self, model, sample, arena_mb=900, name="fx", state_bits=32,
                  muon=False, muon_lr=None, muon_wd=0.0, muon_momentum=0.95):
         self.state_bits = state_bits
+        # auto_zero_grads：优化器 kernel 读完梯度顺手写 0，跳过每参数一次的清零 copy。
+        # 注意：Muon 路径尚未在 kernel 内清零，启用 muon 时本开关自动失效。
+        self.auto_zero_grads = False
         self.schedule = None       # set_schedule(...) 之后 step() 可以不传 lr
         self.use_muon = muon
         # 实测：muon_lr=0.02 在 64-vocab 小 LM 上 12 步内 NaN；安全区 ≤0.005
@@ -557,6 +560,9 @@ class Executor(object):
 
     # ---------------- 优化器 ----------------
     def zero_grads(self):
+        """清空梯度。auto_zero_grads=True 时优化器 kernel 已代为清零，这里直接跳过。"""
+        if self.auto_zero_grads and not self.use_muon:
+            return
         for p in self.params.values():
             p.zero_grad()
 

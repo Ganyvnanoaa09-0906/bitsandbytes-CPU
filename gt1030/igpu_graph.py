@@ -58,7 +58,7 @@ __kernel void mse_grad_h(__global const half* y, __global const half* t, __globa
 }
 // AdamW（fp32 master + fp16 副本，梯度可以是缩放过的）——自带实现，避免依赖 MM.KSRC
 __kernel void adamw1(__global float* w, __global float* m, __global float* v,
-                     __global const half* g, __global half* wh, int n,
+                     __global half* g, __global half* wh, int n,
                      float lr, float b1, float b2, float eps, float wd, int t) {
     int i = get_global_id(0);
     if (i >= n) return;
@@ -70,13 +70,14 @@ __kernel void adamw1(__global float* w, __global float* m, __global float* v,
     float upd = lr * (m[i] / bc1) / (sqrt(v[i] / bc2) + eps);
     w[i] = w[i] - upd - lr * wd * w[i];
     wh[i] = (half)w[i];
+    g[i] = (half)0.f;                     // grad_consumed
 }
 
 
 // 8-bit 状态 AdamW：每 workgroup 处理一个 block(256)，m/v 为 int8 码，absmax 为 fp32
 __kernel void adamw1_q8(__global float* w, __global uchar* m8, __global uchar* v8,
                         __global float* amax_m, __global float* amax_v,
-                        __global const half* g, __global half* wh, int n,
+                        __global half* g, __global half* wh, int n,
                         float lr, float b1, float b2, float eps, float wd,
                         float bc1r, float bc2r) {
     int blk = get_group_id(0), lid = get_local_id(0), lsz = get_local_size(0);
@@ -114,6 +115,7 @@ __kernel void adamw1_q8(__global float* w, __global uchar* m8, __global uchar* v
           float upd = lr * (nm * bc1r) / (sqrt(nv) * bc2r + eps);
         w[i] = w[i] - upd - lr * wd * w[i];
         wh[i] = (half)w[i];
+        g[i] = (half)0.f;              // grad_consumed（省一次清零 copy）
         // uchar 编码：0..255 表示 -1..+1（128 = 0）；NaN/Inf 一律落回中性值
         float cm = isfinite(nm) && isfinite(sm) ? round(nm / sm * 127.f) + 128.f : 128.f;
         float cv = isfinite(nv) && isfinite(sv) ? round(nv / sv * 127.f) + 128.f : 128.f;
@@ -132,7 +134,7 @@ inline float nib4_get(__global const uchar* buf, long i, float am) {
 
 __kernel void adamw1_q4(__global float* w, __global uchar* m4, __global uchar* v4,
                         __global float* amax_m, __global float* amax_v,
-                        __global const half* g, __global half* wh, int n,
+                        __global half* g, __global half* wh, int n,
                         float lr, float b1, float b2, float eps, float wd,
                         float bc1r, float bc2r) {
     int blk = get_group_id(0), lid = get_local_id(0), lsz = get_local_size(0);
@@ -153,6 +155,7 @@ __kernel void adamw1_q4(__global float* w, __global uchar* m4, __global uchar* v
         float upd = lr * (nm * bc1r) / (sqrt(nv) * bc2r + eps);
         w[i] = w[i] - upd - lr * wd * w[i];
         wh[i] = (half)w[i];
+        g[i] = (half)0.f;              // grad_consumed（省一次清零 copy）
     }
     redm[lid] = fabs(nm);
     redv[lid] = fabs(nv);
