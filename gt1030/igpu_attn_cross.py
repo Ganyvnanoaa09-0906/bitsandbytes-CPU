@@ -8,6 +8,9 @@ Current prototype is forward-only (no backward); it reuses CLBlast Hgemm and
 one softmax kernel. S is (Rq, Rk), tiny for the UNet cross-attn (Rq=8192, Rk=154).
 
     python gt1030/igpu_attn_cross.py --check
+// 每行在**本样本的 Tk 窗口**内求 sum_j dP_ij * P_ij（矩形 cross-attn 专用）
+
+// dS = P * (dP - rs) * scale，只在窗口内有意义（窗口外 P=0，自动为 0）
 """
 from __future__ import annotations
 
@@ -44,6 +47,26 @@ __kernel void softmax_cross(__global const half* s, __global half* p,
             p[base + j] = (half)0.f;
     }
 }
+
+__kernel void rowsum_window(__global const half* dp, __global const half* p,
+                            __global float* rs, int Rq, int Tk, int N) {
+    int row = get_global_id(0);
+    if (row >= Rq) return;
+    int sample = row / (Rq / N);
+    long base = (long)row * (long)(Tk * N) + (long)sample * Tk;
+    float acc = 0.f;
+    for (int j = 0; j < Tk; ++j) acc += (float)dp[base + j] * (float)p[base + j];
+    rs[row] = acc;
+}
+__kernel void ds_window(__global const half* dp, __global const half* p,
+                        __global const float* rs, __global half* ds,
+                        int Rq, int Rk, float scale) {
+    long idx = get_global_id(0);
+    if (idx >= (long)Rq * Rk) return;
+    int row = (int)(idx / Rk);
+    ds[idx] = (half)((float)p[idx] * ((float)dp[idx] - rs[row]) * scale);
+}
+
 """
 
 _C = {}
@@ -54,7 +77,10 @@ def K(dev):
     if key not in _C:
         prog = cl.Program(dev.ctx, SRC).build(
             options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
-        _C[key] = {"softmax_cross": cl.Kernel(prog, "softmax_cross")}
+        _C[key] = {
+            n: cl.Kernel(prog, n)
+            for n in ("softmax_cross", "rowsum_window", "ds_window")
+        }
     return _C[key]
 
 
@@ -83,6 +109,23 @@ class CrossAttn(object):
         self.p = dev.buf(max(4096, self.Rq * self.Rk * 2))
         self.ot = dev.buf(max(4096, self.Rq * self.Cq * 2))
         self.out = dev.buf(max(4096, self.Rq * self.Cq * 2))
+        self.do = dev.buf(max(4096, self.Rq * self.Cq * 2))
+        self.dot = dev.buf(max(4096, self.Rq * self.Cq * 2))
+        self.dp = dev.buf(max(4096, self.Rq * self.Rk * 2))
+        self.ds = dev.buf(max(4096, self.Rq * self.Rk * 2))
+        self.rs = dev.buf(max(4096, self.Rq * 4))
+        self.dq = dev.buf(max(4096, self.Rq * self.Cq * 2))
+        self.dk = dev.buf(max(4096, self.Rk * self.Cq * 2))
+        self.dv = dev.buf(max(4096, self.Rk * self.Cq * 2))
+        self.dtok = dev.buf(max(4096, self.Rq * self.Cq * 2))
+        self.dwq = dev.buf(max(4096, self.Cq * self.Cq * 2))
+        self.dwk = dev.buf(max(4096, self.Cq * self.Ck * 2))
+        self.dwv = dev.buf(max(4096, self.Cq * self.Ck * 2))
+        self.dwo = dev.buf(max(4096, self.Cq * self.Cq * 2))
+        self.dbq = dev.buf(max(4096, self.Cq * 2))
+        self.dbk = dev.buf(max(4096, self.Cq * 2))
+        self.dbv = dev.buf(max(4096, self.Cq * 2))
+        self.dbo = dev.buf(max(4096, self.Cq * 2))
 
     def set_weights(self, q, k, v, o, qb=None, kb=None, vb=None, ob=None):
         for buf, w in ((self.q, q), (self.k, k), (self.v, v), (self.o, o)):
@@ -123,6 +166,40 @@ class CrossAttn(object):
                              np.int32(N), np.int32(Cq), np.int32(self.H), np.int32(self.W))
         return dst
 
+
+
+    def backward(self, dy_nchw):
+        """dy_nchw: (N,Cq,H,W) half。返回 dx；权重/偏置梯度写在 self.d*。"""
+        import gt1030.igpu_ops2 as _OPS2
+
+        d = self.dev
+        N, Cq, Ck, Tq, Tk = self.N, self.Cq, self.Ck, self.Tq, self.Tk
+        Rq, Rk = self.Rq, self.Rk
+        CV.K(d)["nchw2nhwc"](d.q, (Rq * Cq,), None, dy_nchw, self.do,
+                             np.int32(N), np.int32(Cq), np.int32(self.H), np.int32(self.W))
+        GEMM.hgemm_tn(self.do, self.ot, self.dwo, Cq, Cq, Rq)
+        GEMM.hgemm_nn(self.do, self.o, self.dot, Rq, Cq, Cq)
+        GEMM.hgemm_nt(self.dot, self.vt, self.dp, Rq, Rk, Cq)
+        GEMM.hgemm_tn(self.p, self.dot, self.dv, Rk, Cq, Rq)
+        K(d)["rowsum_window"](d.q, (Rq,), None, self.dp, self.p, self.rs,
+                              np.int32(Rq), np.int32(Tk), np.int32(N))
+        K(d)["ds_window"](d.q, (Rq * Rk,), None, self.dp, self.p, self.rs, self.ds,
+                          np.int32(Rq), np.int32(Rk), np.float32(self.scale))
+        GEMM.hgemm_nn(self.ds, self.kt, self.dq, Rq, Cq, Rk)
+        GEMM.hgemm_tn(self.ds, self.qt, self.dk, Rk, Cq, Rq)
+        GEMM.hgemm_tn(self.dq, self.xq, self.dwq, Cq, Cq, Rq)
+        GEMM.hgemm_tn(self.dk, self.xk, self.dwk, Cq, Ck, Rk)
+        GEMM.hgemm_tn(self.dv, self.xk, self.dwv, Cq, Ck, Rk)
+        _OPS2.col_sum(d, self.dq, self.dbq, Rq, Cq)
+        _OPS2.col_sum(d, self.dk, self.dbk, Rk, Cq)
+        _OPS2.col_sum(d, self.dv, self.dbv, Rk, Cq)
+        _OPS2.col_sum(d, self.do, self.dbo, Rq, Cq)
+        GEMM.hgemm_nn(self.dq, self.q, self.dtok, Rq, Cq, Cq)
+        if not hasattr(self, "dxb"):
+            self.dxb = d.buf(max(4096, Rq * Cq * 2))
+        CV.K(d)["nhwc2nchw"](d.q, (Rq * Cq,), None, self.dtok, self.dxb,
+                             np.int32(N), np.int32(Cq), np.int32(self.H), np.int32(self.W))
+        return self.dxb
 
 def check(n=2, cq=320, ck=768, h=4, w=4, tk=7, seed=0):
     import torch
