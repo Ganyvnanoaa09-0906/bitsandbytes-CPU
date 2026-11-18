@@ -85,6 +85,13 @@ def K(dev):
 
 
 class CrossAttn(object):
+    """矩形 cross-attention（Tq != Tk）。
+
+    TODO(known issue): 在**自注意力配置（Tq == Tk）**下输出与 torch 不符（实测 rel 1.40）。
+    已定位到 forward() 末尾的 nhwc2nchw 转换结果与 NHWC 缓冲不一致，但未深挖。
+    ⇒ self-attention 请用 igpu_attn_chunk.attn_chunked / attn_chunked_heads（token 布局、
+      已验到 T=4096，含反向），不要拿本类当通用 attention 用。
+    """
     def __init__(self, dev, n, cq, ck, h, w, tk):
         self.dev = dev
         self.N, self.Cq, self.Ck = int(n), int(cq), int(ck)

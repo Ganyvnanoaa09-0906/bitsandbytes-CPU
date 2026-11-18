@@ -29,6 +29,23 @@ SRC = r"""
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
 
 // 分块反向：矩形 bq×Tk，不假设方阵
+
+// 矩形 softmax：S 是 (n_rows, Tk) 的连续块，逐行在整行 Tk 上归一化
+// （chunked 调用时每个块只含一个样本，所以窗口 = 整行）
+__kernel void softmax_rect(__global const half* s, __global half* p,
+                           int n_rows, int Tk, float scale) {
+    long row = get_global_id(0);
+    if (row >= n_rows) return;
+    long base = row * Tk;
+    float mx = -INFINITY;
+    for (int j = 0; j < Tk; ++j) mx = fmax(mx, (float)s[base + j] * scale);
+    float sum = 0.f;
+    for (int j = 0; j < Tk; ++j) sum += exp((float)s[base + j] * scale - mx);
+    float inv = 1.f / sum;
+    for (int j = 0; j < Tk; ++j)
+        p[base + j] = (half)(exp((float)s[base + j] * scale - mx) * inv);
+}
+
 __kernel void chunk_rowsum(__global const half* dp, __global const half* p,
                            __global float* rs, int n_rows, int Tk) {
     int r = get_global_id(0);
@@ -80,7 +97,8 @@ def CK(dev):
     if key not in _C:
         prog = cl.Program(dev.ctx, SRC).build(
             options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
-        _C[key] = {n: cl.Kernel(prog, n) for n in ("chunk_rowsum", "chunk_ds", "head_split", "head_merge")}
+        _C[key] = {n: cl.Kernel(prog, n) for n in ("chunk_rowsum", "chunk_ds", "head_split", "head_merge",
+                      "softmax_rect")}
     return _C[key]
 
 
@@ -118,8 +136,8 @@ def attn_chunked(dev, q_buf, k_buf, v_buf, o_buf, B, Tq, Tk, C, bq=512):
             cl.enqueue_copy(dev.q, tmpq, q_buf,
                             src_offset=(qbase + done * C) * 2, byte_count=rows * C * 2)
             GEMM.hgemm_nt(tmpq, tmpk, sb, rows, Tk, C)
-            FULLK(dev)["softmax_window"](dev.q, (rows,), None, sb, pb,
-                                         np.int32(1), np.int32(Tk), np.float32(scale))
+            CK(dev)["softmax_rect"](dev.q, (rows,), None, sb, pb,
+                                    np.int32(rows), np.int32(Tk), np.float32(scale))
             GEMM.hgemm_nn(pb, tmpv, tmpq, rows, C, Tk)
             cl.enqueue_copy(dev.q, o_buf, tmpq,
                             dst_offset=(obase + done * C) * 2, byte_count=rows * C * 2)
@@ -161,8 +179,8 @@ def attn_chunked_backward(dev, q_buf, k_buf, v_buf, o_tok, do_tok, dx_nchw,
             for dst, src in ((tq_q, q_buf), (tq_do, do_tok), (tq_o, o_tok)):
                 cl.enqueue_copy(dev.q, dst, src, src_offset=off, byte_count=nb_)
             GEMM.hgemm_nt(tq_q, tmpk, sb, rows, Tk, C)          # S
-            FULLK(dev)["softmax_window"](dev.q, (rows,), None, sb, pb,
-                                         np.int32(1), np.int32(Tk), np.float32(scale))
+            CK(dev)["softmax_rect"](dev.q, (rows,), None, sb, pb,
+                                    np.int32(rows), np.int32(Tk), np.float32(scale))
             GEMM.hgemm_nt(tq_do, tmpv, dp, rows, Tk, C)         # dP = dO·Vᵀ
             CK(dev)["chunk_rowsum"](dev.q, (rows,), None, dp, pb, rs,
                                     np.int32(rows), np.int32(Tk))
