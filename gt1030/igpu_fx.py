@@ -234,6 +234,17 @@ class Executor(object):
                         name + ".bias",
                         state_bits=self.state_bits,
                     )
+            elif isinstance(mod, nn.GroupNorm):
+                self.params[name + ".weight"] = P(
+                    self.dev, mod.weight.detach().cpu().numpy().reshape(-1),
+                    name + ".weight", state_bits=self.state_bits)
+                if mod.bias is not None:
+                    self.params[name + ".bias"] = P(
+                        self.dev, mod.bias.detach().cpu().numpy().reshape(-1),
+                        name + ".bias", state_bits=self.state_bits)
+                if not hasattr(self, "gn_meta"):
+                    self.gn_meta = {}
+                self.gn_meta[name] = dict(groups=mod.num_groups, eps=float(mod.eps))
             elif isinstance(mod, nn.Linear):
                 self.params[name + ".weight"] = P(
                     self.dev,
@@ -414,6 +425,20 @@ class Executor(object):
         import torch.nn as nn
         import torch.fx as fx
 
+        if node.op == "call_function" and getattr(node.target, "__name__", "") == "pad":
+            import gt1030.igpu_conv as CV
+            x = self._arg(node.args[0])
+            pads = tuple(int(v) for v in node.args[1])
+            if pads != (0, 1, 0, 1):
+                raise SystemExit("FX: 目前只支持 F.pad(x, (0,1,0,1))，收到 %r" % (pads,))
+            N, C, H, W = x.shape
+            out = self._node_buf(node.name, (N, C, H + 1, W + 1))
+            CV.K(self.dev)["pad01"](self.dev.q, (N * C * (H + 1) * (W + 1),), None,
+                                    x.buf, out.buf, np.int32(N), np.int32(C),
+                                    np.int32(H), np.int32(W))
+            self.recs.append(("pad01", node.name, x))
+            self.env[node.name] = out
+            return out
         if node.op == "call_method" and node.target in ("flatten", "view", "reshape"):
             x = self._arg(node.args[0])
             if node.target == "flatten":
@@ -439,7 +464,27 @@ class Executor(object):
         if node.op == "call_module":
             sub = self.gm.get_submodule(node.target)
             x = self._arg(node.args[0])
-            if isinstance(sub, nn.Conv2d):
+            if isinstance(sub, nn.GroupNorm):
+                import gt1030.igpu_gn as GN
+                meta = self.gn_meta[node.target]
+                N, C, H, W = x.shape
+                if not hasattr(self, "_gns"):
+                    self._gns = {}
+                key = (node.name, N, C, H, W)
+                if key not in self._gns:
+                    self._gns[key] = GN.GroupNorm(self.dev, N, C, H, W, meta["groups"],
+                                                  meta["eps"])
+                gn = self._gns[key]
+                pg = self.params[node.target + ".weight"]
+                pb = self.params.get(node.target + ".bias")
+                cl.enqueue_copy(self.dev.q, gn.gamma, pg.buf)
+                if pb is not None:
+                    cl.enqueue_copy(self.dev.q, gn.beta, pb.buf)
+                out = self._node_buf(node.name, x.shape)
+                gn.forward(x.buf, out.buf)
+                self.recs.append(("gn", node.name, x, pg, pb, gn))
+                self.env[node.name] = out
+            elif isinstance(sub, nn.Conv2d):
                 import gt1030.igpu_conv as CV
                 meta = self.conv_meta[node.target]
                 N, C, H, W = x.shape
@@ -668,7 +713,27 @@ class Executor(object):
             g = pending.pop(name, None)
             if g is None:
                 continue
-            if kind == "view":
+            if kind == "pad01":
+                import gt1030.igpu_conv as CV
+                x = rec[2]
+                Nx, Cx, Hx, Wx = x.shape
+                dx = self._cached("bwd.pad01.dx." + name, x.shape)
+                CV.K(self.dev)["crop01"](self.dev.q, (Nx * Cx * Hx * Wx,), None,
+                                         g, dx, np.int32(Nx), np.int32(Cx),
+                                         np.int32(Hx), np.int32(Wx))
+                self._propagate(pending, x, dx)
+            elif kind == "gn":
+                import gt1030.igpu_gn as GN
+                x, pg, pb, gn = rec[2], rec[3], rec[4], rec[5]
+                dx = self._cached("bwd.gn.dx." + name, x.shape)
+                gn.backward(g, x.buf, dx)
+                NN._kernels()["acc_from_f32"](self.dev.q, (pg.n,), None, pg.grad,
+                                              gn.dgamma, np.int64(pg.n))
+                if pb is not None:
+                    NN._kernels()["acc_from_f32"](self.dev.q, (pb.n,), None, pb.grad,
+                                                  gn.dbeta, np.int64(pb.n))
+                self._propagate(pending, x, dx)
+            elif kind == "view":
                 # 形状变了但 buffer 相同，梯度直接回传给源张量
                 x_src = rec[2]
                 g_src = self._cached("bwd.view.g." + name, x_src.shape)

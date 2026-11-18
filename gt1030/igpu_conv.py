@@ -104,6 +104,35 @@ __kernel void nchw2nhwc(__global const half* src, __global half* dst,
     dst[(((long)n * OH + oh) * OW + ow) * OC + oc] = src[i];
 }
 
+
+// (N,C,H,W) → (N,C,H+1,W+1)，右/下补零（VAE 的 Downsample2D 需要）
+__kernel void pad01(__global const half* src, __global half* dst,
+                    int N, int C, int H, int W) {
+    long i = get_global_id(0);
+    int Hp = H + 1, Wp = W + 1;
+    long total = (long)N * C * Hp * Wp;
+    if (i >= total) return;
+    int wp = i % Wp, t = i / Wp;
+    int hp = t % Hp;
+    long nc = t / Hp;
+    float v = 0.f;
+    if (hp < H && wp < W) v = (float)src[nc * (long)H * W + (long)hp * W + wp];
+    dst[i] = (half)v;
+}
+
+// 反向：(N,C,H+1,W+1) → (N,C,H,W)，裁掉右/下
+__kernel void crop01(__global const half* src, __global half* dst,
+                     int N, int C, int H, int W) {
+    long i = get_global_id(0);
+    long total = (long)N * C * H * W;
+    if (i >= total) return;
+    int w = i % W, t = i / W;
+    int h = t % H;
+    long nc = t / H;
+    int Wp = W + 1, Hp = H + 1;
+    dst[i] = src[nc * (long)Hp * Wp + (long)h * Wp + w];
+}
+
 // y += bias[o]
 __kernel void bias_add_oc(__global half* y, __global const half* b, int M, int OC) {
     int m = get_global_id(0), o = get_global_id(1);
@@ -132,7 +161,7 @@ def K(dev):
             options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
         _C[key] = {n: cl.Kernel(prog, n) for n in
                    ("im2col", "col2im", "bias_add_oc", "bias_grad_oc",
-                   "nhwc2nchw", "nchw2nhwc")}
+                   "nhwc2nchw", "nchw2nhwc", "pad01", "crop01")}
     return _C[key]
 
 
