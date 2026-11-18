@@ -121,27 +121,14 @@ __kernel void ds_batched(__global const half* p, __global const half* dp, __glob
 _C = {}
 
 
-SRC_EXTRA = r"""
-__kernel void transpose_bt(__global const half* src, __global half* dst, int T) {
-    int h = get_global_id(0), i = get_global_id(1), j = get_global_id(2);
-    if (i >= T || j >= T) return;
-    long base = (long)h * T * T;
-    dst[base + (long)j * T + i] = src[base + (long)i * T + j];
-}
-"""
-
-
 def K(dev):
     key = int(dev.ctx.int_ptr)
     if key not in _C:
         prog = cl.Program(dev.ctx, SRC).build(
             options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
-        prog2 = cl.Program(dev.ctx, SRC_EXTRA).build(
-            options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
         _C[key] = {n: cl.Kernel(prog, n) for n in
                    ("pack_heads", "unpack_heads", "pack_qkv", "unpack_qkv",
                     "causal_softmax_batched", "ds_batched")}
-        _C[key]["transpose_bt"] = cl.Kernel(prog2, "transpose_bt")
     return _C[key]
 
 
