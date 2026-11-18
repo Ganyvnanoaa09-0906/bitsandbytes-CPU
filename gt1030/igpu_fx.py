@@ -180,6 +180,8 @@ class Executor(object):
         self.params = {}       # key -> P
         self.recs = []         # 执行记录（fwd 时填）
         self.env = {}          # node name -> T
+        self._node_bufs = {}   # (node.name, shape) -> T（每步复用，避免 arena 只增不减）
+        self._bufs_raw = {}    # (key, shape) -> cl.Buffer（反传/临时块复用）
         self.placeholders = [n.name for n in self.gm.graph.nodes if n.op == "placeholder"]
         self.shapes = {}
         self._collect_params()
@@ -260,6 +262,20 @@ class Executor(object):
             self._attn_cache[key] = AB.AttnBlock(self.dev, bt, nh, hd)
         return self._attn_cache[key]
 
+    def _cached(self, key, shape):
+        """按 key 缓存裸缓冲（反传临时块用）。"""
+        k = (key, tuple(shape))
+        if k not in self._bufs_raw:
+            self._bufs_raw[k] = self._buf(shape)
+        return self._bufs_raw[k]
+
+    def _node_buf(self, name, shape):
+        """按节点名缓存激活缓冲：同一个节点每步复用同一块显存。"""
+        key = (name, tuple(shape))
+        if key not in self._node_bufs:
+            self._node_bufs[key] = T(self._buf(shape), shape)
+        return self._node_bufs[key]
+
     def _buf(self, shape):
         n = 1
         for d in shape:
@@ -282,13 +298,25 @@ class Executor(object):
         self.int_env = {}
         for name, arr in inputs.items():
             if arr.dtype in (np.int32, np.int64):
-                buf = self.dev.buf(max(4096, arr.size * 4))
+                if not hasattr(self, '_int_bufs'):
+                    self._int_bufs = {}
+                key = (name, arr.shape)
+                if key not in self._int_bufs:
+                    self._int_bufs[key] = self.dev.buf(max(4096, arr.size * 4))
+                buf = self._int_bufs[key]
                 cl.enqueue_copy(self.dev.q, buf, np.ascontiguousarray(arr, dtype=np.int32))
                 self.env[name] = T(buf, arr.shape)
                 self.int_env[name] = True
             else:
-                self.env[name] = T(
-                    self.dev.up(np.ascontiguousarray(arr, dtype=np.float16)), arr.shape)
+                if not hasattr(self, 'input_bufs'):
+                    self.input_bufs = {}
+                key = (name, arr.shape)
+                if key not in self.input_bufs:
+                    self.input_bufs[key] = T(self.dev.buf(max(4096, arr.size * 2)), arr.shape)
+                buf = self.input_bufs[key]
+                cl.enqueue_copy(self.dev.q, buf.buf,
+                                np.ascontiguousarray(arr, dtype=np.float16).reshape(-1))
+                self.env[name] = buf
         self.recs = []
         for node in self.gm.graph.nodes:
             if node.op in ("placeholder", "output"):
@@ -311,7 +339,7 @@ class Executor(object):
             sub = self.gm.get_submodule(node.target)
             x = self._arg(node.args[0])
             if isinstance(sub, nn.Linear):
-                out = self._new((x.shape[0], sub.out_features))
+                out = self._node_buf(node.name, (x.shape[0], sub.out_features))
                 p = self.params[node.target + ".weight"]
                 GEMM.hgemm_nt(x.buf, p.buf, out.buf, x.shape[0], sub.out_features, sub.in_features)
                 pb = self.params.get(node.target + ".bias")
@@ -319,12 +347,12 @@ class Executor(object):
                     OPS2.bias_add(self.dev, out.buf, pb.buf, x.shape[0], sub.out_features)
                 self.recs.append(("linear", node.name, x, p, pb))
             elif isinstance(sub, nn.GELU):
-                out = self._new(x.shape)
+                out = self._node_buf(node.name, x.shape)
                 NN._kernels()["gelu_fwd"](self.dev.q, (x.numel,), None, x.buf, out.buf,
                                           np.int64(x.numel))
                 self.recs.append(("gelu", node.name, x, None, None))
             elif isinstance(sub, nn.SiLU):
-                out = self._new(x.shape)
+                out = self._node_buf(node.name, x.shape)
                 _prog(self.dev, SILU_SRC, ("silu_fwd", "silu_bwd"), "silu")["silu_fwd"](
                     self.dev.q, (x.numel,), None, x.buf, out.buf, np.int64(x.numel))
                 self.recs.append(("silu", node.name, x, None, None))
@@ -335,30 +363,30 @@ class Executor(object):
                 pk = self.params[node.target + ".k_proj.weight"]
                 pv = self.params[node.target + ".v_proj.weight"]
                 po = self.params[node.target + ".o_proj.weight"]
-                q = self._new((x.shape[0], D))
-                k = self._new((x.shape[0], D))
-                v = self._new((x.shape[0], D))
+                q = self._node_buf(node.name + ".q", (x.shape[0], D))
+                k = self._node_buf(node.name + ".k", (x.shape[0], D))
+                v = self._node_buf(node.name + ".v", (x.shape[0], D))
                 GEMM.hgemm_nt(x.buf, pq.buf, q.buf, x.shape[0], D, D)
                 GEMM.hgemm_nt(x.buf, pk.buf, k.buf, x.shape[0], D, D)
                 GEMM.hgemm_nt(x.buf, pv.buf, v.buf, x.shape[0], D, D)
                 blk = self._attn_block(node.target, x.shape[0], sub.nh, sub.hd)
                 o = blk.forward(q.buf, k.buf, v.buf)
-                out = self._new((x.shape[0], D))
+                out = self._node_buf(node.name, (x.shape[0], D))
                 GEMM.hgemm_nt(o, po.buf, out.buf, x.shape[0], D, D)
                 self.recs.append(("attn", node.name, (x, q, k, v, o, blk, (pq, pk, pv, po), D)))
             elif isinstance(sub, nn.Embedding):
                 idx = self.env[node.args[0].name]
-                out = self._new((idx.shape[0], sub.embedding_dim))
+                out = self._node_buf(node.name, (idx.shape[0], sub.embedding_dim))
                 p = self.params[node.target + ".weight"]
                 NN._kernels()["emb_gather"](self.dev.q, (idx.shape[0], sub.embedding_dim), None,
                                             p.buf, idx.buf, out.buf,
                                             np.int32(idx.shape[0]), np.int32(sub.embedding_dim))
                 self.recs.append(("emb", node.name, (idx, p), None, None))
             elif isinstance(sub, nn.LayerNorm):
-                out = self._new(x.shape)
+                out = self._node_buf(node.name, x.shape)
                 rows, cols = int(np.prod(x.shape[:-1])), x.shape[-1]
-                mean = self.dev.buf(max(4096, rows * 4))
-                rstd = self.dev.buf(max(4096, rows * 4))
+                mean = self._node_buf(node.name + '.mean', (rows,)).buf
+                rstd = self._node_buf(node.name + '.rstd', (rows,)).buf
                 gp = self.params[node.target + ".gamma"]
                 bp = self.params[node.target + ".beta"]
                 K = NN._kernels()
@@ -372,19 +400,19 @@ class Executor(object):
             fname = getattr(node.target, "__name__", str(node.target))
             if fname in ("add", "__add__"):
                 a, b = self._arg(node.args[0]), self._arg(node.args[1])
-                out = self._new(a.shape)
+                out = self._node_buf(node.name, a.shape)
                 G._kernels(self.dev)["add_h"](self.dev.q, (a.numel,), None, a.buf, b.buf,
                                               out.buf, np.int64(a.numel))
                 self.recs.append(("add", node.name, (a, b), None, None))
             elif fname == "gelu":
                 x = self._arg(node.args[0])
-                out = self._new(x.shape)
+                out = self._node_buf(node.name, x.shape)
                 NN._kernels()["gelu_fwd"](self.dev.q, (x.numel,), None, x.buf, out.buf,
                                           np.int64(x.numel))
                 self.recs.append(("gelu", node.name, x, None, None))
             elif fname == "silu":
                 x = self._arg(node.args[0])
-                out = self._new(x.shape)
+                out = self._node_buf(node.name, x.shape)
                 _prog(self.dev, SILU_SRC, ("silu_fwd", "silu_bwd"), "silu")["silu_fwd"](
                     self.dev.q, (x.numel,), None, x.buf, out.buf, np.int64(x.numel))
                 self.recs.append(("silu", node.name, x, None, None))
@@ -412,19 +440,20 @@ class Executor(object):
             if kind == "linear":
                 x, p = rec[2], rec[3]
                 M, Kd, N = x.shape[0], p.shape[1], p.shape[0]
-                dx, dW = self._buf((M, Kd)), self._buf((N, Kd))
+                dx = self._cached("bwd.lin.dx." + name, (M, Kd))
+                dW = self._cached("bwd.lin.dW." + name, (N, Kd))
                 GEMM.hgemm_nn(g, p.buf, dx, M, Kd, N)
                 GEMM.hgemm_tn(g, x.buf, dW, N, Kd, M)
                 self._acc_param(p, dW)
                 pb = rec[4]
                 if pb is not None:
-                    db = self._buf((pb.n,))
+                    db = self._cached("bwd.lin.db." + name, (pb.n,))
                     OPS2.col_sum(self.dev, g, db, M, N)
                     self._acc_param(pb, db)
                 self._propagate(pending, x, dx)
             elif kind in ("gelu", "silu"):
                 x = rec[2]
-                dx = self._buf(x.shape)
+                dx = self._cached("bwd.act.dx." + name, x.shape)
                 kern = "gelu_bwd" if kind == "gelu" else "silu_bwd"
                 f = (NN._kernels()["gelu_bwd"] if kind == "gelu"
                      else _prog(self.dev, SILU_SRC, ("silu_fwd", "silu_bwd"), "silu")["silu_bwd"])
@@ -433,19 +462,19 @@ class Executor(object):
             elif kind == "attn":
                 x, q, k, v, o, blk, (pq, pk, pv, po), D = rec[2]
                 BT = x.shape[0]
-                do_pre = self._buf((BT, D))
-                dW_o = self._buf((D, D))
+                do_pre = self._cached("bwd.attn.dpre." + name, (BT, D))
+                dW_o = self._cached("bwd.attn.dWo." + name, (D, D))
                 GEMM.hgemm_nn(g, po.buf, do_pre, BT, D, D)      # dO_pre = dy W_o
                 GEMM.hgemm_tn(g, o, dW_o, D, D, BT)             # dW_o = dyᵀ O
                 self._acc_param(po, dW_o)
                 dq, dk, dv = blk.backward(do_pre)
                 # dW_q = dqᵀ x, 并累计 dx
-                dx = self._buf((BT, D))
+                dx = self._cached("bwd.attn.dx." + name, (BT, D))
                 for gi, (p_in, g_in) in enumerate(((pq, dq), (pk, dk), (pv, dv))):
-                    dW = self._buf((D, D))
+                    dW = self._cached("bwd.attn.dW%d." % gi + name, (D, D))
                     GEMM.hgemm_tn(g_in, x.buf, dW, D, D, BT)
                     self._acc_param(p_in, dW)
-                    tmp = self._buf((BT, D))
+                    tmp = self._cached("bwd.attn.tmp%d." % gi + name, (BT, D))
                     GEMM.hgemm_nn(g_in, p_in.buf, tmp, BT, D, D)
                     if gi == 0:
                         cl.enqueue_copy(self.dev.q, dx, tmp)
@@ -466,14 +495,15 @@ class Executor(object):
             elif kind == "ln":
                 x, rows, cols, mean, rstd = rec[2]
                 gp, bp = rec[3]
-                dg = self._buf((cols,))
-                db = self._buf((cols,))
-                dx = self._buf(x.shape)
-                dgf, dbf = self.dev.buf(max(4096, cols * 4)), self.dev.buf(max(4096, cols * 4))
+                dg = self._cached("bwd.ln.dg." + name, (cols,))
+                db = self._cached("bwd.ln.db." + name, (cols,))
+                dx = self._cached("bwd.ln.dx." + name, x.shape)
+                dgf = self._cached("bwd.ln.dgf." + name, (cols * 1,))
+                dbf = self._cached("bwd.ln.dbf." + name, (cols * 1,))
                 # 先用 stats 求 rowsum(dy*g)、rowsum(dy*g*xhat)
                 K2 = NN._kernels()
-                s1 = self.dev.buf(max(4096, rows * 4))
-                s2 = self.dev.buf(max(4096, rows * 4))
+                s1 = self._cached("bwd.ln.s1." + name, (rows,))
+                s2 = self._cached("bwd.ln.s2." + name, (rows,))
                 K2["ln_bwd_stats"](self.dev.q, (rows * 256,), (256,), g, x.buf, mean, rstd,
                                    gp.buf, s1, s2, np.int32(cols))
                 K2["ln_bwd_apply"](self.dev.q, (rows * 256,), (256,), g, x.buf, mean, rstd,
@@ -508,7 +538,7 @@ class Executor(object):
         if name is None:
             return
         if name in pending:
-            out = self.dev.buf(max(4096, t.numel * 2))
+            out = self._cached('acc.' + name, (t.numel,))     # 复用，避免每步新申请
             G._kernels(self.dev)["add_h"](self.dev.q, (t.numel,), None, pending[name], g,
                                           out, np.int64(t.numel))
             pending[name] = out
