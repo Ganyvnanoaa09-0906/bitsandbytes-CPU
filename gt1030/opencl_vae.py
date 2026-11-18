@@ -130,6 +130,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--vae', required=True)
     ap.add_argument('--latent', type=int, default=32)
+    ap.add_argument('--batch', type=int, default=1)
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--out', default='')
     args = ap.parse_args()
@@ -137,7 +138,7 @@ def main():
     torch.set_num_threads(6)
     vae = OpenCLVAEDecoder(args.vae)
     rng = np.random.default_rng(args.seed)
-    latent = rng.standard_normal((1, 4, args.latent, args.latent)).astype(np.float32)
+    latent = rng.standard_normal((args.batch, 4, args.latent, args.latent)).astype(np.float32)
 
     t0 = time.perf_counter()
     with torch.no_grad():
@@ -152,12 +153,12 @@ def main():
     got = vae.decode(latent)
     gpu_warm = time.perf_counter() - t0
     err = float(np.linalg.norm(got - ref) / (np.linalg.norm(ref) + 1e-9))
-    print('VAE decode latent=%d | parity relL2 %.4f | CPU %.2f s | GPU cold %.2f s warm %.2f s | warm/CPU %.2fx'
-          % (args.latent, err, cpu_s, gpu_s, gpu_warm, gpu_warm / cpu_s))
+    print('VAE decode latent=%d batch=%d | parity relL2 %.4f | CPU %.2f s | GPU cold %.2f s warm %.2f s | warm/CPU %.2fx'
+          % (args.latent, args.batch, err, cpu_s, gpu_s, gpu_warm, gpu_warm / cpu_s))
     img = np.clip((got[0].transpose(1, 2, 0) + 1) / 2, 0, 1)
     from PIL import Image
     out = args.out or os.path.join(r'D:\work\research\bench_results',
-                                   'vae_gpu_%d.png' % args.latent)
+                                   'vae_gpu_%d_b%d.png' % (args.latent, args.batch))
     Image.fromarray((img * 255).astype(np.uint8)).save(out)
     print('saved', out)
 
