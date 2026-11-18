@@ -1017,14 +1017,14 @@ class Executor(object):
                 dw = self._cached("bwd.convhost.dw." + name, p.shape)
                 cl.enqueue_copy(
                     self.dev.q, dw,
-                    np.ascontiguousarray(tw.grad.numpy().reshape(-1), np.float16),
+                    np.clip(tw.grad.numpy().reshape(-1), -65504, 65504).astype(np.float16),
                 )
                 self._acc_param(p, dw)
                 if pb is not None and tb is not None:
                     db = self._cached("bwd.convhost.db." + name, pb.shape)
                     cl.enqueue_copy(
                         self.dev.q, db,
-                        np.ascontiguousarray(tb.grad.numpy().reshape(-1), np.float16),
+                        np.clip(tb.grad.numpy().reshape(-1), -65504, 65504).astype(np.float16),
                     )
                     self._acc_param(pb, db)
                 self._propagate(pending, x, dx)

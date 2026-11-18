@@ -146,6 +146,7 @@ def main() -> int:
     ap.add_argument("--bits", type=int, default=8)
     ap.add_argument("--lora-r", type=int, default=0, help=">0 时给 Conv2d 挂 LoRA 并冻结底座")
     ap.add_argument("--arena", type=int, default=3000)
+    ap.add_argument("--image", default="", help="真实图片路径；空则用 torch.randn")
     a = ap.parse_args()
 
     torch.manual_seed(0)
@@ -163,7 +164,16 @@ def main() -> int:
     else:
         print("  全参训练：底座 %.1f M" % (nbase / 1e6))
 
-    x = torch.randn(a.batch, 3, a.size, a.size)
+    if a.image:
+        from PIL import Image
+
+        im = Image.open(a.image).convert("RGB").resize((a.size, a.size))
+        arr = np.asarray(im, dtype=np.float32) / 127.5 - 1.0
+        x1 = torch.from_numpy(arr).permute(2, 0, 1)
+        x = x1.unsqueeze(0).repeat(a.batch, 1, 1, 1).contiguous()
+        print("  真实图像：%s → %s" % (a.image, tuple(x.shape)))
+    else:
+        x = torch.randn(a.batch, 3, a.size, a.size)
     with torch.no_grad():
         ref_out = model(x)
     print("  输入 %s → 重建 %s" % (tuple(x.shape), tuple(ref_out.shape)))
