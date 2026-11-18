@@ -68,6 +68,8 @@ def wrap_lora(model: nn.Module, r: int = 8, conv: bool = True) -> int:
     def walk(mod):
         nonlocal n
         for name, child in list(mod.named_children()):
+            if getattr(child, "_lora_no_wrap", False):
+                continue
             if isinstance(child, nn.Linear):
                 setattr(mod, name, LoRALinear(child, r))
                 n += 1

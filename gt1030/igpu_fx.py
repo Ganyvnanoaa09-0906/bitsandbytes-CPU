@@ -161,8 +161,39 @@ class AttnModule(_nn.Module):
         return x
 
 
+class FullAttnModule(_nn.Module):
+    """非因果全注意力叶子：真实 q/k/v/o 投影（含 bias），decoder mid attention 用。
+
+    torch 参考 forward 走 SDPA；FX Executor 用 igpu_attn_full.FullAttn 的设备实现。
+    group_norm 和 residual 留在外面（它们都是已支持的普通算子）。
+    """
+
+    _lora_no_wrap = True
+
+    def __init__(self, c):
+        import torch.nn as nn
+
+        super().__init__()
+        self.c = int(c)
+        self.q_proj = nn.Linear(c, c, bias=True)
+        self.k_proj = nn.Linear(c, c, bias=True)
+        self.v_proj = nn.Linear(c, c, bias=True)
+        self.o_proj = nn.Linear(c, c, bias=True)
+
+    def forward(self, x):
+        import torch.nn.functional as F
+
+        N, C, H, W = x.shape
+        xt = x.flatten(2).transpose(1, 2)
+        q = self.q_proj(xt)
+        k = self.k_proj(xt)
+        v = self.v_proj(xt)
+        o = F.scaled_dot_product_attention(q, k, v, scale=1.0 / (C ** 0.5))
+        return self.o_proj(o).transpose(1, 2).reshape(N, C, H, W)
+
+
 class AttnTracer(object):
-    """让 symbolic_trace 把 AttnModule 当叶子（不展开内部 Linear）。"""
+    """让 symbolic_trace 把 AttnModule / FullAttnModule 当叶子（不展开内部 Linear）。"""
 
     @classmethod
     def trace(cls, model):
@@ -170,7 +201,7 @@ class AttnTracer(object):
 
         class T(fx.Tracer):
             def is_leaf_module(self, m, qualname):
-                if isinstance(m, AttnModule):
+                if isinstance(m, (AttnModule, FullAttnModule)):
                     return True
                 return super().is_leaf_module(m, qualname)
 
@@ -717,6 +748,43 @@ class Executor(object):
                 self.recs.append(
                     ("attn", node.name, (x, q, k, v, o, blk, (pq, pk, pv, po), D))
                 )
+            elif isinstance(sub, FullAttnModule):
+                import gt1030.igpu_attn_full as AF
+
+                N, C, H, W = x.shape
+                key = (node.name, N, C, H, W)
+                if not hasattr(self, "_full_attns"):
+                    self._full_attns = {}
+                if key not in self._full_attns:
+                    self._full_attns[key] = AF.FullAttn(self.dev, N, C, H, W)
+                att = self._full_attns[key]
+
+                def _np(p):
+                    return self.dev.down(
+                        p.master if not p.frozen else p.buf, p.shape
+                    ).astype(np.float32)
+
+                pq = self.params[node.target + ".q_proj.weight"]
+                pk = self.params[node.target + ".k_proj.weight"]
+                pv = self.params[node.target + ".v_proj.weight"]
+                po = self.params[node.target + ".o_proj.weight"]
+                pqb = self.params[node.target + ".q_proj.bias"]
+                pkb = self.params[node.target + ".k_proj.bias"]
+                pvb = self.params[node.target + ".v_proj.bias"]
+                pob = self.params[node.target + ".o_proj.bias"]
+                att.set_weights(
+                    _np(pq), _np(pk), _np(pv), _np(po),
+                    _np(pqb), _np(pkb), _np(pvb), _np(pob),
+                )
+                out = self._node_buf(node.name, x.shape)
+                y = att.forward(x.buf)
+                cl.enqueue_copy(self.dev.q, out.buf, y)
+                self.recs.append(
+                    ("fullattn", node.name, x, att,
+                     (pq, pk, pv, po, pqb, pkb, pvb, pob))
+                )
+                self.env[node.name] = out
+                self.dev.q.finish()
             elif isinstance(sub, nn.Embedding):
                 idx = self.env[node.args[0].name]
                 out = self._node_buf(node.name, (idx.shape[0], sub.embedding_dim))
@@ -1011,6 +1079,19 @@ class Executor(object):
                 )
                 f(self.dev.q, (x.numel,), None, x.buf, g, dx, np.int64(x.numel))
                 self._propagate(pending, x, dx)
+            elif kind == "fullattn":
+                x, att, (pq, pk, pv, po, pqb, pkb, pvb, pob) = (
+                    rec[2], rec[3], rec[4]
+                )
+                dx = att.backward(g)
+                dxb = self._cached("bwd.fullattn.dx." + name, x.shape)
+                cl.enqueue_copy(self.dev.q, dxb, dx)
+                for p, gbuf in (
+                    (pq, att.dwq), (pk, att.dwk), (pv, att.dwv), (po, att.dwo),
+                    (pqb, att.dbq), (pkb, att.dbk), (pvb, att.dbv), (pob, att.dbo),
+                ):
+                    self._acc_param(p, gbuf)
+                self._propagate(pending, x, dxb)
             elif kind == "attn":
                 x, q, k, v, o, blk, (pq, pk, pv, po), D = rec[2]
                 BT = x.shape[0]

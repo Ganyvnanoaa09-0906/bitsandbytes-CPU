@@ -73,12 +73,29 @@ def build_autoencoder(vae_dir):
             return self.conv_out(self.conv_act(self.conv_norm_out(h)))
 
     class Dec(nn.Module):
-        """decoder（跳过 mid_block.attentions：设备侧暂无全注意力）。"""
+        """decoder：mid attention 用 FullAttnModule（全注意力，含 q/k/v/o bias）。"""
 
         def __init__(self):
             super().__init__()
             self.conv_in = d.conv_in
             self.mid_resnets = d.mid_block.resnets
+            atts = d.mid_block.attentions
+            if atts:
+                a = atts[0]
+                self.mid_norm = a.group_norm
+                self.mid_attn = FX.FullAttnModule(a.to_q.in_features)
+                with torch.no_grad():
+                    self.mid_attn.q_proj.weight.copy_(a.to_q.weight)
+                    self.mid_attn.q_proj.bias.copy_(a.to_q.bias)
+                    self.mid_attn.k_proj.weight.copy_(a.to_k.weight)
+                    self.mid_attn.k_proj.bias.copy_(a.to_k.bias)
+                    self.mid_attn.v_proj.weight.copy_(a.to_v.weight)
+                    self.mid_attn.v_proj.bias.copy_(a.to_v.bias)
+                    self.mid_attn.o_proj.weight.copy_(a.to_out[0].weight)
+                    self.mid_attn.o_proj.bias.copy_(a.to_out[0].bias)
+            else:
+                self.mid_norm = None
+                self.mid_attn = None
             self.up_blocks = d.up_blocks
             self.conv_norm_out = d.conv_norm_out
             self.conv_act = d.conv_act
@@ -88,6 +105,8 @@ def build_autoencoder(vae_dir):
             h = self.conv_in(z)
             for r in self.mid_resnets:
                 h = _resnet(r, h)
+            if self.mid_attn is not None:
+                h = h + self.mid_attn(self.mid_norm(h))
             for blk in self.up_blocks:
                 for r in blk.resnets:
                     h = _resnet(r, h)
