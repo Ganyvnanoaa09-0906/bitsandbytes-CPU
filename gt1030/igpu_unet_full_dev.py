@@ -168,6 +168,10 @@ def _attn(dev, h, ctx, a, N, Tq, Tk, C, wc):
 
 
 def _resnet(dev, r, x, temb, tembD, N, C, H, Wd, wc):
+    # _ASSERT_CH: 传进来的 C 必须与 x 的真实大小一致
+    assert x.size == N * C * H * Wd * 2, (
+        "_resnet 入口通道不符：C=%d 但 x.size=%d（期望 %d）· conv1.in=%d conv2.out=%d"
+        % (C, x.size, N * C * H * Wd * 2, r.conv1.in_channels, r.conv2.out_channels))
     y = _buf(dev, N * C * H * Wd)
     _gn(dev, x, wc.arr(r.norm1.weight), wc.arr(r.norm1.bias), y,
         N, C, H, Wd, r.norm1.num_groups, float(r.norm1.eps))
@@ -196,6 +200,10 @@ def _resnet(dev, r, x, temb, tembD, N, C, H, Wd, wc):
     w2, b2 = wc.lin(r.conv2)
     c2, _, _ = _conv(dev, s2, w2, b2, N, C2, H, Wd, C2)
     _free(dev, s2)
+    if r.conv_shortcut is None:
+        # _ASSERT_CH: identity 短路要求通道不变
+        assert C == C2, ("identity shortcut 但 C=%d != C2=%d（conv1.in=%d conv2.out=%d）"
+                         % (C, C2, r.conv1.in_channels, r.conv2.out_channels))
     if r.conv_shortcut is not None:
         ws, bs = wc.lin(r.conv_shortcut)
         sc, _, _ = _conv(dev, x, ws, bs, N, C, H, Wd, C2, 1, 1, 1, 1, 0, 0)
@@ -342,6 +350,9 @@ def full_forward(dev, u, sample_np, timestep_np, enc_np, wc=None, verbose=True):
             #   用 in-out 之差会在深层算错，导致 conv 的 Kdim 与实际权重不符（CLBlast -1010）
             Cskip = skip.size // 2 // (N * H * Wd)
             cat = _cat(dev, h, skip, N, c, Cskip, H, Wd)
+            assert cat.size == N * (c + Cskip) * H * Wd * 2, (
+                "_cat 尺寸不符：c=%d Cskip=%d skip.size=%d h.size=%d 期望=%d 实际=%d"
+                % (c, Cskip, skip.size, h.size, N * (c + Cskip) * H * Wd * 2, cat.size))
             _free(dev, skip, h)          # skip 在 cat2 之后才释放
             c = c + Cskip
             h, c = _resnet(dev, res, cat, temb, tembD, N, c, H, Wd, wc)
