@@ -17,6 +17,14 @@ codes per byte, HIGH nibble = even index; absmax1/absmax2 have ceil(n/256) fp32 
 qmap is a 256-entry float table of which only the first 16 codes are used
 (qmap[c] = c*2/15 - 1, i.e. 16 symmetric linear levels; code 8 is the closest to zero).
 """
+"""
+平台注记（2026-11-18 实测）：Windows wheel 里 libbitsandbytes_cpu 目前**只导出 8-bit 优化器符号**
+（`coptimizer_update_8bit_blockwise_cpu`），缺 `coptimizer_update_4bit_blockwise_cpu`。
+因此 Windows 上 AdamW4bit 会回退到 torch 路径（~4 GB/s），比 8-bit 的 AVX2 内核（~10.9 GB/s）
+**慢 1.6–2.4×**（256M 时差 6×）。⇒ 在 Windows 上 4-bit 只有**内存收益**（1.03 B/param），是速度负收益。
+Linux/含原生 4-bit 内核的构建上相反（报告 §7.107 的 1.74× 是那个口径）。
+"""
+
 from __future__ import annotations
 
 import ctypes

@@ -106,6 +106,7 @@ def _conv(dev, x, w, b, N, C, H, Wd, OC, kh=3, kw=3, sh=1, sw=1, ph=1, pw=1):
     CVK(dev)["nhwc2nchw"](dev.q, (N * OC * OH * OW,), None, y, out,
                           np.int32(N), np.int32(OC), np.int32(OH), np.int32(OW))
     # ★ 释放 Conv2d 内部缓冲（cols 是 im2col 的 M×Kdim，整链 ~30 个卷积时是水位大头）
+    assert out is not y, "_conv: 返回缓冲不能与内部 y 同名（会被下面的 _free 掉）"
     _free(dev, getattr(cv, "cols", None), getattr(cv, "y", None),
           getattr(cv, "dy", None), getattr(cv, "dcols", None),
           getattr(cv, "dw", None), getattr(cv, "db", None))
@@ -274,6 +275,7 @@ def _upsample(dev, us, x, N, C, H, Wd, wc):
                            np.int32(N), np.int32(C), np.int32(H), np.int32(Wd))
     w, b = wc.lin(us.conv)
     out, _, _ = _conv(dev, up, w, b, N, C, H, Wd, us.conv.out_channels)
+    _free(dev, up)          # 之前漏了，长链里会积累
     return out
 
 
