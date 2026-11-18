@@ -220,6 +220,10 @@ def main() -> int:
         ex.backward(dyb, y.shape)
         ex.step(a.lr, t, eps=1e-8 * SCALE)
         ms.append(1000 * (time.time() - s))
+        if logf is not None and a.log_every > 0 and (t == 1 or t % a.log_every == 0):
+            logf.write("%d,%.8g,%.1f\n" % (t, losses[-1], ms[-1]))
+    if logf is not None:
+        logf.close()
     print("  conv_out fp16 超范围元素: %d" %
           getattr(ex, "_convhost_overflows", 0))
     print("  step  loss(MSE vs 原图)")
