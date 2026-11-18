@@ -12,6 +12,7 @@
 
     python gt1030/igpu_fx.py --check     # LayerNorm→Linear→GELU→Linear+残差，5 步对拍
 """
+
 from __future__ import annotations
 
 import argparse
@@ -51,7 +52,9 @@ _CACHE = {}
 def _prog(dev, src, names, key):
     k = (int(dev.ctx.int_ptr), key)
     if k not in _CACHE:
-        p = cl.Program(dev.ctx, src).build(options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
+        p = cl.Program(dev.ctx, src).build(
+            options=["-cl-mad-enable", "-cl-fast-relaxed-math"]
+        )
         _CACHE[k] = {n: cl.Kernel(p, n) for n in names}
     return _CACHE[k]
 
@@ -133,6 +136,7 @@ class AttnModule(_nn.Module):
 
     def __init__(self, nh, hd):
         import torch.nn as nn
+
         super().__init__()
         self.nh, self.hd = int(nh), int(hd)
         self.q_proj = nn.Linear(nh * hd, nh * hd, bias=False)
@@ -140,7 +144,7 @@ class AttnModule(_nn.Module):
         self.v_proj = nn.Linear(nh * hd, nh * hd, bias=False)
         self.o_proj = nn.Linear(nh * hd, nh * hd, bias=False)
 
-    def forward(self, x):        # FX 不应追踪到这里；仅作占位（参考实现用不到）
+    def forward(self, x):  # FX 不应追踪到这里；仅作占位（参考实现用不到）
         return x
 
 
@@ -163,29 +167,42 @@ class AttnTracer(object):
 
 
 class Executor(object):
-    def __init__(self, model, sample, arena_mb=900, name="fx", state_bits=32,
-                 muon=False, muon_lr=None, muon_wd=0.0, muon_momentum=0.95):
+    def __init__(
+        self,
+        model,
+        sample,
+        arena_mb=900,
+        name="fx",
+        state_bits=32,
+        muon=False,
+        muon_lr=None,
+        muon_wd=0.0,
+        muon_momentum=0.95,
+    ):
         self.state_bits = state_bits
         # auto_zero_grads：优化器 kernel 读完梯度顺手写 0，跳过每参数一次的清零 copy。
         # 注意：Muon 路径尚未在 kernel 内清零，启用 muon 时本开关自动失效。
         self.auto_zero_grads = False
-        self.schedule = None       # set_schedule(...) 之后 step() 可以不传 lr
+        self.schedule = None  # set_schedule(...) 之后 step() 可以不传 lr
         self.use_muon = muon
         # 实测：muon_lr=0.02 在 64-vocab 小 LM 上 12 步内 NaN；安全区 ≤0.005
         self.muon_lr = muon_lr if muon_lr is not None else 0.005
         self.muon_wd = muon_wd
         self.muon_momentum = muon_momentum
         import torch.fx as fx
+
         self.model = model
         self.sess = G.Session(arena_mb=arena_mb, name=name)
         self.dev = self.sess.dev
         self.gm = AttnTracer.trace(model)
-        self.params = {}       # key -> P
-        self.recs = []         # 执行记录（fwd 时填）
-        self.env = {}          # node name -> T
-        self._node_bufs = {}   # (node.name, shape) -> T（每步复用，避免 arena 只增不减）
-        self._bufs_raw = {}    # (key, shape) -> cl.Buffer（反传/临时块复用）
-        self.placeholders = [n.name for n in self.gm.graph.nodes if n.op == "placeholder"]
+        self.params = {}  # key -> P
+        self.recs = []  # 执行记录（fwd 时填）
+        self.env = {}  # node name -> T
+        self._node_bufs = {}  # (node.name, shape) -> T（每步复用，避免 arena 只增不减）
+        self._bufs_raw = {}  # (key, shape) -> cl.Buffer（反传/临时块复用）
+        self.placeholders = [
+            n.name for n in self.gm.graph.nodes if n.op == "placeholder"
+        ]
         self.shapes = {}
         self._collect_params()
         self._infer_shapes(sample)
@@ -193,30 +210,47 @@ class Executor(object):
     # ---------------- 参数 ----------------
     def _collect_params(self):
         import torch.nn as nn
+
         for name, mod in self.gm.named_modules():
             if isinstance(mod, nn.Linear):
                 self.params[name + ".weight"] = P(
-                    self.dev, mod.weight.detach().cpu().numpy(), name + ".weight",
-                    state_bits=self.state_bits)
+                    self.dev,
+                    mod.weight.detach().cpu().numpy(),
+                    name + ".weight",
+                    state_bits=self.state_bits,
+                )
                 if mod.bias is not None:
                     self.params[name + ".bias"] = P(
-                        self.dev, mod.bias.detach().cpu().numpy(), name + ".bias",
-                        state_bits=self.state_bits)
+                        self.dev,
+                        mod.bias.detach().cpu().numpy(),
+                        name + ".bias",
+                        state_bits=self.state_bits,
+                    )
             elif isinstance(mod, nn.Embedding):
                 self.params[name + ".weight"] = P(
-                    self.dev, mod.weight.detach().cpu().numpy(), name + ".weight",
-                    state_bits=self.state_bits)
+                    self.dev,
+                    mod.weight.detach().cpu().numpy(),
+                    name + ".weight",
+                    state_bits=self.state_bits,
+                )
             elif isinstance(mod, nn.LayerNorm):
                 self.params[name + ".gamma"] = P(
-                    self.dev, mod.weight.detach().cpu().numpy(), name + ".gamma",
-                    state_bits=self.state_bits)
+                    self.dev,
+                    mod.weight.detach().cpu().numpy(),
+                    name + ".gamma",
+                    state_bits=self.state_bits,
+                )
                 self.params[name + ".beta"] = P(
-                    self.dev, mod.bias.detach().cpu().numpy(), name + ".beta",
-                    state_bits=self.state_bits)
+                    self.dev,
+                    mod.bias.detach().cpu().numpy(),
+                    name + ".beta",
+                    state_bits=self.state_bits,
+                )
 
     def sync_from_torch(self):
         """把 torch 当前参数灌进 device（保证同参对拍）。"""
         import torch.nn as nn
+
         for name, mod in self.gm.named_modules():
             if isinstance(mod, nn.Linear):
                 p = self.params[name + ".weight"]
@@ -243,6 +277,7 @@ class Executor(object):
 
     def _infer_shapes(self, sample):
         import torch.fx as fx
+
         shapes = {}
 
         class Rec(fx.Interpreter):
@@ -258,6 +293,7 @@ class Executor(object):
     # ---------------- 内存 ----------------
     def _attn_block(self, name, bt, nh, hd):
         import gt1030.igpu_attn_block as AB
+
         try:
             import gt1030.igpu_attn_fast as AF
         except Exception:
@@ -267,7 +303,9 @@ class Executor(object):
         key = (name, bt, nh, hd)
         if key not in self._attn_cache:
             if AF is not None:
-                self._attn_cache[key] = AF.FastAttn(self.dev, bt, nh, hd)   # head-batched（快）
+                self._attn_cache[key] = AF.FastAttn(
+                    self.dev, bt, nh, hd
+                )  # head-batched（快）
             else:
                 self._attn_cache[key] = AB.AttnBlock(self.dev, bt, nh, hd)
         return self._attn_cache[key]
@@ -308,24 +346,31 @@ class Executor(object):
         self.int_env = {}
         for name, arr in inputs.items():
             if arr.dtype in (np.int32, np.int64):
-                if not hasattr(self, '_int_bufs'):
+                if not hasattr(self, "_int_bufs"):
                     self._int_bufs = {}
                 key = (name, arr.shape)
                 if key not in self._int_bufs:
                     self._int_bufs[key] = self.dev.buf(max(4096, arr.size * 4))
                 buf = self._int_bufs[key]
-                cl.enqueue_copy(self.dev.q, buf, np.ascontiguousarray(arr, dtype=np.int32))
+                cl.enqueue_copy(
+                    self.dev.q, buf, np.ascontiguousarray(arr, dtype=np.int32)
+                )
                 self.env[name] = T(buf, arr.shape)
                 self.int_env[name] = True
             else:
-                if not hasattr(self, 'input_bufs'):
+                if not hasattr(self, "input_bufs"):
                     self.input_bufs = {}
                 key = (name, arr.shape)
                 if key not in self.input_bufs:
-                    self.input_bufs[key] = T(self.dev.buf(max(4096, arr.size * 2)), arr.shape)
+                    self.input_bufs[key] = T(
+                        self.dev.buf(max(4096, arr.size * 2)), arr.shape
+                    )
                 buf = self.input_bufs[key]
-                cl.enqueue_copy(self.dev.q, buf.buf,
-                                np.ascontiguousarray(arr, dtype=np.float16).reshape(-1))
+                cl.enqueue_copy(
+                    self.dev.q,
+                    buf.buf,
+                    np.ascontiguousarray(arr, dtype=np.float16).reshape(-1),
+                )
                 self.env[name] = buf
         self.recs = []
         for node in self.gm.graph.nodes:
@@ -345,26 +390,34 @@ class Executor(object):
 
     def _run(self, node):
         import torch.nn as nn
+        import torch.fx as fx
+
         if node.op == "call_module":
             sub = self.gm.get_submodule(node.target)
             x = self._arg(node.args[0])
             if isinstance(sub, nn.Linear):
                 out = self._node_buf(node.name, (x.shape[0], sub.out_features))
                 p = self.params[node.target + ".weight"]
-                GEMM.hgemm_nt(x.buf, p.buf, out.buf, x.shape[0], sub.out_features, sub.in_features)
+                GEMM.hgemm_nt(
+                    x.buf, p.buf, out.buf, x.shape[0], sub.out_features, sub.in_features
+                )
                 pb = self.params.get(node.target + ".bias")
                 if pb is not None:
-                    OPS2.bias_add(self.dev, out.buf, pb.buf, x.shape[0], sub.out_features)
+                    OPS2.bias_add(
+                        self.dev, out.buf, pb.buf, x.shape[0], sub.out_features
+                    )
                 self.recs.append(("linear", node.name, x, p, pb))
             elif isinstance(sub, nn.GELU):
                 out = self._node_buf(node.name, x.shape)
-                NN._kernels()["gelu_fwd"](self.dev.q, (x.numel,), None, x.buf, out.buf,
-                                          np.int64(x.numel))
+                NN._kernels()["gelu_fwd"](
+                    self.dev.q, (x.numel,), None, x.buf, out.buf, np.int64(x.numel)
+                )
                 self.recs.append(("gelu", node.name, x, None, None))
             elif isinstance(sub, nn.SiLU):
                 out = self._node_buf(node.name, x.shape)
                 _prog(self.dev, SILU_SRC, ("silu_fwd", "silu_bwd"), "silu")["silu_fwd"](
-                    self.dev.q, (x.numel,), None, x.buf, out.buf, np.int64(x.numel))
+                    self.dev.q, (x.numel,), None, x.buf, out.buf, np.int64(x.numel)
+                )
                 self.recs.append(("silu", node.name, x, None, None))
             elif isinstance(sub, AttnModule):
                 D = sub.nh * sub.hd
@@ -383,48 +436,120 @@ class Executor(object):
                 o = blk.forward(q.buf, k.buf, v.buf)
                 out = self._node_buf(node.name, (x.shape[0], D))
                 GEMM.hgemm_nt(o, po.buf, out.buf, x.shape[0], D, D)
-                self.recs.append(("attn", node.name, (x, q, k, v, o, blk, (pq, pk, pv, po), D)))
+                self.recs.append(
+                    ("attn", node.name, (x, q, k, v, o, blk, (pq, pk, pv, po), D))
+                )
             elif isinstance(sub, nn.Embedding):
                 idx = self.env[node.args[0].name]
                 out = self._node_buf(node.name, (idx.shape[0], sub.embedding_dim))
                 p = self.params[node.target + ".weight"]
-                NN._kernels()["emb_gather"](self.dev.q, (idx.shape[0], sub.embedding_dim), None,
-                                            p.buf, idx.buf, out.buf,
-                                            np.int32(idx.shape[0]), np.int32(sub.embedding_dim))
+                NN._kernels()["emb_gather"](
+                    self.dev.q,
+                    (idx.shape[0], sub.embedding_dim),
+                    None,
+                    p.buf,
+                    idx.buf,
+                    out.buf,
+                    np.int32(idx.shape[0]),
+                    np.int32(sub.embedding_dim),
+                )
                 self.recs.append(("emb", node.name, (idx, p), None, None))
             elif isinstance(sub, nn.LayerNorm):
-                out = self._node_buf(node.name, x.shape)
+                # add + LN 前向融合：若输入正好是单消费者 add，则 add 已被执行，
+                # 这里撤掉它的 rec，改用 ln_fwd_res 一次算 h=x+res 和 LN(h)。
+                prev = node.args[0]
+                fused = None
+                if isinstance(prev, fx.Node) and prev.op == "call_function":
+                    pname = getattr(prev.target, "__name__", str(prev.target))
+                    if pname in ("add", "__add__") and len(prev.users) == 1:
+                        for ri, rec in enumerate(self.recs):
+                            if rec[0] == "add" and rec[1] == prev.name:
+                                fused = rec[2]
+                                self.recs.pop(ri)
+                                break
                 rows, cols = int(np.prod(x.shape[:-1])), x.shape[-1]
-                mean = self._node_buf(node.name + '.mean', (rows,)).buf
-                rstd = self._node_buf(node.name + '.rstd', (rows,)).buf
+                out = self._node_buf(node.name, x.shape)
+                mean = self._node_buf(node.name + ".mean", (rows,)).buf
+                rstd = self._node_buf(node.name + ".rstd", (rows,)).buf
                 gp = self.params[node.target + ".gamma"]
                 bp = self.params[node.target + ".beta"]
                 K = NN._kernels()
-                K["ln_stats"](self.dev.q, (rows * 256,), (256,), x.buf, mean, rstd, np.int32(cols))
-                K["ln_apply"](self.dev.q, (rows * 256,), (256,), x.buf, mean, rstd,
-                              gp.buf, bp.buf, out.buf, np.int32(cols), np.float32(sub.eps))
-                self.recs.append(("ln", node.name, (x, rows, cols, mean, rstd), (gp, bp), None))
+                if fused is not None:
+                    a, b = fused
+                    hbuf = self._node_buf(node.name + ".h", x.shape)
+                    K["ln_fwd_res"](
+                        self.dev.q,
+                        (rows * 256,),
+                        (256,),
+                        a.buf,
+                        b.buf,
+                        gp.buf,
+                        bp.buf,
+                        out.buf,
+                        hbuf.buf,
+                        mean,
+                        rstd,
+                        np.int32(cols),
+                        np.float32(sub.eps),
+                    )
+                    self.recs.append(
+                        (
+                            "ln_res",
+                            node.name,
+                            (a, b, rows, cols, mean, rstd, hbuf),
+                            (gp, bp),
+                            None,
+                        )
+                    )
+                else:
+                    K["ln_fwd_fused"](
+                        self.dev.q,
+                        (rows * 256,),
+                        (256,),
+                        x.buf,
+                        gp.buf,
+                        bp.buf,
+                        out.buf,
+                        mean,
+                        rstd,
+                        np.int32(cols),
+                        np.float32(sub.eps),
+                    )
+                    self.recs.append(
+                        ("ln", node.name, (x, rows, cols, mean, rstd), (gp, bp), None)
+                    )
             else:
-                raise SystemExit("FX: 不支持的模块 %s（%s）" % (type(sub).__name__, node.target))
+                raise SystemExit(
+                    "FX: 不支持的模块 %s（%s）" % (type(sub).__name__, node.target)
+                )
         elif node.op == "call_function":
             fname = getattr(node.target, "__name__", str(node.target))
             if fname in ("add", "__add__"):
                 a, b = self._arg(node.args[0]), self._arg(node.args[1])
                 out = self._node_buf(node.name, a.shape)
-                G._kernels(self.dev)["add_h"](self.dev.q, (a.numel,), None, a.buf, b.buf,
-                                              out.buf, np.int64(a.numel))
+                G._kernels(self.dev)["add_h"](
+                    self.dev.q,
+                    (a.numel,),
+                    None,
+                    a.buf,
+                    b.buf,
+                    out.buf,
+                    np.int64(a.numel),
+                )
                 self.recs.append(("add", node.name, (a, b), None, None))
             elif fname == "gelu":
                 x = self._arg(node.args[0])
                 out = self._node_buf(node.name, x.shape)
-                NN._kernels()["gelu_fwd"](self.dev.q, (x.numel,), None, x.buf, out.buf,
-                                          np.int64(x.numel))
+                NN._kernels()["gelu_fwd"](
+                    self.dev.q, (x.numel,), None, x.buf, out.buf, np.int64(x.numel)
+                )
                 self.recs.append(("gelu", node.name, x, None, None))
             elif fname == "silu":
                 x = self._arg(node.args[0])
                 out = self._node_buf(node.name, x.shape)
                 _prog(self.dev, SILU_SRC, ("silu_fwd", "silu_bwd"), "silu")["silu_fwd"](
-                    self.dev.q, (x.numel,), None, x.buf, out.buf, np.int64(x.numel))
+                    self.dev.q, (x.numel,), None, x.buf, out.buf, np.int64(x.numel)
+                )
                 self.recs.append(("silu", node.name, x, None, None))
             else:
                 raise SystemExit("FX: 不支持的函数 %s（支持集见文件头）" % fname)
@@ -465,8 +590,13 @@ class Executor(object):
                 x = rec[2]
                 dx = self._cached("bwd.act.dx." + name, x.shape)
                 kern = "gelu_bwd" if kind == "gelu" else "silu_bwd"
-                f = (NN._kernels()["gelu_bwd"] if kind == "gelu"
-                     else _prog(self.dev, SILU_SRC, ("silu_fwd", "silu_bwd"), "silu")["silu_bwd"])
+                f = (
+                    NN._kernels()["gelu_bwd"]
+                    if kind == "gelu"
+                    else _prog(self.dev, SILU_SRC, ("silu_fwd", "silu_bwd"), "silu")[
+                        "silu_bwd"
+                    ]
+                )
                 f(self.dev.q, (x.numel,), None, x.buf, g, dx, np.int64(x.numel))
                 self._propagate(pending, x, dx)
             elif kind == "attn":
@@ -474,8 +604,8 @@ class Executor(object):
                 BT = x.shape[0]
                 do_pre = self._cached("bwd.attn.dpre." + name, (BT, D))
                 dW_o = self._cached("bwd.attn.dWo." + name, (D, D))
-                GEMM.hgemm_nn(g, po.buf, do_pre, BT, D, D)      # dO_pre = dy W_o
-                GEMM.hgemm_tn(g, o, dW_o, D, D, BT)             # dW_o = dyᵀ O
+                GEMM.hgemm_nn(g, po.buf, do_pre, BT, D, D)  # dO_pre = dy W_o
+                GEMM.hgemm_tn(g, o, dW_o, D, D, BT)  # dW_o = dyᵀ O
                 self._acc_param(po, dW_o)
                 dq, dk, dv = blk.backward(do_pre)
                 # dW_q = dqᵀ x, 并累计 dx
@@ -489,19 +619,86 @@ class Executor(object):
                     if gi == 0:
                         cl.enqueue_copy(self.dev.q, dx, tmp)
                     else:
-                        G._kernels(self.dev)["add_h"](self.dev.q, (BT * D,), None, dx, tmp,
-                                                      dx, np.int64(BT * D))
+                        G._kernels(self.dev)["add_h"](
+                            self.dev.q, (BT * D,), None, dx, tmp, dx, np.int64(BT * D)
+                        )
                 self._propagate(pending, x, dx)
             elif kind == "emb":
                 idx, p = rec[2]
                 # 表梯度：先清零（zero_grads 已做），再把 dy 按行散加进去
-                NN._kernels()["emb_scatter"](self.dev.q, (p.shape[1],), None, g, idx.buf,
-                                             p.grad, np.int32(idx.shape[0]),
-                                             np.int32(p.shape[1]))
+                NN._kernels()["emb_scatter"](
+                    self.dev.q,
+                    (p.shape[1],),
+                    None,
+                    g,
+                    idx.buf,
+                    p.grad,
+                    np.int32(idx.shape[0]),
+                    np.int32(p.shape[1]),
+                )
             elif kind == "add":
                 a, b = rec[2]
                 for t in (a, b):
                     self._add_pending(pending, t, g)
+            elif kind == "ln_res":
+                a, b, rows, cols, mean, rstd, hbuf = rec[2]
+                gp, bp = rec[3]
+                dg = self._cached("bwd.ln.dg." + name, (cols,))
+                db = self._cached("bwd.ln.db." + name, (cols,))
+                dx = self._cached("bwd.ln.dx." + name, hbuf.shape)
+                dgf = self._cached("bwd.ln.dgf." + name, (cols * 1,))
+                dbf = self._cached("bwd.ln.dbf." + name, (cols * 1,))
+                K2 = NN._kernels()
+                s1 = self._cached("bwd.ln.s1." + name, (rows,))
+                s2 = self._cached("bwd.ln.s2." + name, (rows,))
+                K2["ln_bwd_stats"](
+                    self.dev.q,
+                    (rows * 256,),
+                    (256,),
+                    g,
+                    hbuf.buf,
+                    mean,
+                    rstd,
+                    gp.buf,
+                    s1,
+                    s2,
+                    np.int32(cols),
+                )
+                K2["ln_bwd_apply"](
+                    self.dev.q,
+                    (rows * 256,),
+                    (256,),
+                    g,
+                    hbuf.buf,
+                    mean,
+                    rstd,
+                    gp.buf,
+                    s1,
+                    s2,
+                    dx,
+                    np.int32(cols),
+                )
+                K2["ln_param_grads"](
+                    self.dev.q,
+                    (cols,),
+                    None,
+                    g,
+                    hbuf.buf,
+                    mean,
+                    rstd,
+                    dgf,
+                    dbf,
+                    np.int32(rows),
+                    np.int32(cols),
+                )
+                K2["acc_from_f32"](
+                    self.dev.q, (cols,), None, gp.grad, dgf, np.int64(cols)
+                )
+                K2["acc_from_f32"](
+                    self.dev.q, (cols,), None, bp.grad, dbf, np.int64(cols)
+                )
+                self._add_pending(pending, a, dx)
+                self._add_pending(pending, b, dx)
             elif kind == "ln":
                 x, rows, cols, mean, rstd = rec[2]
                 gp, bp = rec[3]
@@ -514,15 +711,38 @@ class Executor(object):
                 K2 = NN._kernels()
                 s1 = self._cached("bwd.ln.s1." + name, (rows,))
                 s2 = self._cached("bwd.ln.s2." + name, (rows,))
-                K2["ln_bwd_stats"](self.dev.q, (rows * 256,), (256,), g, x.buf, mean, rstd,
-                                   gp.buf, s1, s2, np.int32(cols))
-                K2["ln_bwd_apply"](self.dev.q, (rows * 256,), (256,), g, x.buf, mean, rstd,
-                                   gp.buf, s1, s2, dx, np.int32(cols))
-                K2["ln_param_grads"](self.dev.q, (cols,), None, g, x.buf, mean, rstd,
-                                     dgf, dbf, np.int32(rows), np.int32(cols))
+                K2["ln_bwd_fused"](
+                    self.dev.q,
+                    (rows * 256,),
+                    (256,),
+                    g,
+                    x.buf,
+                    mean,
+                    rstd,
+                    gp.buf,
+                    dx,
+                    np.int32(cols),
+                )
+                K2["ln_param_grads"](
+                    self.dev.q,
+                    (cols,),
+                    None,
+                    g,
+                    x.buf,
+                    mean,
+                    rstd,
+                    dgf,
+                    dbf,
+                    np.int32(rows),
+                    np.int32(cols),
+                )
                 # dγ/dβ 留在设备上累加（原来每步 32 次 host 往返 copy）
-                K2["acc_from_f32"](self.dev.q, (cols,), None, gp.grad, dgf, np.int64(cols))
-                K2["acc_from_f32"](self.dev.q, (cols,), None, bp.grad, dbf, np.int64(cols))
+                K2["acc_from_f32"](
+                    self.dev.q, (cols,), None, gp.grad, dgf, np.int64(cols)
+                )
+                K2["acc_from_f32"](
+                    self.dev.q, (cols,), None, bp.grad, dbf, np.int64(cols)
+                )
                 self._propagate(pending, x, dx)
         self.dev.q.finish()
 
@@ -544,15 +764,18 @@ class Executor(object):
         if name is None:
             return
         if name in pending:
-            out = self._cached('acc.' + name, (t.numel,))     # 复用，避免每步新申请
-            G._kernels(self.dev)["add_h"](self.dev.q, (t.numel,), None, pending[name], g,
-                                          out, np.int64(t.numel))
+            out = self._cached("acc." + name, (t.numel,))  # 复用，避免每步新申请
+            G._kernels(self.dev)["add_h"](
+                self.dev.q, (t.numel,), None, pending[name], g, out, np.int64(t.numel)
+            )
             pending[name] = out
         else:
             pending[name] = g
 
     def _acc_param(self, p, dW_buf):
-        G._kernels(self.dev)["acc_h"](self.dev.q, (p.n,), None, p.grad, dW_buf, np.int64(p.n))
+        G._kernels(self.dev)["acc_h"](
+            self.dev.q, (p.n,), None, p.grad, dW_buf, np.int64(p.n)
+        )
 
     # ---------------- 优化器 ----------------
     def zero_grads(self):
@@ -562,12 +785,26 @@ class Executor(object):
         for p in self.params.values():
             p.zero_grad()
 
-    def set_schedule(self, kind="cosine", total=1000, lr_max=1e-3, lr_min=0.0,
-                     warmup=0, t_mult=2, t0=None):
+    def set_schedule(
+        self,
+        kind="cosine",
+        total=1000,
+        lr_max=1e-3,
+        lr_min=0.0,
+        warmup=0,
+        t_mult=2,
+        t0=None,
+    ):
         """kind: 'constant' | 'cosine' | 'sgdr'。设置后 step(lr=None) 自动按 step 号取 lr。"""
-        self.schedule = dict(kind=kind, total=int(total), lr_max=float(lr_max),
-                             lr_min=float(lr_min), warmup=int(warmup),
-                             t_mult=int(t_mult), t0=int(t0 or max(1, total)))
+        self.schedule = dict(
+            kind=kind,
+            total=int(total),
+            lr_max=float(lr_max),
+            lr_min=float(lr_min),
+            warmup=int(warmup),
+            t_mult=int(t_mult),
+            t0=int(t0 or max(1, total)),
+        )
         return self.schedule
 
     def lr_at(self, t):
@@ -577,10 +814,17 @@ class Executor(object):
         if cfg["kind"] == "constant":
             return cfg["lr_max"]
         if cfg["kind"] == "sgdr":
-            return G.sgdr_lr(t, cfg["t0"], cfg["lr_max"], cfg["lr_min"],
-                             t_mult=cfg["t_mult"], warmup=cfg["warmup"])[0]
-        return G.cosine_lr(t, cfg["total"], cfg["lr_max"], cfg["lr_min"],
-                           warmup=cfg["warmup"])
+            return G.sgdr_lr(
+                t,
+                cfg["t0"],
+                cfg["lr_max"],
+                cfg["lr_min"],
+                t_mult=cfg["t_mult"],
+                warmup=cfg["warmup"],
+            )[0]
+        return G.cosine_lr(
+            t, cfg["total"], cfg["lr_max"], cfg["lr_min"], warmup=cfg["warmup"]
+        )
 
     def _is_muon_param(self, name, p):
         """2D 权重且不是 embedding/head（与 CPU 侧 Muon 的分工一致）。"""
@@ -593,6 +837,7 @@ class Executor(object):
 
     def step(self, lr=None, t=1, eps=1e-8, wd=0.0):
         import math
+
         bc1r = 1.0 / (1.0 - 0.9 ** int(t))
         bc2r = 1.0 / math.sqrt(1.0 - 0.999 ** int(t))
         if lr is None:
@@ -601,6 +846,7 @@ class Executor(object):
                 raise SystemExit("step(lr=None) 需要先 set_schedule(...)")
         if self.use_muon:
             import gt1030.igpu_muon as MU
+
             # Muon 跟随调度缩放：热重启把 Adam lr 拉回峰值时，Muon 不能还按常数走，
             # 否则两者叠加会把更新推爆（实测 SGDR + Muon 常数 lr 会在重启后 NaN）。
             muon_scale = 1.0
@@ -610,10 +856,14 @@ class Executor(object):
                     muon_scale = float(lr) / peak
             for name, p in self.params.items():
                 if self._is_muon_param(name, p):
-                    MU.muon_step(self.dev, p, p.grad,
-                                 lr=float(self.muon_lr or lr) * muon_scale,
-                                 wd=float(self.muon_wd),
-                                 momentum=float(self.muon_momentum))
+                    MU.muon_step(
+                        self.dev,
+                        p,
+                        p.grad,
+                        lr=float(self.muon_lr or lr) * muon_scale,
+                        wd=float(self.muon_wd),
+                        momentum=float(self.muon_momentum),
+                    )
         if not hasattr(self, "_k8"):
             self._k8 = None
         for name, p in self.params.items():
@@ -622,31 +872,80 @@ class Executor(object):
             if getattr(p, "state_bits", 32) == 4:
                 if getattr(self, "_k4", None) is None:
                     import pyopencl as _cl
+
                     prog = _cl.Program(self.dev.ctx, G.EXTRA).build(
-                        options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
+                        options=["-cl-mad-enable", "-cl-fast-relaxed-math"]
+                    )
                     self._k4 = _cl.Kernel(prog, "adamw1_q4")
                 nblocks = (p.n + 255) // 256
-                self._k4(self.dev.q, (nblocks * 256,), (256,), p.master, p.mom8, p.vel8,
-                         p.mom, p.vel, p.grad, p.buf, np.int32(p.n), np.float32(lr),
-                         np.float32(0.9), np.float32(0.999), np.float32(eps),
-                         np.float32(wd), np.float32(bc1r), np.float32(bc2r))
+                self._k4(
+                    self.dev.q,
+                    (nblocks * 256,),
+                    (256,),
+                    p.master,
+                    p.mom8,
+                    p.vel8,
+                    p.mom,
+                    p.vel,
+                    p.grad,
+                    p.buf,
+                    np.int32(p.n),
+                    np.float32(lr),
+                    np.float32(0.9),
+                    np.float32(0.999),
+                    np.float32(eps),
+                    np.float32(wd),
+                    np.float32(bc1r),
+                    np.float32(bc2r),
+                )
                 continue
             if getattr(p, "state_bits", 32) == 8:
                 if self._k8 is None:
                     import pyopencl as _cl
+
                     prog = _cl.Program(self.dev.ctx, G.EXTRA).build(
-                        options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
+                        options=["-cl-mad-enable", "-cl-fast-relaxed-math"]
+                    )
                     self._k8 = _cl.Kernel(prog, "adamw1_q8")
                 nblocks = (p.n + 255) // 256
-                self._k8(self.dev.q, (nblocks * 256,), (256,), p.master, p.mom8, p.vel8,
-                         p.mom, p.vel, p.grad, p.buf, np.int32(p.n), np.float32(lr),
-                         np.float32(0.9), np.float32(0.999), np.float32(eps),
-                         np.float32(wd), np.float32(bc1r), np.float32(bc2r))
+                self._k8(
+                    self.dev.q,
+                    (nblocks * 256,),
+                    (256,),
+                    p.master,
+                    p.mom8,
+                    p.vel8,
+                    p.mom,
+                    p.vel,
+                    p.grad,
+                    p.buf,
+                    np.int32(p.n),
+                    np.float32(lr),
+                    np.float32(0.9),
+                    np.float32(0.999),
+                    np.float32(eps),
+                    np.float32(wd),
+                    np.float32(bc1r),
+                    np.float32(bc2r),
+                )
             else:
-                self.sess.adam_single(self.dev.q, (p.n,), None, p.master, p.mom, p.vel,
-                                      p.grad, p.buf, np.int32(p.n), np.float32(lr),
-                                      np.float32(0.9), np.float32(0.999), np.float32(eps),
-                                      np.float32(wd), np.int32(t))
+                self.sess.adam_single(
+                    self.dev.q,
+                    (p.n,),
+                    None,
+                    p.master,
+                    p.mom,
+                    p.vel,
+                    p.grad,
+                    p.buf,
+                    np.int32(p.n),
+                    np.float32(lr),
+                    np.float32(0.9),
+                    np.float32(0.999),
+                    np.float32(eps),
+                    np.float32(wd),
+                    np.int32(t),
+                )
         self.dev.q.finish()
 
 
@@ -681,11 +980,29 @@ def check(steps=5, d=64, batch=32, lr=1e-3, scale=65536.0):
         ex.zero_grads()
         y = ex.forward(x.numpy())
         n = y.numel
-        G._kernels(ex.dev)["mse_grad_h"](ex.dev.q, (n,), None, y.buf, ytgt, dy,
-                                         np.int64(n), np.float32(1.0 / n), np.float32(scale))
+        G._kernels(ex.dev)["mse_grad_h"](
+            ex.dev.q,
+            (n,),
+            None,
+            y.buf,
+            ytgt,
+            dy,
+            np.int64(n),
+            np.float32(1.0 / n),
+            np.float32(scale),
+        )
         ex.dev.q.finish()
-        losses_dev.append(float(((ex.dev.down(y.buf, y.shape).astype(np.float32)
-                                  - tgt.numpy().astype(np.float32)) ** 2).mean()))
+        losses_dev.append(
+            float(
+                (
+                    (
+                        ex.dev.down(y.buf, y.shape).astype(np.float32)
+                        - tgt.numpy().astype(np.float32)
+                    )
+                    ** 2
+                ).mean()
+            )
+        )
         ex.backward(dy, y.shape)
         ex.step(lr, step, eps=1e-8 * scale)
 
@@ -705,8 +1022,6 @@ def check(steps=5, d=64, batch=32, lr=1e-3, scale=65536.0):
     return worst < 5e-2
 
 
-
-
 def check_stack(layers=4, steps=5, bt=16, d=32, nh=4, hd=8, lr=1e-3):
     """P3 验收：N 层 transformer stack 走通用路径，对拍 torch，并报步时。"""
     import time
@@ -719,7 +1034,7 @@ def check_stack(layers=4, steps=5, bt=16, d=32, nh=4, hd=8, lr=1e-3):
             super().__init__()
             self.blocks = nn.ModuleList()
             for _ in range(layers):
-                self.blocks.append(nn.Sequential())   # 占位，下面替换
+                self.blocks.append(nn.Sequential())  # 占位，下面替换
             self.blocks = nn.ModuleList([_make_block() for _ in range(layers)])
 
         def forward(self, x):
@@ -740,6 +1055,7 @@ def check_stack(layers=4, steps=5, bt=16, d=32, nh=4, hd=8, lr=1e-3):
             def forward(self, x):
                 h = x + self.attn(self.n1(x))
                 return h + self.f2(F.gelu(self.f1(self.n2(h))))
+
         return B()
 
     torch.manual_seed(0)
@@ -759,11 +1075,29 @@ def check_stack(layers=4, steps=5, bt=16, d=32, nh=4, hd=8, lr=1e-3):
         ex.zero_grads()
         y = ex.forward(x.numpy())
         n = y.numel
-        G._kernels(ex.dev)["mse_grad_h"](ex.dev.q, (n,), None, y.buf, yt, dy,
-                                         np.int64(n), np.float32(1.0 / n), np.float32(scale))
+        G._kernels(ex.dev)["mse_grad_h"](
+            ex.dev.q,
+            (n,),
+            None,
+            y.buf,
+            yt,
+            dy,
+            np.int64(n),
+            np.float32(1.0 / n),
+            np.float32(scale),
+        )
         ex.dev.q.finish()
-        losses_dev.append(float(((ex.dev.down(y.buf, y.shape).astype(np.float32)
-                                  - tgt.numpy().astype(np.float32)) ** 2).mean()))
+        losses_dev.append(
+            float(
+                (
+                    (
+                        ex.dev.down(y.buf, y.shape).astype(np.float32)
+                        - tgt.numpy().astype(np.float32)
+                    )
+                    ** 2
+                ).mean()
+            )
+        )
         ex.backward(dy, y.shape)
         ex.step(lr, step, eps=1e-8 * scale)
         times.append(time.time() - t0)
@@ -817,7 +1151,7 @@ def check_block(steps=5, bt=16, d=32, nh=4, hd=8, lr=1e-3):
         q = mod.q_proj(h).view(bt, nh, hd).transpose(0, 1)
         k = mod.k_proj(h).view(bt, nh, hd).transpose(0, 1)
         v = mod.v_proj(h).view(bt, nh, hd).transpose(0, 1)
-        s = (q @ k.transpose(-1, -2)) / (hd ** 0.5)
+        s = (q @ k.transpose(-1, -2)) / (hd**0.5)
         mask = torch.tril(torch.ones(bt, bt, dtype=torch.bool))
         p = torch.softmax(s.masked_fill(~mask, float("-inf")), dim=-1)
         o = (p @ v).transpose(0, 1).reshape(bt, d)
@@ -825,7 +1159,7 @@ def check_block(steps=5, bt=16, d=32, nh=4, hd=8, lr=1e-3):
 
     opt = torch.optim.Adam(model.parameters(), lr=lr, eps=1e-8)
     scale = 65536.0
-    tgt = (torch.randn(bt, d) * 0.1)
+    tgt = torch.randn(bt, d) * 0.1
     tgt_dev = ex.dev.up(tgt.numpy().astype(np.float16))
     dy = ex.dev.buf(max(4096, bt * d * 2))
     losses_dev, losses_torch = [], []
@@ -833,11 +1167,29 @@ def check_block(steps=5, bt=16, d=32, nh=4, hd=8, lr=1e-3):
         ex.zero_grads()
         y = ex.forward(x.numpy())
         n = y.numel
-        G._kernels(ex.dev)["mse_grad_h"](ex.dev.q, (n,), None, y.buf, tgt_dev, dy,
-                                         np.int64(n), np.float32(1.0 / n), np.float32(scale))
+        G._kernels(ex.dev)["mse_grad_h"](
+            ex.dev.q,
+            (n,),
+            None,
+            y.buf,
+            tgt_dev,
+            dy,
+            np.int64(n),
+            np.float32(1.0 / n),
+            np.float32(scale),
+        )
         ex.dev.q.finish()
-        losses_dev.append(float(((ex.dev.down(y.buf, y.shape).astype(np.float32)
-                                  - tgt.numpy().astype(np.float32)) ** 2).mean()))
+        losses_dev.append(
+            float(
+                (
+                    (
+                        ex.dev.down(y.buf, y.shape).astype(np.float32)
+                        - tgt.numpy().astype(np.float32)
+                    )
+                    ** 2
+                ).mean()
+            )
+        )
         ex.backward(dy, y.shape)
         ex.step(lr, step, eps=1e-8 * scale)
 
@@ -886,15 +1238,26 @@ def check_lm(steps=5, vocab=64, d=32, batch=16, lr=1e-3, scale=65536.0):
     opt = torch.optim.Adam(model.parameters(), lr=lr, eps=1e-8)
 
     tgt_dev = ex.dev.buf(max(4096, batch * 4))
-    cl.enqueue_copy(ex.dev.q, tgt_dev, np.ascontiguousarray(tgt.numpy(), dtype=np.int32))
+    cl.enqueue_copy(
+        ex.dev.q, tgt_dev, np.ascontiguousarray(tgt.numpy(), dtype=np.int32)
+    )
     loss_buf = ex.dev.buf(max(4096, batch * 4))
     grad_buf = ex.dev.buf(max(4096, batch * vocab * 2))
     losses_dev, losses_torch = [], []
     for step in range(1, steps + 1):
         ex.zero_grads()
         logits = ex.forward({"tokens": toks.numpy()})
-        OPS2.ce_forward(ex.dev, logits.buf, tgt_dev, loss_buf, grad_buf,
-                        batch, vocab, 1.0 / batch, scale)
+        OPS2.ce_forward(
+            ex.dev,
+            logits.buf,
+            tgt_dev,
+            loss_buf,
+            grad_buf,
+            batch,
+            vocab,
+            1.0 / batch,
+            scale,
+        )
         ex.dev.q.finish()
         lp = ex.dev.down(loss_buf, (batch,), np.float32)
         losses_dev.append(float(lp.mean()))

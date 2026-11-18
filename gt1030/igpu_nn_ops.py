@@ -20,6 +20,7 @@
     emb = EmbeddingGather(rows, cols, vocab)    # idx 为 int32 device buffer
     y  = emb.forward(idx);  dx = emb.backward(didx)   # 散加（scatter-add，无原子竞争）
 """
+
 from __future__ import annotations
 
 import argparse
@@ -66,6 +67,106 @@ __kernel void ln_apply(__global const half* x, __global const float* mean,
     for (int k = lid; k < cols; k += lsz) {
         float xh = ((float)line[k] - mu) * rs;
         out[k] = (half)(xh * (float)g[k] + (float)b[k]);
+    }
+}
+
+// add + LayerNorm 前向融合：h = x + res；y = LN(h)*g + b；同时落 h 供反向复用。
+__kernel void ln_fwd_res(__global const half* x, __global const half* res,
+                         __global const half* g, __global const half* b,
+                         __global half* y, __global half* h,
+                         __global float* mean, __global float* rstd,
+                         int cols, float eps) {
+    int row = get_group_id(0), lid = get_local_id(0), lsz = get_local_size(0);
+    __local float red[256];
+    long base = (long)row * cols;
+    float s = 0.f, s2 = 0.f;
+    for (int k = lid; k < cols; k += lsz) {
+        float v = (float)x[base + k] + (float)res[base + k];
+        s += v; s2 += v * v;
+    }
+    red[lid] = s; barrier(CLK_LOCAL_MEM_FENCE);
+    for (int off = lsz >> 1; off > 0; off >>= 1) {
+        if (lid < off) red[lid] += red[lid + off];
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    if (lid == 0) mean[row] = red[0] / cols;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    red[lid] = s2; barrier(CLK_LOCAL_MEM_FENCE);
+    for (int off = lsz >> 1; off > 0; off >>= 1) {
+        if (lid < off) red[lid] += red[lid + off];
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    if (lid == 0) {
+        float mu = mean[row];
+        rstd[row] = rsqrt(fmax(red[0] / cols - mu * mu, 0.f) + 1e-12f);
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+    float mu = mean[row], rs = rstd[row];
+    for (int k = lid; k < cols; k += lsz) {
+        float hv = (float)x[base + k] + (float)res[base + k];
+        h[base + k] = (half)hv;
+        float xh = (hv - mu) * rs;
+        y[base + k] = (half)(xh * (float)g[k] + (float)b[k]);
+    }
+}
+
+// LN 前向 stats+apply 融合：一个 workgroup 一行，先算 mean/rstd，再原地写 y。
+__kernel void ln_fwd_fused(__global const half* x, __global const half* g,
+                           __global const half* b, __global half* y,
+                           __global float* mean, __global float* rstd,
+                           int cols, float eps) {
+    int row = get_group_id(0), lid = get_local_id(0), lsz = get_local_size(0);
+    __local float red[256];
+    __global const half* line = x + (long)row * cols;
+    __global half* out = y + (long)row * cols;
+    float s = 0.f, s2 = 0.f;
+    for (int k = lid; k < cols; k += lsz) { float v = (float)line[k]; s += v; s2 += v * v; }
+    red[lid] = s; barrier(CLK_LOCAL_MEM_FENCE);
+    for (int off = lsz >> 1; off > 0; off >>= 1) { if (lid < off) red[lid] += red[lid + off]; barrier(CLK_LOCAL_MEM_FENCE); }
+    if (lid == 0) mean[row] = red[0] / cols;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    red[lid] = s2; barrier(CLK_LOCAL_MEM_FENCE);
+    for (int off = lsz >> 1; off > 0; off >>= 1) { if (lid < off) red[lid] += red[lid + off]; barrier(CLK_LOCAL_MEM_FENCE); }
+    if (lid == 0) {
+        float mu = mean[row];
+        rstd[row] = rsqrt(fmax(red[0] / cols - mu * mu, 0.f) + 1e-12f);
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+    float mu = mean[row], rs = rstd[row];
+    for (int k = lid; k < cols; k += lsz) {
+        float xh = ((float)line[k] - mu) * rs;
+        out[k] = (half)(xh * (float)g[k] + (float)b[k]);
+    }
+}
+
+// LN 反向 stats+apply 融合：一次遍历求 s1/s2，二次遍历写 dx。
+__kernel void ln_bwd_fused(__global const half* dy, __global const half* x,
+                           __global const float* mean, __global const float* rstd,
+                           __global const half* g, __global half* dx, int cols) {
+    int row = get_group_id(0), lid = get_local_id(0), lsz = get_local_size(0);
+    __local float red[256];
+    __global const half* dl = dy + (long)row * cols;
+    __global const half* xl = x + (long)row * cols;
+    __global half* o = dx + (long)row * cols;
+    float mu = mean[row], rs = rstd[row];
+    float a = 0.f, bsum = 0.f;
+    for (int k = lid; k < cols; k += lsz) {
+        float dyg = (float)dl[k] * (float)g[k];
+        float xh = ((float)xl[k] - mu) * rs;
+        a += dyg; bsum += dyg * xh;
+    }
+    red[lid] = a; barrier(CLK_LOCAL_MEM_FENCE);
+    for (int off = lsz >> 1; off > 0; off >>= 1) { if (lid < off) red[lid] += red[lid + off]; barrier(CLK_LOCAL_MEM_FENCE); }
+    float s1 = red[0];
+    barrier(CLK_LOCAL_MEM_FENCE);
+    red[lid] = bsum; barrier(CLK_LOCAL_MEM_FENCE);
+    for (int off = lsz >> 1; off > 0; off >>= 1) { if (lid < off) red[lid] += red[lid + off]; barrier(CLK_LOCAL_MEM_FENCE); }
+    float s2 = red[0];
+    float n = (float)cols;
+    for (int k = lid; k < cols; k += lsz) {
+        float dyg = (float)dl[k] * (float)g[k];
+        float xh = ((float)xl[k] - mu) * rs;
+        o[k] = (half)(rs / n * (n * dyg - s1 - xh * s2));
     }
 }
 
@@ -189,11 +290,26 @@ def _kernels():
     key = _ctx_key()
     if key not in _PROG:
         _PROG[key] = cl.Program(CTX.A.ctx, SRC).build(
-            options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
-        _K[key] = {n: cl.Kernel(_PROG[key], n) for n in
-                   ("ln_stats", "ln_apply", "ln_bwd_stats", "ln_bwd_apply",
-                    "ln_param_grads", "gelu_fwd", "gelu_bwd", "emb_gather", "emb_scatter",
-                      "acc_from_f32")}
+            options=["-cl-mad-enable", "-cl-fast-relaxed-math"]
+        )
+        _K[key] = {
+            n: cl.Kernel(_PROG[key], n)
+            for n in (
+                "ln_stats",
+                "ln_apply",
+                "ln_fwd_res",
+                "ln_fwd_fused",
+                "ln_bwd_fused",
+                "ln_bwd_stats",
+                "ln_bwd_apply",
+                "ln_param_grads",
+                "gelu_fwd",
+                "gelu_bwd",
+                "emb_gather",
+                "emb_scatter",
+                "acc_from_f32",
+            )
+        }
     return _K[key]
 
 
@@ -230,10 +346,28 @@ class LayerNorm(object):
     def forward(self):
         d, K = self.dev, _kernels()
         d.activate()
-        K["ln_stats"](d.q, (self.rows * 256,), (256,), self.x, self.mean, self.rstd,
-                      np.int32(self.cols))
-        K["ln_apply"](d.q, (self.rows * 256,), (256,), self.x, self.mean, self.rstd,
-                      self.g, self.b, self.y, np.int32(self.cols), np.float32(self.eps))
+        K["ln_stats"](
+            d.q,
+            (self.rows * 256,),
+            (256,),
+            self.x,
+            self.mean,
+            self.rstd,
+            np.int32(self.cols),
+        )
+        K["ln_apply"](
+            d.q,
+            (self.rows * 256,),
+            (256,),
+            self.x,
+            self.mean,
+            self.rstd,
+            self.g,
+            self.b,
+            self.y,
+            np.int32(self.cols),
+            np.float32(self.eps),
+        )
         d.q.finish()
         return self.y
 
@@ -241,10 +375,33 @@ class LayerNorm(object):
         d, K = self.dev, _kernels()
         d.activate()
         cl.enqueue_copy(d.q, self.dy, dy_dev)
-        K["ln_bwd_stats"](d.q, (self.rows * 256,), (256,), self.dy, self.x, self.mean,
-                          self.rstd, self.g, self.s1, self.s2, np.int32(self.cols))
-        K["ln_bwd_apply"](d.q, (self.rows * 256,), (256,), self.dy, self.x, self.mean,
-                          self.rstd, self.g, self.s1, self.s2, self.dx, np.int32(self.cols))
+        K["ln_bwd_stats"](
+            d.q,
+            (self.rows * 256,),
+            (256,),
+            self.dy,
+            self.x,
+            self.mean,
+            self.rstd,
+            self.g,
+            self.s1,
+            self.s2,
+            np.int32(self.cols),
+        )
+        K["ln_bwd_apply"](
+            d.q,
+            (self.rows * 256,),
+            (256,),
+            self.dy,
+            self.x,
+            self.mean,
+            self.rstd,
+            self.g,
+            self.s1,
+            self.s2,
+            self.dx,
+            np.int32(self.cols),
+        )
         d.q.finish()
         return self.dx
 
@@ -252,8 +409,19 @@ class LayerNorm(object):
         d, K = self.dev, _kernels()
         d.activate()
         cl.enqueue_copy(d.q, self.dy, dy_dev)
-        K["ln_param_grads"](d.q, (self.cols,), None, self.dy, self.x, self.mean,
-                            self.rstd, self.dg, self.db, np.int32(self.rows), np.int32(self.cols))
+        K["ln_param_grads"](
+            d.q,
+            (self.cols,),
+            None,
+            self.dy,
+            self.x,
+            self.mean,
+            self.rstd,
+            self.dg,
+            self.db,
+            np.int32(self.rows),
+            np.int32(self.cols),
+        )
         d.q.finish()
         return self.dg, self.db
 
@@ -295,14 +463,24 @@ class EmbeddingGather(object):
         self.idx = d.buf(max(4096, self.rows * 4))
         self.y = d.buf(self.rows * self.cols * 2)
         self.dy = d.buf(self.rows * self.cols * 2)
-        self.dtable = d.buf(self.rows * self.cols * 2)   # 调用方保证足够大（按 vocab 分配）
+        self.dtable = d.buf(
+            self.rows * self.cols * 2
+        )  # 调用方保证足够大（按 vocab 分配）
 
     def forward(self, table_dev, idx_np):
         d, K = self.dev, _kernels()
         d.activate()
         cl.enqueue_copy(d.q, self.idx, np.ascontiguousarray(idx_np, dtype=np.int32))
-        K["emb_gather"](d.q, (self.rows, self.cols), None, table_dev, self.idx, self.y,
-                        np.int32(self.rows), np.int32(self.cols))
+        K["emb_gather"](
+            d.q,
+            (self.rows, self.cols),
+            None,
+            table_dev,
+            self.idx,
+            self.y,
+            np.int32(self.rows),
+            np.int32(self.cols),
+        )
         d.q.finish()
         return self.y
 
@@ -310,8 +488,16 @@ class EmbeddingGather(object):
         d, K = self.dev, _kernels()
         d.activate()
         cl.enqueue_copy(d.q, self.dy, dy_dev)
-        K["emb_scatter"](d.q, (self.cols,), None, self.dy, self.idx, self.dtable,
-                         np.int32(self.rows), np.int32(self.cols))
+        K["emb_scatter"](
+            d.q,
+            (self.cols,),
+            None,
+            self.dy,
+            self.idx,
+            self.dtable,
+            np.int32(self.rows),
+            np.int32(self.cols),
+        )
         d.q.finish()
         return self.dtable
 
@@ -325,6 +511,7 @@ def _rel(a, b):
 
 def check_layernorm(rows=64, cols=128):
     import torch
+
     rng = np.random.default_rng(0)
     x = (rng.standard_normal((rows, cols)) * 0.5).astype(np.float16)
     g = (1 + 0.1 * rng.standard_normal(cols)).astype(np.float16)
@@ -348,14 +535,22 @@ def check_layernorm(rows=64, cols=128):
     ty = torch.nn.functional.layer_norm(tx, (cols,), tg, tb, 1e-5)
     ty.backward(torch.from_numpy(dy.astype(np.float32)))
     ey, ex = _rel(y, ty), _rel(dx, tx.grad)
-    eg = float(np.linalg.norm(dg - tg.grad.numpy()) / (np.linalg.norm(tg.grad.numpy()) + 1e-12))
-    eb = float(np.linalg.norm(db - tb.grad.numpy()) / (np.linalg.norm(tb.grad.numpy()) + 1e-12))
-    print("  LayerNorm %dx%d | y %.2e dx %.2e dg %.2e db %.2e" % (rows, cols, ey, ex, eg, eb))
+    eg = float(
+        np.linalg.norm(dg - tg.grad.numpy()) / (np.linalg.norm(tg.grad.numpy()) + 1e-12)
+    )
+    eb = float(
+        np.linalg.norm(db - tb.grad.numpy()) / (np.linalg.norm(tb.grad.numpy()) + 1e-12)
+    )
+    print(
+        "  LayerNorm %dx%d | y %.2e dx %.2e dg %.2e db %.2e"
+        % (rows, cols, ey, ex, eg, eb)
+    )
     return max(ey, ex, eg, eb) < 5e-2
 
 
 def check_gelu(n=4096):
     import torch
+
     rng = np.random.default_rng(1)
     x = (rng.standard_normal(n) * 1.5).astype(np.float16)
     dy = (rng.standard_normal(n) * 0.1).astype(np.float16)
@@ -368,7 +563,7 @@ def check_gelu(n=4096):
     out = d.down(y, (n,))
     dx = d.down(act.dx, (n,))
     tx = torch.from_numpy(x.astype(np.float32)).requires_grad_(True)
-    ty = torch.nn.functional.gelu(tx)          # erf 版；tanh 近似差 ~1e-3
+    ty = torch.nn.functional.gelu(tx)  # erf 版；tanh 近似差 ~1e-3
     ty.backward(torch.from_numpy(dy.astype(np.float32)))
     ey, ex = _rel(out, ty), _rel(dx, tx.grad)
     print("  GELU n=%d | y %.2e dx %.2e" % (n, ey, ex))
@@ -377,6 +572,7 @@ def check_gelu(n=4096):
 
 def check_embedding(rows=64, cols=32, vocab=100):
     import torch
+
     rng = np.random.default_rng(2)
     table = (rng.standard_normal((vocab, cols)) * 0.3).astype(np.float16)
     idx = rng.integers(0, vocab, size=rows).astype(np.int32)
