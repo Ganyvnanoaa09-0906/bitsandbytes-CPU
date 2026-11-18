@@ -76,11 +76,21 @@ class T(object):
 class P(object):
     """可训练参数：fp32 master + fp16 副本 + fp16 梯度 + Adam m/v（全部常驻）。"""
 
-    def __init__(self, dev, w_np, name="", state_bits=32):
+    def __init__(self, dev, w_np, name="", state_bits=32, frozen=False):
         self.dev, self.name = dev, name
         self.state_bits = state_bits
         w = np.ascontiguousarray(w_np, dtype=np.float32)
         self.shape = w.shape
+        self.frozen = bool(frozen)
+        if self.frozen:
+            # 冻结：只留 fp16 副本（2 B/参数），无梯度、无优化器状态
+            self.n = w.size
+            self.buf = dev.buf(max(4096, self.n * 2))
+            cl.enqueue_copy(dev.q, self.buf,
+                            np.ascontiguousarray(w.reshape(-1), dtype=np.float16))
+            dev.q.finish()
+            return
+        self.frozen = False
         self.n = w.size
         flat = w.reshape(-1)
         nb4 = max(4096, self.n * 4)
@@ -99,7 +109,6 @@ class P(object):
         else:
             self.mom = dev.buf(nb4)
             self.vel = dev.buf(nb4)
-        self.buf = dev.buf(max(4096, self.n * 2))
         self.grad = dev.buf(max(4096, self.n * 2))
         cl.enqueue_copy(dev.q, self.master, flat)
         if state_bits in (8, 4):
@@ -116,6 +125,7 @@ class P(object):
         else:
             cl.enqueue_copy(dev.q, self.mom, np.zeros(self.n, np.float32))
             cl.enqueue_copy(dev.q, self.vel, np.zeros(self.n, np.float32))
+        self.buf = dev.buf(max(4096, self.n * 2))   # fp16 副本（前向用它）
         cl.enqueue_copy(dev.q, self.buf, flat.astype(np.float16))
         cl.enqueue_copy(dev.q, self.grad, np.zeros(self.n, np.float16))
         dev.q.finish()
@@ -178,11 +188,18 @@ class Executor(object):
         muon_lr=None,
         muon_wd=0.0,
         muon_momentum=0.95,
+        freeze_base=False,
+        trainable_names=None,
+        frozen_modules=None,
     ):
         self.state_bits = state_bits
         # auto_zero_grads：优化器 kernel 读完梯度顺手写 0，跳过每参数一次的清零 copy。
         # 注意：Muon 路径尚未在 kernel 内清零，启用 muon 时本开关自动失效。
         self.auto_zero_grads = False
+        # freeze_base=True 时除 trainable_names 里的参数外全部冻结（只留 fp16 副本）
+        self.freeze_base = bool(freeze_base)
+        self.trainable_names = trainable_names
+        self.frozen_modules = frozen_modules
         self.schedule = None  # set_schedule(...) 之后 step() 可以不传 lr
         self.use_muon = muon
         # 实测：muon_lr=0.02 在 64-vocab 小 LM 上 12 步内 NaN；安全区 ≤0.005
@@ -208,6 +225,18 @@ class Executor(object):
         self._infer_shapes(sample)
 
     # ---------------- 参数 ----------------
+    def _is_frozen(self, name):
+        """按 freeze_base / trainable_names / frozen_modules 判定该参数是否冻结。"""
+        if not getattr(self, "freeze_base", False):
+            return False
+        keep = getattr(self, "trainable_names", None)
+        if keep:
+            return not any(name.startswith(k) for k in keep)
+        drop = getattr(self, "frozen_modules", None)
+        if drop:
+            return any(name.startswith(d) for d in drop)
+        return True
+
     def _collect_params(self):
         import torch.nn as nn
 
@@ -218,7 +247,7 @@ class Executor(object):
                     self.dev,
                     mod.weight.detach().cpu().numpy().reshape(mod.out_channels, -1),
                     name + ".weight",
-                    state_bits=self.state_bits,
+                    state_bits=self.state_bits, frozen=self._is_frozen(name),
                 )
                 if not hasattr(self, "conv_meta"):
                     self.conv_meta = {}
@@ -232,7 +261,7 @@ class Executor(object):
                         self.dev,
                         mod.bias.detach().cpu().numpy().reshape(-1),
                         name + ".bias",
-                        state_bits=self.state_bits,
+                        state_bits=self.state_bits, frozen=self._is_frozen(name),
                     )
             elif isinstance(mod, nn.GroupNorm):
                 self.params[name + ".weight"] = P(
@@ -250,34 +279,34 @@ class Executor(object):
                     self.dev,
                     mod.weight.detach().cpu().numpy(),
                     name + ".weight",
-                    state_bits=self.state_bits,
+                    state_bits=self.state_bits, frozen=self._is_frozen(name),
                 )
                 if mod.bias is not None:
                     self.params[name + ".bias"] = P(
                         self.dev,
                         mod.bias.detach().cpu().numpy(),
                         name + ".bias",
-                        state_bits=self.state_bits,
+                        state_bits=self.state_bits, frozen=self._is_frozen(name),
                     )
             elif isinstance(mod, nn.Embedding):
                 self.params[name + ".weight"] = P(
                     self.dev,
                     mod.weight.detach().cpu().numpy(),
                     name + ".weight",
-                    state_bits=self.state_bits,
+                    state_bits=self.state_bits, frozen=self._is_frozen(name),
                 )
             elif isinstance(mod, nn.LayerNorm):
                 self.params[name + ".gamma"] = P(
                     self.dev,
                     mod.weight.detach().cpu().numpy(),
                     name + ".gamma",
-                    state_bits=self.state_bits,
+                    state_bits=self.state_bits, frozen=self._is_frozen(name),
                 )
                 self.params[name + ".beta"] = P(
                     self.dev,
                     mod.bias.detach().cpu().numpy(),
                     name + ".beta",
-                    state_bits=self.state_bits,
+                    state_bits=self.state_bits, frozen=self._is_frozen(name),
                 )
 
     def sync_from_torch(self):
@@ -953,6 +982,8 @@ class Executor(object):
             pending[name] = g
 
     def _acc_param(self, p, dW_buf):
+        if getattr(p, "frozen", False):
+            return          # 冻结参数不吃梯度
         G._kernels(self.dev)["acc_h"](
             self.dev.q, (p.n,), None, p.grad, dW_buf, np.int64(p.n)
         )
@@ -963,6 +994,10 @@ class Executor(object):
         if self.auto_zero_grads and not self.use_muon:
             return
         for p in self.params.values():
+            if getattr(p, "frozen", False):
+                continue
+            if getattr(p, "frozen", False):
+                continue
             p.zero_grad()
 
     def set_schedule(
@@ -1035,6 +1070,8 @@ class Executor(object):
                 if peak > 0:
                     muon_scale = float(lr) / peak
             for name, p in self.params.items():
+                if getattr(p, "frozen", False):
+                    continue
                 if self._is_muon_param(name, p):
                     MU.muon_step(
                         self.dev,
@@ -1047,6 +1084,8 @@ class Executor(object):
         if not hasattr(self, "_k8"):
             self._k8 = None
         for name, p in self.params.items():
+            if getattr(p, "frozen", False):
+                continue        # 冻结参数不更新
             if self.use_muon and self._is_muon_param(name, p):
                 continue
             if getattr(p, "state_bits", 32) == 4:
