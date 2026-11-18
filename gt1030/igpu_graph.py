@@ -313,7 +313,8 @@ class Session(object):
                 self._k8(d.q, (nblocks * 256,), (256,), p.master, p.mom8, p.vel8,
                          p.mom, p.vel, p.grad, p.buf, np.int32(p.numel),
                          np.float32(lr), np.float32(0.9), np.float32(0.999),
-                         np.float32(eps), np.float32(wd), np.int32(t))
+                         np.float32(eps), np.float32(wd),
+                         np.float32(bc1r), np.float32(bc2r))
             else:
                 self.adam_single(d.q, (p.numel,), None, p.master, p.mom, p.vel, p.grad,
                                  p.buf, np.int32(p.numel), np.float32(lr),
