@@ -214,6 +214,8 @@ def main() -> int:
         ex.backward(dyb, y.shape)
         ex.step(a.lr, t, eps=1e-8 * SCALE)
         ms.append(1000 * (time.time() - s))
+    print("  conv_out fp16 超范围元素: %d" %
+          getattr(ex, "_convhost_overflows", 0))
     print("  step  loss(MSE vs 原图)")
     for i in (0, 1, a.steps // 2, a.steps - 1):
         if i < len(losses):

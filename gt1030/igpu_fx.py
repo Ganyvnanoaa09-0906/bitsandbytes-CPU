@@ -1012,20 +1012,29 @@ class Executor(object):
                 )
                 ty.backward(torch.from_numpy(dy_np))
                 def _half(a):
-                    return np.clip(a * 65536.0, -65504, 65504).astype(np.float16)
+                    # 数学上已还原到设备缩放；这里只计数 fp16 超范围元素，
+                    # 不 clip（clip 会让高精度对拍通道静默失真）。
+                    v = a * 65536.0
+                    over = int(np.count_nonzero(np.abs(v) > 65504.0))
+                    if over:
+                        self._convhost_overflows = getattr(
+                            self, "_convhost_overflows", 0
+                        ) + over
+                    return v.astype(np.float16)
 
                 dx = self._cached("bwd.convhost.dx." + name, x.shape)
                 cl.enqueue_copy(
                     self.dev.q, dx,
                     np.ascontiguousarray(_half(tx.grad.numpy().reshape(-1))),
                 )
-                dw = self._cached("bwd.convhost.dw." + name, p.shape)
-                cl.enqueue_copy(
-                    self.dev.q, dw,
-                    np.ascontiguousarray(_half(tw.grad.numpy().reshape(-1))),
-                )
-                self._acc_param(p, dw)
-                if pb is not None and tb is not None:
+                if not p.frozen:
+                    dw = self._cached("bwd.convhost.dw." + name, p.shape)
+                    cl.enqueue_copy(
+                        self.dev.q, dw,
+                        np.ascontiguousarray(_half(tw.grad.numpy().reshape(-1))),
+                    )
+                    self._acc_param(p, dw)
+                if pb is not None and tb is not None and not pb.frozen:
                     db = self._cached("bwd.convhost.db." + name, pb.shape)
                     cl.enqueue_copy(
                         self.dev.q, db,
