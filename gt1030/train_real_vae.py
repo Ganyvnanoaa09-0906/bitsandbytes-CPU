@@ -90,6 +90,8 @@ def main() -> int:
     ap.add_argument("--bits", type=int, default=8)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--arena", type=int, default=3000)
+    ap.add_argument("--noise", type=float, default=0.5,
+                    help="目标噪声 sigma；0.1 会让 fp16 前向误差主导 dy，对拍无意义")
     ap.add_argument(
         "--freeze-conv-out",
         action="store_true",
@@ -118,7 +120,7 @@ def main() -> int:
     x = torch.randn(a.batch, 3, a.size, a.size)
     with torch.no_grad():
         tgt = (
-            enc(x) + torch.randn_like(enc(x)) * 0.1
+            enc(x) + torch.randn_like(enc(x)) * a.noise
         )  # 目标：编码输出 + 噪声（可训的回归任务）
 
     # ---------- 核显 ----------
