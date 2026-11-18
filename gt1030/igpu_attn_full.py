@@ -47,6 +47,27 @@ __kernel void softmax_window(__global const half* s, __global half* p,
         p[base + j] = (half)(exp((float)s[base + j] * scale - mx) * inv);
 }
 
+// 每行 sum_j dP_ij * P_ij（P 在窗口外为 0，整行求和即窗口内求和）
+__kernel void attn_rowsum(__global const half* dp, __global const half* p,
+                          __global float* rs, long rows) {
+    long i = get_global_id(0);
+    if (i >= rows) return;
+    long base = i * rows;
+    float acc = 0.f;
+    for (long j = 0; j < rows; ++j) acc += (float)dp[base + j] * (float)p[base + j];
+    rs[i] = acc;
+}
+
+// dS = P * (dP - rs) * scale
+__kernel void attn_ds(__global const half* dp, __global const half* p,
+                      __global const float* rs, __global half* ds,
+                      long rows, float scale) {
+    long idx = get_global_id(0);
+    if (idx >= rows * rows) return;
+    long i = idx / rows;
+    ds[idx] = (half)((float)p[idx] * ((float)dp[idx] - rs[i]) * scale);
+}
+
 """
 
 _C = {}
@@ -57,7 +78,7 @@ def K(dev):
     if key not in _C:
         prog = cl.Program(dev.ctx, SRC).build(
             options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
-        _C[key] = {n: cl.Kernel(prog, n) for n in ("softmax_window",)}
+        _C[key] = {n: cl.Kernel(prog, n) for n in ("softmax_window", "attn_rowsum", "attn_ds")}
     return _C[key]
 
 
@@ -82,6 +103,22 @@ class FullAttn(object):
         self.p = dev.buf(max(4096, self.rows * self.rows * 2))
         self.ot = dev.buf(max(4096, self.rows * self.C * 2))
         self.out = dev.buf(max(4096, self.rows * self.C * 2))
+        self.do = dev.buf(max(4096, self.rows * self.C * 2))
+        self.dp = dev.buf(max(4096, self.rows * self.rows * 2))
+        self.ds = dev.buf(max(4096, self.rows * self.rows * 2))
+        self.rs = dev.buf(max(4096, self.rows * 4))
+        self.dq = dev.buf(max(4096, self.rows * self.C * 2))
+        self.dk = dev.buf(max(4096, self.rows * self.C * 2))
+        self.dv = dev.buf(max(4096, self.rows * self.C * 2))
+        self.dt1 = dev.buf(max(4096, self.rows * self.C * 2))
+        self.dt2 = dev.buf(max(4096, self.rows * self.C * 2))
+        self.dt3 = dev.buf(max(4096, self.rows * self.C * 2))
+        self.dt4 = dev.buf(max(4096, self.rows * self.C * 2))
+        self.dx = dev.buf(max(4096, self.rows * self.C * 2))
+        self.dwq = dev.buf(max(4096, self.C * self.C * 2))
+        self.dwk = dev.buf(max(4096, self.C * self.C * 2))
+        self.dwv = dev.buf(max(4096, self.C * self.C * 2))
+        self.dwo = dev.buf(max(4096, self.C * self.C * 2))
 
     def set_weights(self, q, k, v, o):
         for buf, w in ((self.q, q), (self.k, k), (self.v, v), (self.o, o)):
@@ -104,6 +141,47 @@ class FullAttn(object):
         CV.K(d)["nhwc2nchw"](d.q, (R * C,), None, self.out, self._dst(),
                              np.int32(N), np.int32(C), np.int32(H), np.int32(W))
         return self._dst()
+
+
+    def backward(self, dy):
+        """dy: (N,C,H,W) half。返回 dx；权重梯度写在 self.dwq/dwk/dwv/dwo。"""
+        import gt1030.igpu_graph as _G
+
+        d = self.dev
+        N, C, H, W, T, R = self.N, self.C, self.H, self.W, self.T, self.rows
+        CV.K(d)["nchw2nhwc"](d.q, (R * C,), None, dy, self.do,
+                             np.int32(N), np.int32(C), np.int32(H), np.int32(W))
+        # dWo = dYᵀ · O_tok
+        GEMM.hgemm_tn(self.do, self.ot, self.dwo, C, C, R)
+        # dO_pre = dY · Wo   （out = O_tok · Woᵀ ⇒ dO_tok = dY · Wo）
+        GEMM.hgemm_nn(self.do, self.o, self.dt1, R, C, C)
+        # dP = dO_pre · Vᵀ
+        GEMM.hgemm_nt(self.dt1, self.vt, self.dp, R, R, C)
+        # dV = Pᵀ · dO_pre
+        GEMM.hgemm_tn(self.p, self.dt1, self.dv, R, C, R)
+        # dS = P ⊙ (dP − rowsum(dP⊙P)) · scale
+        K(d)["attn_rowsum"](d.q, (R,), None, self.dp, self.p, self.rs, np.int64(R))
+        K(d)["attn_ds"](d.q, (R * R,), None, self.dp, self.p, self.rs, self.ds,
+                        np.int64(R), np.float32(self.scale))
+        # dQ = dS·K, dK = dSᵀ·Q（scale 已经在 dS 里）
+        GEMM.hgemm_nn(self.ds, self.kt, self.dq, R, C, R)
+        GEMM.hgemm_tn(self.ds, self.qt, self.dk, R, C, R)
+        # 权重梯度
+        GEMM.hgemm_tn(self.dq, self.tok, self.dwq, C, C, R)
+        GEMM.hgemm_tn(self.dk, self.tok, self.dwk, C, C, R)
+        GEMM.hgemm_tn(self.dv, self.tok, self.dwv, C, C, R)
+        # dTok = dQ·Wq + dK·Wk + dV·Wv
+        GEMM.hgemm_nn(self.dq, self.q, self.dt1, R, C, C)
+        GEMM.hgemm_nn(self.dk, self.k, self.dt2, R, C, C)
+        GEMM.hgemm_nn(self.dv, self.v, self.dt3, R, C, C)
+        # add_h 是 out = a + b（两输入），三项相加需要两次
+        _G._kernels(d)["add_h"](d.q, (R * C,), None, self.dt1, self.dt2, self.dt4,
+                                np.int64(R * C))
+        _G._kernels(d)["add_h"](d.q, (R * C,), None, self.dt4, self.dt3, self.dt1,
+                                np.int64(R * C))
+        CV.K(d)["nhwc2nchw"](d.q, (R * C,), None, self.dt1, self.dx,
+                             np.int32(N), np.int32(C), np.int32(H), np.int32(W))
+        return self.dx
 
     _d = None
 
