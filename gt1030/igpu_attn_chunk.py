@@ -39,6 +39,29 @@ __kernel void chunk_rowsum(__global const half* dp, __global const half* p,
     rs[r] = acc;
 }
 
+
+// (rows, C) → head-major (heads, rows, dh)：dst[(h*rows + r)*dh + d] = src[r*C + h*dh + d]
+__kernel void head_split(__global const half* src, __global half* dst,
+                         int rows, int C, int heads) {
+    long i = get_global_id(0);
+    if (i >= (long)rows * C) return;
+    int r = (int)(i / C), c = (int)(i % C);
+    int dh = C / heads;
+    int h = c / dh, d = c % dh;
+    dst[((long)h * rows + r) * dh + d] = src[i];
+}
+
+// head-major → (rows, C)
+__kernel void head_merge(__global const half* src, __global half* dst,
+                         int rows, int C, int heads) {
+    long i = get_global_id(0);
+    if (i >= (long)rows * C) return;
+    int r = (int)(i / C), c = (int)(i % C);
+    int dh = C / heads;
+    int h = c / dh, d = c % dh;
+    dst[i] = src[((long)h * rows + r) * dh + d];
+}
+
 __kernel void chunk_ds(__global const half* dp, __global const half* p,
                        __global const float* rs, __global half* ds,
                        int n_rows, int Tk, float scale) {
@@ -57,7 +80,7 @@ def CK(dev):
     if key not in _C:
         prog = cl.Program(dev.ctx, SRC).build(
             options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
-        _C[key] = {n: cl.Kernel(prog, n) for n in ("chunk_rowsum", "chunk_ds")}
+        _C[key] = {n: cl.Kernel(prog, n) for n in ("chunk_rowsum", "chunk_ds", "head_split", "head_merge")}
     return _C[key]
 
 
@@ -162,6 +185,37 @@ def attn_chunked_backward(dev, q_buf, k_buf, v_buf, o_tok, do_tok, dx_nchw,
     CVK(dev)["nhwc2nchw"](dev.q, (B * Tq * C,), None, dq_tok, dx_nchw,
                           np.int32(B), np.int32(C), np.int32(H), np.int32(W))
     return dict(dx=dx_nchw, dk=dk_tok, dv=dv_tok)
+
+
+
+def attn_chunked_heads(dev, q_buf, k_buf, v_buf, o_buf, B, Tq, Tk, C, heads, bq=256):
+    """多头版：先 head_split 成 head-major，逐头调用 attn_chunked，再 head_merge 回来。
+
+    attn_chunked 本身是单头语义（scale = 1/sqrt(C)）；多头时每头 dim_head = C/heads，
+    scale 应为 1/sqrt(dim_head)，所以必须逐头调用，不能直接整块喂进去。
+    """
+    dh = C // heads
+    rq, rk = B * Tq, B * Tk
+    qh = _buf(dev, heads * rq * dh)
+    kh = _buf(dev, heads * rk * dh)
+    vh = _buf(dev, heads * rk * dh)
+    oh = _buf(dev, heads * rq * dh)
+    CK(dev)["head_split"](dev.q, (rq * C,), None, q_buf, qh, np.int32(rq), np.int32(C), np.int32(heads))
+    CK(dev)["head_split"](dev.q, (rk * C,), None, k_buf, kh, np.int32(rk), np.int32(C), np.int32(heads))
+    CK(dev)["head_split"](dev.q, (rk * C,), None, v_buf, vh, np.int32(rk), np.int32(C), np.int32(heads))
+    qs = _buf(dev, rq * dh)
+    ks = _buf(dev, rk * dh)
+    vs = _buf(dev, rk * dh)
+    os_ = _buf(dev, rq * dh)
+    for h in range(heads):
+        for src, dst in ((qh, qs), (kh, ks), (vh, vs)):
+            cl.enqueue_copy(dev.q, dst, src,
+                            src_offset=h * rq * dh * 2 if src is qh else h * rk * dh * 2,
+                            byte_count=(rq if src is qh else rk) * dh * 2)
+        attn_chunked(dev, qs, ks, vs, os_, B, Tq, Tk, dh, bq=min(bq, Tq))
+        cl.enqueue_copy(dev.q, oh, os_, dst_offset=h * rq * dh * 2, byte_count=rq * dh * 2)
+    CK(dev)["head_merge"](dev.q, (rq * C,), None, oh, o_buf, np.int32(rq), np.int32(C), np.int32(heads))
+    return o_buf
 
 
 def check(T=256, C=64, B=1, bq=64, H=None, W=None, seed=0, grads=True):
