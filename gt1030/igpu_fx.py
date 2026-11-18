@@ -212,7 +212,29 @@ class Executor(object):
         import torch.nn as nn
 
         for name, mod in self.gm.named_modules():
-            if isinstance(mod, nn.Linear):
+            if isinstance(mod, nn.Conv2d):
+                # 卷积权重 (OC,C,KH,KW) → (OC, C*KH*KW)，正好是 hgemm_nt 要的布局
+                self.params[name + ".weight"] = P(
+                    self.dev,
+                    mod.weight.detach().cpu().numpy().reshape(mod.out_channels, -1),
+                    name + ".weight",
+                    state_bits=self.state_bits,
+                )
+                if not hasattr(self, "conv_meta"):
+                    self.conv_meta = {}
+                self.conv_meta[name] = dict(
+                    oc=mod.out_channels, c=mod.in_channels, kh=mod.kernel_size[0],
+                    kw=mod.kernel_size[1], sh=mod.stride[0], sw=mod.stride[1],
+                    ph=mod.padding[0], pw=mod.padding[1],
+                )
+                if mod.bias is not None:
+                    self.params[name + ".bias"] = P(
+                        self.dev,
+                        mod.bias.detach().cpu().numpy().reshape(-1),
+                        name + ".bias",
+                        state_bits=self.state_bits,
+                    )
+            elif isinstance(mod, nn.Linear):
                 self.params[name + ".weight"] = P(
                     self.dev,
                     mod.weight.detach().cpu().numpy(),
@@ -392,10 +414,55 @@ class Executor(object):
         import torch.nn as nn
         import torch.fx as fx
 
+        if node.op == "call_method" and node.target in ("flatten", "view", "reshape"):
+            x = self._arg(node.args[0])
+            if node.target == "flatten":
+                start = int(node.args[1]) if len(node.args) > 1 else 1
+                head = 1
+                for d in x.shape[:start]:
+                    head *= int(d)
+                tail = int(x.numel // max(head, 1))
+                new_shape = (head, tail) if start > 0 else (1, int(x.numel))
+            else:
+                new_shape = tuple(int(d) if d != -1 else 0 for d in node.args[1:])
+                if 0 in new_shape:
+                    known = 1
+                    for d in new_shape:
+                        if d != 0:
+                            known *= d
+                    new_shape = tuple(int(x.numel) // known if d == 0 else d for d in new_shape)
+            out = T(x.buf, tuple(int(d) for d in new_shape))
+            self.env[node.name] = out
+            # 登记 view 记录：反传到这个节点时要把梯度原样传回上游
+            self.recs.append(("view", node.name, x, out))
+            return out
         if node.op == "call_module":
             sub = self.gm.get_submodule(node.target)
             x = self._arg(node.args[0])
-            if isinstance(sub, nn.Linear):
+            if isinstance(sub, nn.Conv2d):
+                import gt1030.igpu_conv as CV
+                meta = self.conv_meta[node.target]
+                N, C, H, W = x.shape
+                OH = (H + 2 * meta["ph"] - meta["kh"]) // meta["sh"] + 1
+                OW = (W + 2 * meta["pw"] - meta["kw"]) // meta["sw"] + 1
+                if not hasattr(self, "_convs"):
+                    self._convs = {}
+                key = (node.name, N, C, H, W)
+                if key not in self._convs:
+                    self._convs[key] = CV.Conv2d(
+                        self.dev, N, C, H, W, meta["oc"], meta["kh"], meta["kw"],
+                        meta["sh"], meta["sw"], meta["ph"], meta["pw"])
+                layer = self._convs[key]
+                p = self.params[node.target + ".weight"]
+                pb = self.params.get(node.target + ".bias")
+                y_nhwc = layer.forward(x.buf, p.buf, pb.buf if pb is not None else None)
+                out = self._node_buf(node.name, (N, meta["oc"], OH, OW))
+                CV.K(self.dev)["nhwc2nchw"](
+                    self.dev.q, (N * meta["oc"] * OH * OW,), None, y_nhwc, out.buf,
+                    np.int32(N), np.int32(meta["oc"]), np.int32(OH), np.int32(OW))
+                self.recs.append(("conv2d", node.name, x, p, pb, layer, (N, OH, OW)))
+                self.env[node.name] = out
+            elif isinstance(sub, nn.Linear):
                 out = self._node_buf(node.name, (x.shape[0], sub.out_features))
                 p = self.params[node.target + ".weight"]
                 GEMM.hgemm_nt(
@@ -601,7 +668,26 @@ class Executor(object):
             g = pending.pop(name, None)
             if g is None:
                 continue
-            if kind == "linear":
+            if kind == "view":
+                # 形状变了但 buffer 相同，梯度直接回传给源张量
+                x_src = rec[2]
+                g_src = self._cached("bwd.view.g." + name, x_src.shape)
+                cl.enqueue_copy(self.dev.q, g_src, g)
+                self._propagate(pending, x_src, g_src)
+            elif kind == "conv2d":
+                import gt1030.igpu_conv as CV
+                x, p, pb, layer, (N, OH, OW) = rec[2], rec[3], rec[4], rec[5], rec[6]
+                dy_nhwc = self._cached("bwd.conv.dy." + name, (N, OH, OW, p.shape[0]))
+                CV.K(self.dev)["nchw2nhwc"](
+                    self.dev.q, (N * p.shape[0] * OH * OW,), None, g, dy_nhwc,
+                    np.int32(N), np.int32(p.shape[0]), np.int32(OH), np.int32(OW))
+                dx, dw, db = layer.backward(dy_nhwc, x.buf, p.buf)
+                self._acc_param(p, dw)
+                if pb is not None and db is not None:
+                    self._acc_param(pb, db)
+                    cl.enqueue_fill_buffer(self.dev.q, layer.db, np.uint16(0), 0, layer.db.size)
+                self._propagate(pending, x, dx)
+            elif kind == "linear":
                 x, p = rec[2], rec[3]
                 M, Kd, N = x.shape[0], p.shape[1], p.shape[0]
                 dx = self._cached("bwd.lin.dx." + name, (M, Kd))

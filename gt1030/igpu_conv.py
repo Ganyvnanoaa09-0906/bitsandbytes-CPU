@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
-"""igpu_conv.py — 核显 Conv2d 的**训练反向**（im2col + GEMM + col2im），补上阶段 2 的缺口。
+"""igpu_conv.py — Conv2d on the iGPU via im2col + CLBlast GEMM（fp16，groups=1，dilation=1）。
 
-现状：`opencl_fp16_ops.conv2d_h` 只有前向（im2col + Hgemm）。本模块补齐：
-    fwd : X_col = im2col(x) ; Y = X_col @ Wᵀ (hgemm_nt) ; reshape -> (N,O,Ho,Wo)
-    dW  : dW = dYᵀ @ X_col   (hgemm_tn)
-    dX  : dX_col = dY @ W    (hgemm_nn) ; dX = col2im(dX_col)
+布局约定：
+    输入 x   (N, C, H, W)  fp16
+    权重 w   (OC, C, KH, KW) → 展平成 (OC, K), K = C*KH*KW（**正好是 hgemm_nt 要的 B 布局**）
+    输出 y   (N, OC, OH, OW)
 
-col2im 用 **gather 版**（每个输出元素反向汇总），避免 atomic 竞争：
-    dX[n,c,h,w] = Σ_{kh,kw,ho,wo 映射到 (h,w)} dX_col[n,ho,wo,c,kh,kw]
+    forward : cols (M, K) = im2col(x)，M = N*OH*OW；y = cols @ wᵀ → hgemm_nt
+    dW      : hgemm_tn(dy, cols) → (OC, K)
+    dcols   : hgemm_nn(dy, w)    → (M, K)，再 col2im 累加回 dx
 
-用法/验收：
-    python gt1030/igpu_conv.py --check     # 与 torch conv2d 的 fwd/dW/dX 对拍
+    python gt1030/igpu_conv.py --check     # 与 torch 对拍 fwd/dx/dw
 """
 from __future__ import annotations
 
@@ -18,177 +18,244 @@ import argparse
 import sys
 
 sys.path.insert(0, r"D:\work\bitsandbytes-CPU")
-import ctypes  # noqa: E402
-
 import numpy as np  # noqa: E402
 import pyopencl as cl  # noqa: E402
 
-import gt1030.ar_v2_multi as MM  # noqa: E402
 import gt1030.igpu_ctx as CTX  # noqa: E402
-
-A = MM.A
-L = MM.L
+from gt1030.ar_v2_multi import A  # noqa: E402
+from gt1030.ar_v2_multi import L as GEMM  # noqa: E402  (hgemm_nt/nn/tn)
 
 SRC = r"""
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
-// X_col[m, k]，m = ((n*Ho + ho)*Wo + wo)，k = ((c*KH + kh)*KW + kw)
-__kernel void im2col_h(__global const half* x, __global half* col,
-                       int N, int C, int H, int W, int KH, int KW,
-                       int Ho, int Wo, int stride, int pad, int dil) {
-    int m = get_global_id(0), k = get_global_id(1);
+
+// im2col：(N,C,H,W) → (M, K)，M = N*OH*OW，K = C*KH*KW
+__kernel void im2col(__global const half* x, __global half* cols,
+                     int N, int C, int H, int W, int KH, int KW,
+                     int OH, int OW, int SH, int SW, int PH, int PW) {
+    int m = get_global_id(0);          // n*OH*OW + oh*OW + ow
+    int k = get_global_id(1);          // c*KH*KW + kh*KW + kw
     int K = C * KH * KW;
-    if (k >= K) return;
-    int kw = k % KW, kh = (k / KW) % KH, c = k / (KW * KH);
-    int wo = m % Wo, ho = (m / Wo) % Ho, n = m / (Wo * Ho);
-    int hi = ho * stride - pad + kh * dil;
-    int wi = wo * stride - pad + kw * dil;
-    half v = (half)0;
-    if (hi >= 0 && hi < H && wi >= 0 && wi < W)
-        v = x[(((long)n * C + c) * H + hi) * W + wi];
-    col[(long)m * K + k] = v;
+    int M = N * OH * OW;
+    if (m >= M || k >= K) return;
+    int ow = m % OW, t = m / OW;
+    int oh = t % OH, n = t / OH;
+    int kw = k % KW, t2 = k / KW;
+    int kh = t2 % KH, c = t2 / KH;
+    int ih = oh * SH - PH + kh;
+    int iw = ow * SW - PW + kw;
+    float v = 0.f;
+    if (ih >= 0 && ih < H && iw >= 0 && iw < W)
+        v = (float)x[((long)(n * C + c) * H + ih) * W + iw];
+    cols[(long)m * K + k] = (half)v;
 }
 
-// dX[n,c,h,w] = Σ dX_col[m, k]  (gather)
-__kernel void col2im_h(__global const half* dcol, __global half* dx,
-                       int N, int C, int H, int W, int KH, int KW,
-                       int Ho, int Wo, int stride, int pad, int dil) {
-    int idx = get_global_id(0);
+// col2im（gather 版）：每个输入元素汇总所有覆盖它的 (oh,ow,kh,kw)。
+// 原实现用 read-modify-write 累加，重叠窗口会丢更新（stride1 时错得一塌糊涂）。
+__kernel void col2im(__global const half* dcols, __global half* dx,
+                     int N, int C, int H, int W, int KH, int KW,
+                     int OH, int OW, int SH, int SW, int PH, int PW) {
+    long idx = get_global_id(0);
     long total = (long)N * C * H * W;
     if (idx >= total) return;
-    int w = idx % W, h = (idx / W) % H, c = (h / 1) % H, n;
-    h = (idx / W) % H;
-    c = (idx / (W * H)) % C;
-    n = idx / (W * H * C);
+    int iw = idx % W, t = idx / W;
+    int ih = t % H; t /= H;
+    int c = t % C, n = t / C;
     int K = C * KH * KW;
     float acc = 0.f;
     for (int kh = 0; kh < KH; ++kh) {
-        int t = h + pad - kh * dil;
-        if (t % stride != 0) continue;
-        int ho = t / stride;
-        if (ho < 0 || ho >= Ho) continue;
+        int a = ih + PH - kh;
+        if (a < 0 || a % SH != 0) continue;
+        int oh = a / SH;
+        if (oh >= OH) continue;
         for (int kw = 0; kw < KW; ++kw) {
-            int u = w + pad - kw * dil;
-            if (u % stride != 0) continue;
-            int wo = u / stride;
-            if (wo < 0 || wo >= Wo) continue;
-            long m = ((long)n * Ho + ho) * Wo + wo;
-            int k = ((c * KH + kh) * KW + kw);
-            acc += (float)dcol[m * K + k];
+            int b = iw + PW - kw;
+            if (b < 0 || b % SW != 0) continue;
+            int ow = b / SW;
+            if (ow >= OW) continue;
+            long m = (long)(n * OH + oh) * OW + ow;
+            acc += (float)dcols[m * K + (c * KH + kh) * KW + kw];
         }
     }
     dx[idx] = (half)acc;
 }
+
+
+// (N,OH,OW,OC) → (N,OC,OH,OW)
+__kernel void nhwc2nchw(__global const half* src, __global half* dst,
+                        int N, int OC, int OH, int OW) {
+    long i = get_global_id(0);
+    long total = (long)N * OC * OH * OW;
+    if (i >= total) return;
+    int ow = i % OW, t = i / OW;
+    int oh = t % OH; t /= OH;
+    int oc = t % OC, n = t / OC;
+    dst[i] = src[(((long)n * OH + oh) * OW + ow) * OC + oc];
+}
+
+// (N,OC,OH,OW) → (N,OH,OW,OC)
+__kernel void nchw2nhwc(__global const half* src, __global half* dst,
+                        int N, int OC, int OH, int OW) {
+    long i = get_global_id(0);
+    long total = (long)N * OC * OH * OW;
+    if (i >= total) return;
+    int ow = i % OW, t = i / OW;
+    int oh = t % OH; t /= OH;
+    int oc = t % OC, n = t / OC;
+    dst[(((long)n * OH + oh) * OW + ow) * OC + oc] = src[i];
+}
+
+// y += bias[o]
+__kernel void bias_add_oc(__global half* y, __global const half* b, int M, int OC) {
+    int m = get_global_id(0), o = get_global_id(1);
+    if (m >= M || o >= OC) return;
+    long i = (long)m * OC + o;
+    y[i] = (half)((float)y[i] + (float)b[o]);
+}
+
+// dy 的 bias 梯度：sum over m
+__kernel void bias_grad_oc(__global const half* dy, __global half* db, int M, int OC) {
+    int o = get_global_id(0);
+    if (o >= OC) return;
+    float acc = 0.f;
+    for (int m = 0; m < M; ++m) acc += (float)dy[(long)m * OC + o];
+    db[o] = (half)((float)db[o] + acc);
+}
 """
 
+_C = {}
 
-class Conv2dCtx(object):
-    """groups=1 的 Conv2d（fp16，设备常驻）。所有缓冲来自一个 DevCtx 的 arena。"""
 
-    def __init__(self, n, c, h, w, o, kh, kw, stride=1, pad=1, dil=1, dev=None):
+def K(dev):
+    key = int(dev.ctx.int_ptr)
+    if key not in _C:
+        prog = cl.Program(dev.ctx, SRC).build(
+            options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
+        _C[key] = {n: cl.Kernel(prog, n) for n in
+                   ("im2col", "col2im", "bias_add_oc", "bias_grad_oc",
+                   "nhwc2nchw", "nchw2nhwc")}
+    return _C[key]
+
+
+class Conv2d(object):
+    """单层 Conv2d（训练用）：forward / backward 都只用 im2col + CLBlast GEMM。"""
+
+    def __init__(self, dev, n, c, h, w, oc, kh, kw, sh=1, sw=1, ph=0, pw=0, bias=True):
+        self.dev = dev
         self.N, self.C, self.H, self.W = n, c, h, w
-        self.O, self.KH, self.KW = o, kh, kw
-        self.stride, self.pad, self.dil = stride, pad, dil
-        self.Ho = (h + 2 * pad - dil * (kh - 1) - 1) // stride + 1
-        self.Wo = (w + 2 * pad - dil * (kw - 1) - 1) // stride + 1
-        self.M = n * self.Ho * self.Wo
-        self.K = c * kh * kw
-        self.dev = dev or CTX.DevCtx(arena_mb=400, name="conv")
-        d = self.dev
-        d.activate()
-        self.K_ = d.program(SRC, ["im2col_h", "col2im_h"])
-        self.x = d.buf(n * c * h * w * 2)
-        self.wt = d.buf(o * self.K * 2)          # torch 布局 (O, C*KH*KW)
-        self.col = d.buf(self.M * self.K * 2)
-        self.y = d.buf(self.M * o * 2)
-        self.dy = d.buf(self.M * o * 2)
-        self.dx = d.buf(n * c * h * w * 2)
-        self.dcol = d.buf(self.M * self.K * 2)
-        self.dw = d.buf(o * self.K * 2)
+        self.OC, self.KH, self.KW = oc, kh, kw
+        self.SH, self.SW, self.PH, self.PW = sh, sw, ph, pw
+        self.OH = (h + 2 * ph - kh) // sh + 1
+        self.OW = (w + 2 * pw - kw) // sw + 1
+        self.Kdim = c * kh * kw
+        self.M = n * self.OH * self.OW
+        self.has_bias = bias
+        d = dev
+        self.cols = d.buf(max(4096, self.M * self.Kdim * 2))
+        self.dcols = d.buf(max(4096, self.M * self.Kdim * 2))
+        self.y = d.buf(max(4096, self.M * self.OC * 2))
+        self.dy = d.buf(max(4096, self.M * self.OC * 2))
+        self.dx = d.buf(max(4096, self.N * self.C * self.H * self.W * 2))
+        self.dw = d.buf(max(4096, self.OC * self.Kdim * 2))
+        if bias:
+            self.b = d.buf(max(4096, self.OC * 2))
+            self.db = d.buf(max(4096, self.OC * 2))
 
-    # ---- 数据进出 ----
-    def set_x(self, x):
+    # ---- 前向 ----
+    # 布局：x (N,C,H,W)；w (OC, C*KH*KW)；输出 y (N, OH, OW, OC)——**通道在最后**
+    def forward(self, x, w, b=None):
         d = self.dev
-        cl.enqueue_copy(d.q, self.x, np.ascontiguousarray(x, dtype=np.float16))
-        d.q.finish()
-
-    def set_w(self, w):
-        d = self.dev
-        cl.enqueue_copy(d.q, self.wt, np.ascontiguousarray(w, dtype=np.float16))
-        d.q.finish()
-
-    def get(self, buf, shape):
-        return self.dev.down(buf, shape)
-
-    # ---- 计算 ----
-    def forward(self):
-        d = self.dev
-        d.activate()
-        self.K_["im2col_h"](d.q, (self.M, self.K), None, self.x, self.col,
-                            np.int32(self.N), np.int32(self.C), np.int32(self.H),
-                            np.int32(self.W), np.int32(self.KH), np.int32(self.KW),
-                            np.int32(self.Ho), np.int32(self.Wo), np.int32(self.stride),
-                            np.int32(self.pad), np.int32(self.dil))
-        L.hgemm_nt(self.col, self.wt, self.y, self.M, self.O, self.K)
+        K(d)["im2col"](d.q, (self.M, self.Kdim), None, x, self.cols,
+                       np.int32(self.N), np.int32(self.C), np.int32(self.H), np.int32(self.W),
+                       np.int32(self.KH), np.int32(self.KW),
+                       np.int32(self.OH), np.int32(self.OW),
+                       np.int32(self.SH), np.int32(self.SW),
+                       np.int32(self.PH), np.int32(self.PW))
+        GEMM.hgemm_nt(self.cols, w, self.y, self.M, self.OC, self.Kdim)
+        if self.has_bias and b is not None:
+            K(d)["bias_add_oc"](d.q, (self.M, self.OC), None, self.y, b,
+                                np.int32(self.M), np.int32(self.OC))
         d.q.finish()
         return self.y
 
-    def backward(self, dy):
+    # ---- 反向：返回 (dx, dw, db) ----
+    def backward(self, dy, x, w):
         d = self.dev
-        d.activate()
-        cl.enqueue_copy(d.q, self.dy, np.ascontiguousarray(dy, dtype=np.float16))
+        cl.enqueue_copy(d.q, self.dy, dy)
+        GEMM.hgemm_tn(self.dy, self.cols, self.dw, self.OC, self.Kdim, self.M)
+        GEMM.hgemm_nn(self.dy, w, self.dcols, self.M, self.Kdim, self.OC)
+        K(d)["col2im"](d.q, (self.N * self.C * self.H * self.W,), None, self.dcols, self.dx,
+                       np.int32(self.N), np.int32(self.C), np.int32(self.H), np.int32(self.W),
+                       np.int32(self.KH), np.int32(self.KW),
+                       np.int32(self.OH), np.int32(self.OW),
+                       np.int32(self.SH), np.int32(self.SW),
+                       np.int32(self.PH), np.int32(self.PW))
+        if self.has_bias:
+            K(d)["bias_grad_oc"](d.q, (self.OC,), None, self.dy, self.db,
+                                 np.int32(self.M), np.int32(self.OC))
         d.q.finish()
-        L.hgemm_tn(self.dy, self.col, self.dw, self.O, self.K, self.M)      # dW
-        L.hgemm_nn(self.dy, self.wt, self.dcol, self.M, self.K, self.O)     # dX_col
-        self.K_["col2im_h"](d.q, (self.N * self.C * self.H * self.W,), None,
-                            self.dcol, self.dx, np.int32(self.N), np.int32(self.C),
-                            np.int32(self.H), np.int32(self.W), np.int32(self.KH),
-                            np.int32(self.KW), np.int32(self.Ho), np.int32(self.Wo),
-                            np.int32(self.stride), np.int32(self.pad), np.int32(self.dil))
-        d.q.finish()
-        return self.dx, self.dw
+        return self.dx, self.dw, (self.db if self.has_bias else None)
 
 
-def _check(n=2, c=3, h=8, w=8, o=4, kh=3, kw=3, stride=1, pad=1):
+def check(n=2, c=3, h=9, w=9, oc=4, kh=3, kw=3, sh=2, sw=2, ph=1, pw=1, seed=0):
     import torch
     import torch.nn.functional as F
-    rng = np.random.default_rng(0)
-    x = (rng.standard_normal((n, c, h, w)) * 0.3).astype(np.float16)
-    wt = (rng.standard_normal((o, c, kh, kw)) * 0.2).astype(np.float16)
-    cv = Conv2dCtx(n, c, h, w, o, kh, kw, stride, pad)
-    cv.set_x(x)
-    cv.set_w(wt)
-    cv.forward()
-    y = cv.get(cv.y, (cv.M, o)).reshape(n, cv.Ho, cv.Wo, o).transpose(0, 3, 1, 2)
-    dy = (rng.standard_normal((n, o, cv.Ho, cv.Wo)) * 0.1).astype(np.float16)
-    cv.backward(dy.transpose(0, 2, 3, 1).reshape(cv.M, o))
-    dx = cv.get(cv.dx, (n, c, h, w))
-    dw = cv.get(cv.dw, (o, c * kh * kw)).reshape(o, c, kh, kw)
 
-    tx = torch.from_numpy(x.astype(np.float32)).requires_grad_(True)
-    tw = torch.from_numpy(wt.astype(np.float32)).requires_grad_(True)
-    ty = F.conv2d(tx, tw, stride=stride, padding=pad)
-    ty.backward(torch.from_numpy(dy.astype(np.float32)))
+    rng = np.random.default_rng(seed)
+    x = (rng.standard_normal((n, c, h, w)) * 0.5).astype(np.float32)
+    wt = (rng.standard_normal((oc, c, kh, kw)) * 0.2).astype(np.float32)
+    bt = (rng.standard_normal(oc) * 0.1).astype(np.float32)
+
+    dev = CTX.DevCtx(arena_mb=600, name="conv2d")
+    dev.activate()
+    layer = Conv2d(dev, n, c, h, w, oc, kh, kw, sh, sw, ph, pw)
+    xd = dev.up(x.astype(np.float16))
+    wd = dev.up(wt.reshape(oc, -1).astype(np.float16))
+    bd = dev.up(bt.astype(np.float16))
+
+    y_dev = layer.forward(xd, wd, bd)
+    # 设备侧输出布局是 (N,OH,OW,OC)；torch 是 (N,OC,OH,OW)
+    yv = dev.down(y_dev, (n, layer.OH, layer.OW, oc)).transpose(0, 3, 1, 2).astype(np.float32)
+
+    dy = (rng.standard_normal((n, oc, layer.OH, layer.OW)) * 0.3).astype(np.float32)
+    dy_dev = dev.up(np.ascontiguousarray(dy.transpose(0, 2, 3, 1)).astype(np.float16))
+    dx_dev, dw_dev, db_dev = layer.backward(dy_dev, xd, wd)
+    dxv = dev.down(dx_dev, (n, c, h, w)).astype(np.float32)
+    dwv = dev.down(dw_dev, (oc, c * kh * kw)).astype(np.float32)
+    dbv = dev.down(db_dev, (oc,)).astype(np.float32) if db_dev is not None else None
+
+    # torch 参考
+    tx = torch.from_numpy(x).requires_grad_(True)
+    tw = torch.from_numpy(wt).requires_grad_(True)
+    tb = torch.from_numpy(bt).requires_grad_(True)
+    ty = F.conv2d(tx, tw, tb, stride=(sh, sw), padding=(ph, pw))
+    ty.backward(torch.from_numpy(dy))
 
     def rel(a, b):
-        a = a.astype(np.float32); b = b.detach().numpy().astype(np.float32)
         return float(np.linalg.norm(a - b) / (np.linalg.norm(b) + 1e-12))
 
-    ey, ex, ew = rel(y, ty), rel(dx, tx.grad), rel(dw, tw.grad)
-    print("  conv2d N%d C%d %dx%d O%d k%dx%d s%d p%d | relL2 y=%.2e dx=%.2e dw=%.2e"
-          % (n, c, h, w, o, kh, kw, stride, pad, ey, ex, ew))
-    ok = max(ey, ex, ew) < 5e-2
-    print("RESULT " + ("PASS" if ok else "FAIL"))
-    return 0 if ok else 1
+    r_f = rel(yv, ty.detach().numpy())
+    r_x = rel(dxv, tx.grad.numpy())
+    r_w = rel(dwv, tw.grad.reshape(oc, -1).numpy())
+    r_b = rel(dbv, tb.grad.numpy()) if dbv is not None else 0.0
+    print("  conv2d N%d C%d HxW%dx%d → OC%d %dx%d s%d p%d"
+          % (n, c, h, w, oc, kh, kw, sh, ph))
+    print("    fwd %.2e   dx %.2e   dw %.2e   db %.2e   (fp16)" % (r_f, r_x, r_w, r_b))
+    return max(r_f, r_x, r_w, r_b) < 3e-2
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true")
     a = ap.parse_args()
-    if a.check:
-        return _check()
-    print("  用 --check 运行对拍")
-    return 0
+    if not a.check:
+        print(__doc__)
+        return 0
+    ok = True
+    ok &= check(n=2, c=3, h=9, w=9, oc=4, kh=3, kw=3, sh=1, sw=1, ph=1, pw=1)
+    ok &= check(n=2, c=4, h=8, w=8, oc=6, kh=3, kw=3, sh=2, sw=2, ph=1, pw=1)
+    ok &= check(n=1, c=4, h=7, w=7, oc=3, kh=1, kw=1, sh=1, sw=1, ph=0, pw=0)
+    print("RESULT " + ("PASS" if ok else "FAIL"))
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
