@@ -42,7 +42,17 @@ class LoRAConv2d(nn.Module):
         self.base = base
         for p in self.base.parameters():
             p.requires_grad_(False)
-        self.lora_A = nn.Conv2d(base.in_channels, r, 1, bias=False)
+        # A must reproduce the base's spatial geometry (stride/padding included);
+        # B is the 1x1 low-rank output projection.
+        self.lora_A = nn.Conv2d(
+            base.in_channels,
+            r,
+            base.kernel_size,
+            stride=base.stride,
+            padding=base.padding,
+            dilation=base.dilation,
+            bias=False,
+        )
         self.lora_B = nn.Conv2d(r, base.out_channels, 1, bias=False)
         nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
         nn.init.zeros_(self.lora_B.weight)

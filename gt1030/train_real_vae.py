@@ -23,6 +23,7 @@ import torch.nn as nn  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 
 import gt1030.igpu_fx as FX  # noqa: E402
+from gt1030.igpu_lora import lora_parameters, wrap_lora  # noqa: E402
 
 SCALE = 65536.0
 
@@ -94,10 +95,20 @@ def main() -> int:
         action="store_true",
         help="冻结底座，只训 conv_out（LoRA/线性探针用）",
     )
+    ap.add_argument(
+        "--lora-r",
+        type=int,
+        default=0,
+        help=">0 时给所有 Conv2d 加 LoRA adapter，底座冻结",
+    )
     a = ap.parse_args()
 
     torch.manual_seed(0)
     enc = build_encoder(a.vae, a.size)
+    nwrap = 0
+    if a.lora_r > 0:
+        nwrap = wrap_lora(enc, r=a.lora_r, conv=True)
+        print("  LoRA：%d 个 Conv2d adapter，r=%d，底座冻结" % (nwrap, a.lora_r))
     nparam = sum(p.numel() for p in enc.parameters())
     print(
         "  真实 SD1.5 VAE 编码器：%.1f M 参数 · 输入 %d×3×%d×%d"
@@ -112,7 +123,9 @@ def main() -> int:
 
     # ---------- 核显 ----------
     ex_kw = dict(state_bits=a.bits, arena_mb=a.arena)
-    if a.freeze_conv_out:
+    if a.lora_r > 0:
+        ex_kw.update(freeze_base=True, trainable_names=["lora"])
+    elif a.freeze_conv_out:
         ex_kw.update(freeze_base=True, trainable_names=["conv_out"])
     ex = FX.Executor(enc, x, **ex_kw)
     ex.auto_zero_grads = True
@@ -148,8 +161,16 @@ def main() -> int:
 
     # ---------- torch 参考 ----------
     ref = build_encoder(a.vae, a.size)
+    if a.lora_r > 0:
+        wrap_lora(ref, r=a.lora_r, conv=True)
     ref.load_state_dict(enc.state_dict())
-    if a.freeze_conv_out:
+    if a.lora_r > 0:
+        for p in ref.parameters():
+            p.requires_grad_(False)
+        for p in lora_parameters(ref):
+            p.requires_grad_(True)
+        opt = torch.optim.Adam(lora_parameters(ref), lr=a.lr, eps=1e-8)
+    elif a.freeze_conv_out:
         for p in ref.parameters():
             p.requires_grad_(False)
         for p in ref.conv_out.parameters():
