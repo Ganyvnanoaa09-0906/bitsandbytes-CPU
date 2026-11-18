@@ -8,6 +8,7 @@
     python gt1030/train_real_vae.py --steps 120
     python gt1030/train_real_vae.py --steps 120 --bits 8 --size 64
 """
+
 from __future__ import annotations
 
 import argparse
@@ -28,6 +29,7 @@ SCALE = 65536.0
 
 def build_encoder(vae_dir, size):
     from diffusers import AutoencoderKL
+
     vae = AutoencoderKL.from_pretrained(vae_dir)
     vae.eval()
     e = vae.encoder
@@ -87,20 +89,32 @@ def main() -> int:
     ap.add_argument("--bits", type=int, default=8)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--arena", type=int, default=3000)
+    ap.add_argument(
+        "--freeze-conv-out",
+        action="store_true",
+        help="冻结底座，只训 conv_out（LoRA/线性探针用）",
+    )
     a = ap.parse_args()
 
     torch.manual_seed(0)
     enc = build_encoder(a.vae, a.size)
     nparam = sum(p.numel() for p in enc.parameters())
-    print("  真实 SD1.5 VAE 编码器：%.1f M 参数 · 输入 %d×3×%d×%d"
-          % (nparam / 1e6, a.batch, a.size, a.size))
+    print(
+        "  真实 SD1.5 VAE 编码器：%.1f M 参数 · 输入 %d×3×%d×%d"
+        % (nparam / 1e6, a.batch, a.size, a.size)
+    )
 
     x = torch.randn(a.batch, 3, a.size, a.size)
     with torch.no_grad():
-        tgt = enc(x) + torch.randn_like(enc(x)) * 0.1   # 目标：编码输出 + 噪声（可训的回归任务）
+        tgt = (
+            enc(x) + torch.randn_like(enc(x)) * 0.1
+        )  # 目标：编码输出 + 噪声（可训的回归任务）
 
     # ---------- 核显 ----------
-    ex = FX.Executor(enc, x, state_bits=a.bits, arena_mb=a.arena)
+    ex_kw = dict(state_bits=a.bits, arena_mb=a.arena)
+    if a.freeze_conv_out:
+        ex_kw.update(freeze_base=True, trainable_names=["conv_out"])
+    ex = FX.Executor(enc, x, **ex_kw)
     ex.auto_zero_grads = True
     ex.sync_from_torch()
     td = ex.dev.up(tgt.numpy().astype(np.float16))
@@ -111,12 +125,22 @@ def main() -> int:
         ex.zero_grads()
         y = ex.forward({"x": x.numpy()})
         n = int(np.prod(y.shape))
-        dy_np = (2.0 / n) * (ex.dev.down(y.buf, y.shape).astype(np.float32)
-                             - tgt.numpy()) * SCALE
-        dl.append(float(np.mean((ex.dev.down(y.buf, y.shape).astype(np.float32)
-                                 - tgt.numpy()) ** 2)))
+        dy_np = (
+            (2.0 / n)
+            * (ex.dev.down(y.buf, y.shape).astype(np.float32) - tgt.numpy())
+            * SCALE
+        )
+        dl.append(
+            float(
+                np.mean(
+                    (ex.dev.down(y.buf, y.shape).astype(np.float32) - tgt.numpy()) ** 2
+                )
+            )
+        )
         dyb = ex._cached("train.dy", (n,))
-        cl.enqueue_copy(ex.dev.q, dyb, np.ascontiguousarray(dy_np.reshape(-1), np.float16))
+        cl.enqueue_copy(
+            ex.dev.q, dyb, np.ascontiguousarray(dy_np.reshape(-1), np.float16)
+        )
         ex.backward(dyb, y.shape)
         ex.step(a.lr, t, eps=1e-8 * SCALE)
         ms.append(1000 * (time.time() - s))
@@ -125,7 +149,14 @@ def main() -> int:
     # ---------- torch 参考 ----------
     ref = build_encoder(a.vae, a.size)
     ref.load_state_dict(enc.state_dict())
-    opt = torch.optim.Adam(ref.parameters(), lr=a.lr, eps=1e-8)
+    if a.freeze_conv_out:
+        for p in ref.parameters():
+            p.requires_grad_(False)
+        for p in ref.conv_out.parameters():
+            p.requires_grad_(True)
+        opt = torch.optim.Adam(ref.conv_out.parameters(), lr=a.lr, eps=1e-8)
+    else:
+        opt = torch.optim.Adam(ref.parameters(), lr=a.lr, eps=1e-8)
     tl = []
     t0 = time.time()
     for t in range(a.steps):
@@ -141,10 +172,16 @@ def main() -> int:
         if i < a.steps:
             print("  %4d  %10.6f  %10.6f" % (i + 1, dl[i], tl[i]))
     print("  末步相对差 %.2e" % (abs(dl[-1] - tl[-1]) / max(abs(tl[-1]), 1e-12)))
-    print("  步时: device %.1f ms · torch(CPU) %.1f ms · 加速 %.2fx"
-          % (np.mean(ms), 1000 * cpu_wall / a.steps,
-             (cpu_wall / a.steps) / (np.mean(ms) / 1000)))
+    print(
+        "  步时: device %.1f ms · torch(CPU) %.1f ms · 加速 %.2fx"
+        % (
+            np.mean(ms),
+            1000 * cpu_wall / a.steps,
+            (cpu_wall / a.steps) / (np.mean(ms) / 1000),
+        )
+    )
     import gt1030.igpu_fx as _FX
+
     nbuf = len(getattr(ex, "_node_bufs", {}))
     print("  设备缓冲 %d 个 · arena 用 %.0f MB" % (nbuf, ex.dev._off / 1048576))
     return 0
