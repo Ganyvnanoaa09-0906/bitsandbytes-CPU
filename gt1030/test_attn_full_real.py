@@ -14,9 +14,39 @@ import torch
 import torch.nn.functional as F
 
 import gt1030.igpu_ctx as CTX
+import gt1030.igpu_fx as FX
 from gt1030.igpu_attn_full import FullAttn
 
 VAE = r"D:\work\textmodel\_sd15_combined\vae"
+
+
+
+def block_check():
+    """Whole diffusers Attention block: group_norm + qkv + out + residual."""
+    from diffusers import AutoencoderKL
+
+    vae = AutoencoderKL.from_pretrained(VAE)
+    vae.eval()
+    a = vae.decoder.mid_block.attentions[0]
+    C = a.to_q.in_features
+    x = torch.randn(2, C, 8, 8)
+    with torch.no_grad():
+        yref = a(x)
+    fm = FX.FullAttnModule(C)
+    with torch.no_grad():
+        fm.q_proj.weight.copy_(a.to_q.weight)
+        fm.q_proj.bias.copy_(a.to_q.bias)
+        fm.k_proj.weight.copy_(a.to_k.weight)
+        fm.k_proj.bias.copy_(a.to_k.bias)
+        fm.v_proj.weight.copy_(a.to_v.weight)
+        fm.v_proj.bias.copy_(a.to_v.bias)
+        fm.o_proj.weight.copy_(a.to_out[0].weight)
+        fm.o_proj.bias.copy_(a.to_out[0].bias)
+        h = a.group_norm(x)
+        y = x + fm(h) if getattr(a, "residual_connection", False) else fm(h)
+    rel = float((y - yref).norm() / yref.norm())
+    print("  whole block rel = %.2e" % rel)
+    return rel < 2e-2
 
 
 def main() -> int:
@@ -62,8 +92,10 @@ def main() -> int:
 
     rel = np.linalg.norm(yv - o) / np.linalg.norm(o)
     print("  forward rel = %.2e" % rel)
-    print("RESULT " + ("PASS" if rel < 2e-2 else "FAIL"))
-    return 0 if rel < 2e-2 else 1
+    ok = rel < 2e-2
+    ok &= block_check()
+    print("RESULT " + ("PASS" if ok else "FAIL"))
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
