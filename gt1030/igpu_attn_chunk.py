@@ -32,6 +32,43 @@ SRC = r"""
 
 // 矩形 softmax：S 是 (n_rows, Tk) 的连续块，逐行在整行 Tk 上归一化
 // （chunked 调用时每个块只含一个样本，所以窗口 = 整行）
+
+// 每行一个 work-group（默认 256 线程），组内归约 max/sum：
+// 相比"一行一个 work-item"的串行实现，Tk=4096 时并行度提升 256 倍
+__kernel void softmax_rect_fast(__global const half* s, __global half* p,
+                                int n_rows, int Tk, float scale) {
+    __local float lmax[256];
+    __local float lsum[256];
+    int row = get_group_id(0);
+    int lid = get_local_id(0);
+    int lsz = get_local_size(0);
+    if (row >= n_rows) return;
+    long base = (long)row * Tk;
+
+    float mx = -INFINITY;
+    for (int j = lid; j < Tk; j += lsz) mx = fmax(mx, (float)s[base + j] * scale);
+    lmax[lid] = mx;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int st = lsz >> 1; st > 0; st >>= 1) {
+        if (lid < st) lmax[lid] = fmax(lmax[lid], lmax[lid + st]);
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    float m = lmax[0];
+
+    float sum = 0.f;
+    for (int j = lid; j < Tk; j += lsz) sum += exp((float)s[base + j] * scale - m);
+    lsum[lid] = sum;
+    barrier(CLK_LOCAL_MEM_FENCE);
+    for (int st = lsz >> 1; st > 0; st >>= 1) {
+        if (lid < st) lsum[lid] += lsum[lid + st];
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+    float inv = 1.f / lsum[0];
+
+    for (int j = lid; j < Tk; j += lsz)
+        p[base + j] = (half)(exp((float)s[base + j] * scale - m) * inv);
+}
+
 __kernel void softmax_rect(__global const half* s, __global half* p,
                            int n_rows, int Tk, float scale) {
     long row = get_global_id(0);
@@ -98,7 +135,7 @@ def CK(dev):
         prog = cl.Program(dev.ctx, SRC).build(
             options=["-cl-mad-enable", "-cl-fast-relaxed-math"])
         _C[key] = {n: cl.Kernel(prog, n) for n in ("chunk_rowsum", "chunk_ds", "head_split", "head_merge",
-                      "softmax_rect")}
+                      "softmax_rect", "softmax_rect_fast")}
     return _C[key]
 
 
@@ -136,8 +173,10 @@ def attn_chunked(dev, q_buf, k_buf, v_buf, o_buf, B, Tq, Tk, C, bq=512):
             cl.enqueue_copy(dev.q, tmpq, q_buf,
                             src_offset=(qbase + done * C) * 2, byte_count=rows * C * 2)
             GEMM.hgemm_nt(tmpq, tmpk, sb, rows, Tk, C)
-            CK(dev)["softmax_rect"](dev.q, (rows,), None, sb, pb,
-                                    np.int32(rows), np.int32(Tk), np.float32(scale))
+            # 每行一个 work-group（256 线程归约）替代"一行一线程"的串行版
+            _ls = 256
+            CK(dev)["softmax_rect_fast"](dev.q, (rows * _ls,), (_ls,), sb, pb,
+                                         np.int32(rows), np.int32(Tk), np.float32(scale))
             GEMM.hgemm_nn(pb, tmpv, tmpq, rows, C, Tk)
             cl.enqueue_copy(dev.q, o_buf, tmpq,
                             dst_offset=(obase + done * C) * 2, byte_count=rows * C * 2)
