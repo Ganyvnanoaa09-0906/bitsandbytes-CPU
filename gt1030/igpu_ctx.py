@@ -78,6 +78,7 @@ class DevCtx(object):
         self._map = {}            # cl.Buffer -> (chunk_idx, offset, size, tag)
         self._dead = {}           # id(Buffer) -> tag（用于 double release 报两处 owner）
         self._stats = {"reused": 0, "freed": 0, "double": 0}
+        self._session = None      # 非 None 时记录本次会话分配的所有 buffer
         self._ensure_chunk(0)
 
     # ---- 生命周期 ----
@@ -106,6 +107,23 @@ class DevCtx(object):
                                    % (self.name, len(self.arenas),
                                       self._chunk_bytes / 1048576.0, error))
         return self.arenas[idx]
+
+    def begin_session(self):
+        """开始记录分配；配合 end_session() 做整轮回收。"""
+        self._session = []
+
+    def end_session(self, keep=()):
+        """归还本轮分配的缓冲（keep 里的除外），让下一轮从头开始。"""
+        keep_ids = {id(b) for b in keep if b is not None}
+        bufs = self._session or []
+        self._session = None
+        freed = 0
+        for b in bufs:
+            if id(b) in keep_ids:
+                continue
+            if self.release(b):
+                freed += 1
+        return freed
 
     def release(self, b):
         """显式归还：把 b 放回所属 chunk 的空闲表（权重不要调用它）。"""
@@ -146,6 +164,8 @@ class DevCtx(object):
         self._map[b] = (idx, off, n, "reuse:" + tag)
         self._off += n
         self._stats["reused"] += n
+        if self._session is not None:
+            self._session.append(b)
         return b
 
     def buf(self, nbytes, tag=""):
@@ -178,6 +198,8 @@ class DevCtx(object):
         self._off += n
         self._peak = max(self._peak, self._off)
         self._n += 1
+        if self._session is not None:
+            self._session.append(b)
         return b
 
     def up(self, arr):

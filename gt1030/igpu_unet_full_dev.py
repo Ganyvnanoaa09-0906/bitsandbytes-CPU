@@ -101,7 +101,10 @@ def _buf(dev, n):
 
 def _up_h(dev, arr):
     a = np.ascontiguousarray(arr, np.float16)
+    _saved = dev._session
+    dev._session = None          # 权重/输入常驻，不归会话管理
     b = dev.buf(a.nbytes)
+    dev._session = _saved
     # 阻塞拷贝：源是临时 numpy，异步拷贝可能在完成前就被回收（64×64 下暴露出来）
     cl.enqueue_copy(dev.q, b, a, is_blocking=True)
     return b
@@ -330,6 +333,7 @@ def full_forward(dev, u, sample_np, timestep_np, enc_np, wc=None, verbose=True):
     D = u.config.block_out_channels[-1]
     STAGES.clear()
 
+    dev.begin_session()
     x = _up_h(dev, sample_np)
     wci, bci = wc.lin(u.conv_in)
     OCi = u.conv_in.out_channels   # ★ 320，不是 block_out_channels[-1]
@@ -455,6 +459,7 @@ def full_forward(dev, u, sample_np, timestep_np, enc_np, wc=None, verbose=True):
     _stat("out", out, (N, u.conv_out.out_channels, H, Wd))
     dev.q.finish()
     _note(dev, "conv_out")
+    dev.end_session(keep=(out,))     # 本轮其余缓冲全部归还，下一轮从头开始
     if verbose:
         for name, mb in STAGES:
             print("    %-10s %7.0f MB" % (name, mb))
