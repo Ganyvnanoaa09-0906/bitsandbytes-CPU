@@ -230,6 +230,8 @@ def attn_chunked_heads(dev, q_buf, k_buf, v_buf, o_buf, B, Tq, Tk, C, heads, bq=
             cl.enqueue_copy(dev.q, dst, src,
                             src_offset=h * rq * dh * 2 if src is qh else h * rk * dh * 2,
                             byte_count=(rq if src is qh else rk) * dh * 2)
+        # 切片拷贝后再进 attn：内联验证过的版本有这一步，缺它时多头结果全零
+        dev.q.finish()
         attn_chunked(dev, qs, ks, vs, os_, B, Tq, Tk, dh, bq=min(bq, Tq))
         cl.enqueue_copy(dev.q, oh, os_, dst_offset=h * rq * dh * 2, byte_count=rq * dh * 2)
     CK(dev)["head_merge"](dev.q, (rq * C,), None, oh, o_buf, np.int32(rq), np.int32(C), np.int32(heads))
