@@ -43,6 +43,13 @@ def _mb(dev):
 def _probe(dev, name, buf, shape):
     import os
 
+    # DSH_SYNC_AT=up2,up3 ：只在这些阶段做一次阻塞读（不打印），用于定位可见性问题
+    _sync_at = os.environ.get("DSH_SYNC_AT")
+    if _sync_at is not None:
+        if name in [t.strip() for t in _sync_at.split(",") if t.strip()]:
+            dev.down(buf, shape)      # 真实阻塞读，结果丢弃
+            dev.q.finish()
+        return
     if not os.environ.get("DSH_PROBE"):
         return
     arr = dev.down(buf, shape).astype(np.float32)
@@ -82,7 +89,8 @@ def _buf(dev, n):
 def _up_h(dev, arr):
     a = np.ascontiguousarray(arr, np.float16)
     b = dev.buf(a.nbytes)
-    cl.enqueue_copy(dev.q, b, a)
+    # 阻塞拷贝：源是临时 numpy，异步拷贝可能在完成前就被回收（64×64 下暴露出来）
+    cl.enqueue_copy(dev.q, b, a, is_blocking=True)
     return b
 
 
