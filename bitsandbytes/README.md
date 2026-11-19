@@ -42,9 +42,17 @@ bitsandbytes-cpu doctor    # should list coptimizer_update_4bit_blockwise_cpu
 - **segmented hybrid execution 0.82×** (all-CPU 1672.8 ms → 1368.4 ms), which is better than either
   extreme (all-iGPU 0.91×).
 
-**Known limitation — do not treat as verified:** the device-side UNet chain runs end to end
-(2.28 GB peak, zero double releases) but its output is still all zeros, so numerical equivalence is
-not established. It is WIP.
+**UNet device chain verified (dev13 + this fix).** The whole SD1.5 UNet now runs on the iGPU in fp16 with weights resident, and matches `diffusers` on the same weights:
+
+| latent | rel L2 vs diffusers | peak arena |
+|---|---|---|
+| 32x32 | 1.81e-02 | 1.8 GB |
+| 64x64 | 1.11e-02 | 2.29 GB |
+
+**Performance caveat:** correctness is not speed. A naive per-operator device chain runs the 64x64 UNet in ~31.7 s against ~4.5 s for the CPU path (7.1x slower) - the iGPU wins only when you offload the high-channel, low-resolution blocks and leave the rest on the CPU.
+
+Two bugs had to be fixed for this, both worth knowing if you extend the chain:
+the timestep must be uploaded as float32 (the sinusoidal kernel reads `float*`, and the generic upload helper converts to fp16), and `attn_chunked_heads` needs an explicit `queue.finish()` between its per-head `enqueue_copy` and the CLBlast GEMM — an in-order queue is not enough when pyopencl copies and CLBlast launches are mixed.
 
 ---
 
