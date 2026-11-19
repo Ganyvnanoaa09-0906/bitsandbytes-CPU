@@ -77,12 +77,17 @@ def _free(dev, *bufs):
 
 
 _T0 = [0.0]
+_CNT = [0]
 
 
 def _note(dev, name):
     # TDR-GUARD：阶段边界强制同步。Windows 的 WDDM 看门狗（默认 ~2s）会把长提交判为
     # "GPU 无响应"并重置设备，连带打崩桌面程序；分阶段 finish 能避免这一点。
-    dev.q.finish()
+    # 看门狗防护：默认每 2 个阶段同步一次（每段都同步太慢，全不同步有 TDR 风险）
+    _CNT[0] += 1
+    _every = int(os.environ.get("DSH_FINISH_EVERY", "2"))
+    if _every <= 1 or _CNT[0] % _every == 0:
+        dev.q.finish()
     import time as _t
     if _T0[0]:
         STAGE_MS.append((name, (_t.perf_counter() - _T0[0]) * 1e3))
