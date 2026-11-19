@@ -31,6 +31,7 @@ from gt1030.igpu_unet_t2d_dev import layernorm, token_linear  # noqa: E402
 
 STAGES = []
 STAGE_MS = []          # [(stage, ms)]  每阶段墙钟耗时
+T2D_PARTS = {}         # {'gn'|'proj_in'|'attn'|'ff'|'proj_out': ms}
 # DSH_NOFREE_UP=1：up 循环里不释放任何缓冲（用于区分"释放/复用错"还是"计算路径错"）
 _NOFREE_UP = os.environ.get("DSH_NOFREE_UP") == "1"
 _NOFREE_ALL = os.environ.get("DSH_NOFREE_ALL") == "1"
@@ -258,6 +259,13 @@ def _resnet(dev, r, x, temb, tembD, N, C, H, Wd, wc):
 
 
 def _t2d(dev, t, x, enc, N, C, H, Wd, rk, wc):
+    import time as _t
+    _tt = {}
+
+    def _mark(name, t0):
+        _tt[name] = _tt.get(name, 0.0) + (_t.perf_counter() - t0) * 1e3
+
+    _t0 = _t.perf_counter()
     y = _buf(dev, N * C * H * Wd)
     _gn(dev, x, wc.arr(t.norm.weight), wc.arr(t.norm.bias), y,
         N, C, H, Wd, t.norm.num_groups, float(t.norm.eps))
@@ -266,20 +274,30 @@ def _t2d(dev, t, x, enc, N, C, H, Wd, rk, wc):
     _free(dev, y)
     tok = _n2h(dev, c1, N, C, H, Wd)
     _free(dev, c1)
+    dev.q.finish()
+    _mark("proj_in", _t0)
+    _t0 = _t.perf_counter()
     T = H * Wd
     for blk in t.transformer_blocks:
+        _tb = _t.perf_counter()
         s = _ln(dev, tok, blk.norm1, N * T, C, wc)
         a1 = _attn(dev, s, None, blk.attn1, N, T, T, C, wc)
         _free(dev, s)
+        dev.q.finish()
+        _mark("attn_self", _tb)
         nxt = _add(dev, tok, a1, N * T * C)
         _free(dev, tok, a1)
         tok = nxt
+        _tb = _t.perf_counter()
         s = _ln(dev, tok, blk.norm2, N * T, C, wc)
         a2 = _attn(dev, s, enc, blk.attn2, N, T, rk, C, wc)
         _free(dev, s)
+        dev.q.finish()
+        _mark("attn_cross", _tb)
         nxt = _add(dev, tok, a2, N * T * C)
         _free(dev, tok, a2)
         tok = nxt
+        _tb = _t.perf_counter()
         s = _ln(dev, tok, blk.norm3, N * T, C, wc)
         w0, b0 = wc.lin(blk.ff.net[0].proj)
         hd = blk.ff.net[0].proj.out_features // 2
@@ -294,13 +312,22 @@ def _t2d(dev, t, x, enc, N, C, H, Wd, rk, wc):
         nxt = _add(dev, tok, ff, N * T * C)
         _free(dev, tok, ff)
         tok = nxt
+        dev.q.finish()
+        _mark("ff", _tb)
+    dev.q.finish()
+    _mark("blocks", _t0)
+    _t0 = _t.perf_counter()
     back = _h2n(dev, tok, N, C, H, Wd)
     _free(dev, tok)
     wo_, bo_ = wc.lin(t.proj_out)
     po, _, _ = _conv(dev, back, wo_, bo_, N, C, H, Wd, C, 1, 1, 1, 1, 0, 0)
     _free(dev, back)
+    dev.q.finish()
+    _mark("proj_out", _t0)
     out = _add(dev, po, x, N * C * H * Wd)
     _free(dev, po)
+    for k, v in _tt.items():
+        T2D_PARTS[k] = T2D_PARTS.get(k, 0.0) + v
     return out
 
 
