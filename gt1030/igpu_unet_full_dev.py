@@ -320,7 +320,12 @@ def _upsample(dev, us, x, N, C, H, Wd, wc):
 
 
 def full_forward(dev, u, sample_np, timestep_np, enc_np, wc=None, verbose=True):
-    wc = wc or W(dev)
+    # 权重缓存挂在 dev 上：同一 context 内多次 forward 只上传一次（约 1.7 GB，实测 4.4 s）
+    if wc is None:
+        wc = getattr(dev, "_wc", None)
+        if wc is None:
+            wc = W(dev)
+            dev._wc = wc
     N = sample_np.shape[0]
     D = u.config.block_out_channels[-1]
     STAGES.clear()
