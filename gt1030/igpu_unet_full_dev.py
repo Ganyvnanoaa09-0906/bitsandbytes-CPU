@@ -311,7 +311,10 @@ def full_forward(dev, u, sample_np, timestep_np, enc_np, wc=None, verbose=True):
     _probe(dev, "conv_in", h, (N, OCi, H, Wd))
     _note(dev, "conv_in")
 
-    t = _up_h(dev, timestep_np.astype(np.float32))
+    # ★ 时间步必须保持 float32：sinusoidal 内核按 float* 读，_up_h 会把它转成 fp16
+    _t32 = np.ascontiguousarray(timestep_np.astype(np.float32))
+    t = dev.buf(_t32.nbytes)
+    cl.enqueue_copy(dev.q, t, _t32)
     # sinusoidal（沿用已验证实现）
     from gt1030.igpu_time_emb import sinusoidal
 
