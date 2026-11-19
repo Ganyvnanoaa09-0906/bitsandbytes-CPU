@@ -946,7 +946,9 @@ def cmd_doctor(args) -> int:
     missing = 0
     for n in ("cdequantize_blockwise_cpu_fp32", "cquantize_blockwise_cpu_fp32",
               "cgemv_4bit_inference_cpu_fp32", "cgemm_8bit_inference_cpu_fp32",
-              "coptimizer_update_8bit_blockwise_cpu"):
+              "coptimizer_update_8bit_blockwise_cpu",
+              # dev13 起列为必需：缺它时 AdamW4bit 会静默退回 torch（慢 1.6-6x）
+              "coptimizer_update_4bit_blockwise_cpu"):
         ok = hasattr(lib, n)
         missing += 0 if ok else 1
         print(f"    {'yes' if ok else 'NO '}  {n}")
