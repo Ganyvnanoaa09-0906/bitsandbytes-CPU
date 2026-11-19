@@ -30,6 +30,7 @@ from gt1030.igpu_unet_t2d_dev import K as T2DK  # noqa: E402
 from gt1030.igpu_unet_t2d_dev import layernorm, token_linear  # noqa: E402
 
 STAGES = []
+STAGE_MS = []          # [(stage, ms)]  每阶段墙钟耗时
 # DSH_NOFREE_UP=1：up 循环里不释放任何缓冲（用于区分"释放/复用错"还是"计算路径错"）
 _NOFREE_UP = os.environ.get("DSH_NOFREE_UP") == "1"
 _NOFREE_ALL = os.environ.get("DSH_NOFREE_ALL") == "1"
@@ -75,10 +76,17 @@ def _free(dev, *bufs):
             dev.release(b)
 
 
+_T0 = [0.0]
+
+
 def _note(dev, name):
     # TDR-GUARD：阶段边界强制同步。Windows 的 WDDM 看门狗（默认 ~2s）会把长提交判为
     # "GPU 无响应"并重置设备，连带打崩桌面程序；分阶段 finish 能避免这一点。
     dev.q.finish()
+    import time as _t
+    if _T0[0]:
+        STAGE_MS.append((name, (_t.perf_counter() - _T0[0]) * 1e3))
+    _T0[0] = _t.perf_counter()
     STAGES.append((name, _mb(dev)))
 
 
@@ -185,7 +193,7 @@ def _attn(dev, h, ctx, a, N, Tq, Tk, C, wc):
     token_linear(dev, src, wk, bk, k, N * Tk, C, ck)
     token_linear(dev, src, wv, bv, v, N * Tk, C, ck)
     ao = _buf(dev, N * Tq * C)
-    attn_chunked_heads(dev, q, k, v, ao, N, Tq, Tk, C, a.heads, bq=min(256, Tq))
+    attn_chunked_heads(dev, q, k, v, ao, N, Tq, Tk, C, a.heads, bq=min(int(os.environ.get("DSH_BQ", "1024")), Tq))
     _free(dev, q, k, v)
     out = _buf(dev, N * Tq * C)
     token_linear(dev, ao, wo, bo, out, N * Tq, C, C)
