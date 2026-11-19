@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 sys.path.insert(0, r"D:\work\bitsandbytes-CPU")
@@ -29,6 +30,9 @@ from gt1030.igpu_unet_t2d_dev import K as T2DK  # noqa: E402
 from gt1030.igpu_unet_t2d_dev import layernorm, token_linear  # noqa: E402
 
 STAGES = []
+# DSH_NOFREE_UP=1：up 循环里不释放任何缓冲（用于区分"释放/复用错"还是"计算路径错"）
+_NOFREE_UP = os.environ.get("DSH_NOFREE_UP") == "1"
+_NOFREE_ALL = os.environ.get("DSH_NOFREE_ALL") == "1"
 
 
 def _mb(dev):
@@ -46,8 +50,17 @@ def _probe(dev, name, buf, shape):
           % (name, arr.mean(), arr.std(), np.abs(arr).max()))
 
 
+def _free_up(dev, *bufs):
+    """up 循环专用：DSH_NOFREE_UP=1 时不释放，用来二分"释放/复用"与"计算"。"""
+    if _NOFREE_UP:
+        return
+    _free(dev, *bufs)
+
+
 def _free(dev, *bufs):
     """释放；同一对象只释放一次（up 的第一个 skip 可能与 mid 输出是同一缓冲）。"""
+    if _NOFREE_ALL:
+        return
     seen = set()
     for b in bufs:
         if b is not None and id(b) not in seen:
@@ -56,6 +69,9 @@ def _free(dev, *bufs):
 
 
 def _note(dev, name):
+    # TDR-GUARD：阶段边界强制同步。Windows 的 WDDM 看门狗（默认 ~2s）会把长提交判为
+    # "GPU 无响应"并重置设备，连带打崩桌面程序；分阶段 finish 能避免这一点。
+    dev.q.finish()
     STAGES.append((name, _mb(dev)))
 
 
@@ -275,7 +291,9 @@ def _upsample(dev, us, x, N, C, H, Wd, wc):
     CVK(dev)["upsample2x"](dev.q, (N * C * H * Wd * 4,), None, x, up,
                            np.int32(N), np.int32(C), np.int32(H), np.int32(Wd))
     w, b = wc.lin(us.conv)
-    out, _, _ = _conv(dev, up, w, b, N, C, H, Wd, us.conv.out_channels)
+    # ★ `up` 已经是 2× 尺寸，卷积必须按 2× 的 H/W 计算输出（否则输出仍是原分辨率，
+    #   调用方却按翻倍记账 → 整条链尺寸错位，最终输出全零）
+    out, _, _ = _conv(dev, up, w, b, N, C, H * 2, Wd * 2, us.conv.out_channels)
     _free(dev, up)          # 之前漏了，长链里会积累
     return out
 
@@ -290,6 +308,7 @@ def full_forward(dev, u, sample_np, timestep_np, enc_np, wc=None, verbose=True):
     wci, bci = wc.lin(u.conv_in)
     OCi = u.conv_in.out_channels   # ★ 320，不是 block_out_channels[-1]
     h, H, Wd = _conv(dev, x, wci, bci, N, 4, sample_np.shape[2], sample_np.shape[3], OCi, 3, 3, 1, 1, 1, 1)
+    _probe(dev, "conv_in", h, (N, OCi, H, Wd))
     _note(dev, "conv_in")
 
     t = _up_h(dev, timestep_np.astype(np.float32))
@@ -307,6 +326,7 @@ def full_forward(dev, u, sample_np, timestep_np, enc_np, wc=None, verbose=True):
     temb = _buf(dev, N * D)
     token_linear(dev, ts, tw2, tb2, temb, N, D, u.time_embedding.linear_2.in_features)
     tembD = D
+    _probe(dev, "temb", temb, (N, tembD))
     _note(dev, "time_emb")
 
     rk = enc_np.shape[1]
@@ -357,22 +377,30 @@ def full_forward(dev, u, sample_np, timestep_np, enc_np, wc=None, verbose=True):
                 raise RuntimeError(
                 "_cat 尺寸不符：c=%d Cskip=%d skip.size=%d h.size=%d 期望=%d 实际=%d"
                 % (c, Cskip, skip.size, h.size, N * (c + Cskip) * H * Wd * 2, cat.size))
-            _free(dev, skip, h)          # skip 在 cat2 之后才释放
+            _free_up(dev, skip, h)       # skip 在 cat2 之后才释放
             c = c + Cskip
             h, c = _resnet(dev, res, cat, temb, tembD, N, c, H, Wd, wc)
-            _free(dev, cat)
+            _free_up(dev, cat)
             if j < len(atts):
                 prev = h
                 h = _t2d(dev, atts[j], prev, enc, N, c, H, Wd, rk, wc)
-                _free(dev, prev)
+                _free_up(dev, prev)
         ups = getattr(ub, "upsamplers", None)
         if ups is not None and len(ups) > 0:
             prev = h
             h = _upsample(dev, ups[0], prev, N, c, H, Wd, wc)
-            _free(dev, prev)
+            _free_up(dev, prev)
             H, Wd = H * 2, Wd * 2
             c = ups[0].conv.out_channels
+        want = N * c * H * Wd * 2
+        if h.size != want:
+            raise RuntimeError(
+                "up%d 之后 h 尺寸不符：h.size=%d 期望=%d (N=%d c=%d H=%d W=%d id=%s)"
+                % (i, h.size, want, N, c, H, Wd, id(h)))
         _probe(dev, "up%d" % i, h, (N, c, H, Wd))
+        if os.environ.get("DSH_IDPROBE"):
+            print("    [id] up%d h.id=%s h.size=%d c=%d H=%d W=%d"
+                  % (i, id(h), h.size, c, H, Wd))
         _note(dev, "up%d" % i)
 
     import os as _os
@@ -383,6 +411,9 @@ def full_forward(dev, u, sample_np, timestep_np, enc_np, wc=None, verbose=True):
         arr = dev.down(buf, shape).astype(np.float32)
         print("    [tail] %-4s mean %.5f std %.5f max %.5f" % (name, arr.mean(), arr.std(), np.abs(arr).max()))
 
+    if os.environ.get("DSH_IDPROBE"):
+        print("    [id] tail h.id=%s h.size=%d c=%d H=%d W=%d"
+              % (id(h), h.size, c, H, Wd))
     _stat("h", h, (N, c, H, Wd))
     y = _buf(dev, N * c * H * Wd)
     _gn(dev, h, wc.arr(u.conv_norm_out.weight), wc.arr(u.conv_norm_out.bias), y,
