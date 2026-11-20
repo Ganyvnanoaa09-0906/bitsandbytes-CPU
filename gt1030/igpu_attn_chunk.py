@@ -139,6 +139,24 @@ def CK(dev):
     return _C[key]
 
 
+def _softmax_local(dev):
+    """softmax_rect_fast 的 local size：不超过设备上限，且向下取 2 的幂（归约要求）。"""
+    cached = getattr(dev, "_swg", None)
+    if cached:
+        return cached
+    try:
+        cap = int(dev.ctx.devices[0].max_work_group_size)
+    except Exception:
+        cap = 256
+    n = min(256, cap)
+    if n < 1:
+        n = 1
+    while n & (n - 1):          # 向下取 2 的幂
+        n -= 1
+    dev._swg = n
+    return n
+
+
 def _buf(dev, n):
     return dev.buf(max(4096, int(n) * 2))
 
@@ -174,7 +192,7 @@ def attn_chunked(dev, q_buf, k_buf, v_buf, o_buf, B, Tq, Tk, C, bq=512):
                             src_offset=(qbase + done * C) * 2, byte_count=rows * C * 2)
             GEMM.hgemm_nt(tmpq, tmpk, sb, rows, Tk, C)
             # 每行一个 work-group（256 线程归约）替代"一行一线程"的串行版
-            _ls = 256
+            _ls = _softmax_local(dev)
             CK(dev)["softmax_rect_fast"](dev.q, (rows * _ls,), (_ls,), sb, pb,
                                          np.int32(rows), np.int32(Tk), np.float32(scale))
             GEMM.hgemm_nn(pb, tmpv, tmpq, rows, C, Tk)
